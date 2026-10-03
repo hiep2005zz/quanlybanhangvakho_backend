@@ -174,3 +174,89 @@ def test_no_op_change_does_not_create_audit_log():
     after_total = after_resp.json()["total"]
     assert after_total == init_total, f"Expected total logs {init_total}, got {after_total}"
 
+
+def test_sales_manager_can_view_product_price_history():
+    """
+    Tiêu chí nghiệp vụ:
+    Là Quản lý kinh doanh (Sales Manager), có quyền xem lịch sử thay đổi giá của một sản phẩm,
+    hiển thị đầy đủ: giá cũ, giá mới, người sửa, thời điểm áp dụng.
+    """
+    sales_mgr_token = get_token("sales_manager")
+
+    # 1. Quản lý kinh doanh thực hiện đổi giá sản phẩm SP001 (product_id = 1)
+    new_sell_price = 185000.0
+    price_change_resp = client.put(
+        "/api/v1/products/1/price",
+        headers={"Authorization": f"Bearer {sales_mgr_token}"},
+        json={
+            "sell_price": new_sell_price,
+            "reason": "Điều chỉnh giá theo chính sách chiết khấu đại lý tháng 10"
+        }
+    )
+    assert price_change_resp.status_code == 200, f"Update price failed: {price_change_resp.text}"
+
+    # 2. Quản lý kinh doanh tra cứu lịch sử của sản phẩm SP001
+    history_resp = client.get(
+        "/api/v1/audit-logs/entity/Product/SP001",
+        headers={"Authorization": f"Bearer {sales_mgr_token}"}
+    )
+    assert history_resp.status_code == 200, f"Get history failed: {history_resp.text}"
+    logs = history_resp.json()
+    assert len(logs) > 0, "Dữ liệu lịch sử sản phẩm không được rỗng"
+
+    # 3. Kiểm tra bản ghi thay đổi giá mới nhất chứa đầy đủ tiêu chí
+    latest_price_log = next((l for l in logs if l["action_type"] == "PRICE_CHANGE"), None)
+    assert latest_price_log is not None, "Phải có bản ghi action_type là PRICE_CHANGE"
+
+    # Tiêu chí: Người sửa
+    assert latest_price_log["user_name"] is not None
+    assert len(latest_price_log["user_name"]) > 0
+
+    # Tiêu chí: Thời điểm áp dụng
+    assert latest_price_log["created_at"] is not None
+
+    # Tiêu chí: Giá cũ & Giá mới
+    import json
+    old_vals = json.loads(latest_price_log["old_values"])
+    new_vals = json.loads(latest_price_log["new_values"])
+    assert "sell_price" in old_vals, "Phải có giá cũ (old sell_price)"
+    assert "sell_price" in new_vals, "Phải có giá mới (new sell_price)"
+    assert new_vals["sell_price"] == new_sell_price
+
+    # Tiêu chí: Lý do giải thích với đại lý
+    assert "chính sách chiết khấu đại lý tháng 10" in latest_price_log["reason"]
+
+
+def test_audit_logs_immutable_cannot_delete():
+    """
+    Tiêu chí bảo mật kiểm toán:
+    Lịch sử không sửa và không xoá được.
+    Mọi yêu cầu xóa (DELETE) 1 bản ghi hoặc toàn bộ nhật ký đều bị từ chối 405 Method Not Allowed.
+    """
+    admin_token = get_token("admin")
+    sales_mgr_token = get_token("sales_manager")
+
+    # 1. Thử xóa 1 bản ghi bằng Admin -> Bị từ chối 405
+    del_single_admin = client.delete(
+        "/api/v1/audit-logs/1",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert del_single_admin.status_code == 405
+    assert "bất biến" in del_single_admin.json()["detail"]
+
+    # 2. Thử xóa toàn bộ bằng Admin -> Bị từ chối 405
+    del_all_admin = client.delete(
+        "/api/v1/audit-logs",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert del_all_admin.status_code == 405
+    assert "bất biến" in del_all_admin.json()["detail"]
+
+    # 3. Thử xóa bằng Quản lý kinh doanh -> Bị từ chối 405
+    del_single_sm = client.delete(
+        "/api/v1/audit-logs/1",
+        headers={"Authorization": f"Bearer {sales_mgr_token}"}
+    )
+    assert del_single_sm.status_code == 405
+
+

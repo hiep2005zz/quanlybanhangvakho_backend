@@ -427,14 +427,38 @@ def update_product_price(
     """
     for p in RAW_PRODUCTS:
         if p["id"] == product_id:
-            old_val = {"sell_price": p["sell_price"], "cost_price": p["cost_price"]}
+            old_val = {}
             new_val = {}
             if data.sell_price is not None:
+                old_val["sell_price"] = p["sell_price"]
                 p["sell_price"] = data.sell_price
                 new_val["sell_price"] = data.sell_price
             if data.cost_price is not None:
+                old_val["cost_price"] = p["cost_price"]
                 p["cost_price"] = data.cost_price
                 new_val["cost_price"] = data.cost_price
+
+            # Đồng bộ thay đổi vào DB nếu tồn tại bản ghi ProductEntity
+            from app.models.entities import ProductEntity
+            try:
+                db_p = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
+                if db_p:
+                    if data.sell_price is not None:
+                        db_p.sell_price = data.sell_price
+                    if data.cost_price is not None:
+                        db_p.cost_price = data.cost_price
+                    db.commit()
+            except Exception as e:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                print(f"Warning syncing product price to DB: {e}")
+
+            # Cập nhật margin và profit_per_unit trong RAW_PRODUCTS
+            if p.get("cost_price") and p.get("sell_price") and p["sell_price"] > 0:
+                p["profit_per_unit"] = p["sell_price"] - p["cost_price"]
+                p["profit_margin"] = round(((p["sell_price"] - p["cost_price"]) / p["sell_price"]) * 100, 1)
 
             log_audit_event(
                 db=db,

@@ -80,10 +80,11 @@ def test_ac1_lock_user_session_revoked_and_cannot_login():
     assert check_after.status_code == 401
     assert "khóa" in check_after.json()["detail"].lower()
 
-    # 4. Khi sales đăng nhập lại -> Bị chặn 403 Forbidden kèm lý do
+    # 4. Khi sales đăng nhập lại -> Bị chặn 403 Forbidden
     login_resp = client.post("/api/v1/auth/login", json={"username": "sales", "password": "123"})
     assert login_resp.status_code == 403
-    assert lock_reason in login_resp.json()["detail"]
+    assert "tài khoản đã bị khóa" in login_resp.json()["detail"].lower()
+    assert "liên hệ với quản lý" in login_resp.json()["detail"].lower()
 
 
 def test_ac3_dealers_marked_needing_handover_and_block_orders():
