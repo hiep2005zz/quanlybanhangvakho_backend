@@ -21,20 +21,8 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     print("Tables created successfully.")
 
-    # Tự động migrate thêm cột nếu bảng đã tồn tại từ trước
-    with engine.connect() as conn:
-        for sql_statement in [
-            "IF COL_LENGTH('products', 'base_unit') IS NULL ALTER TABLE products ADD base_unit NVARCHAR(50) DEFAULT N'Cái';",
-            "IF COL_LENGTH('products', 'units_json') IS NULL ALTER TABLE products ADD units_json NVARCHAR(MAX);",
-            "IF COL_LENGTH('inventory_transactions', 'unit_name') IS NULL ALTER TABLE inventory_transactions ADD unit_name NVARCHAR(50) DEFAULT N'Cái';",
-            "IF COL_LENGTH('inventory_transactions', 'conversion_rate') IS NULL ALTER TABLE inventory_transactions ADD conversion_rate FLOAT DEFAULT 1.0;",
-            "IF COL_LENGTH('inventory_transactions', 'base_quantity') IS NULL ALTER TABLE inventory_transactions ADD base_quantity FLOAT DEFAULT 0.0;",
-        ]:
-            try:
-                conn.execute(text(sql_statement))
-                conn.commit()
-            except Exception as ex:
-                print(f"Migration notice: {ex}")
+    # Removed T-SQL specific migration logic. 
+    # For SQLite, it's easier to recreate the dev database or use alembic.
 
     db = SessionLocal()
     try:
