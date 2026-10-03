@@ -157,3 +157,56 @@ def test_all_seven_roles_can_access_profile():
         data = res.json()
         assert data["username"] == u
         assert "role_title" in data
+
+
+def test_upload_avatar_success():
+    import io
+    from PIL import Image
+
+    token = _login("sales", "123")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Tạo 1 ảnh hợp lệ kích thước chữ nhật 600x400
+    img = Image.new("RGB", (600, 400), color="blue")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    img_bytes = buf.getvalue()
+
+    files = {"file": ("test_avatar.jpg", img_bytes, "image/jpeg")}
+    res = client.post("/api/v1/me/avatar", files=files, headers=headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert "avatar_url" in data
+    assert "thumbnail_url" in data
+    assert data["avatar_url"].endswith(".png")
+    assert data["thumbnail_url"].endswith(".png")
+
+    # Kiểm tra GET /api/v1/me đã có avatar_url
+    res_me = client.get("/api/v1/me", headers=headers)
+    assert res_me.status_code == 200
+    assert res_me.json()["avatar_url"] == data["avatar_url"]
+
+
+def test_upload_avatar_invalid_extension():
+    token = _login("sales", "123")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    files = {"file": ("document.pdf", b"%PDF-1.4...", "application/pdf")}
+    res = client.post("/api/v1/me/avatar", files=files, headers=headers)
+    assert res.status_code == 400
+    assert "chỉ chấp nhận ảnh định dạng jpg hoặc png" in res.json()["detail"].lower()
+
+
+
+def test_upload_avatar_oversized():
+    token = _login("sales", "123")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Giả lập file lớn hơn 2MB (2.5MB)
+    oversized_data = b"X" * (int(2.5 * 1024 * 1024))
+    files = {"file": ("big_image.jpg", oversized_data, "image/jpeg")}
+    res = client.post("/api/v1/me/avatar", files=files, headers=headers)
+    assert res.status_code == 400
+    assert "vượt quá giới hạn cho phép (tối đa 2mb)" in res.json()["detail"].lower()
+
+

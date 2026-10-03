@@ -111,6 +111,7 @@ def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> UserRespo
         territory_name=territory_name,
         can_view_cost=can_view_cost,
         can_write_inventory=can_write_inventory,
+        avatar_url=getattr(user, "avatar_url", None),
     )
 
 

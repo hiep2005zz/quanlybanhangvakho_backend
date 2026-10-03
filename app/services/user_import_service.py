@@ -55,6 +55,33 @@ class UserBulkImportService:
         
         valid_roles = list(ROLE_DETAILS.keys())
 
+        # Ánh xạ vai trò tiếng Việt sang mã vai trò hệ thống
+        role_map_vi = {
+            "quản trị hệ thống": "admin",
+            "quản trị": "admin",
+            "admin": "admin",
+            "quản lý kinh doanh": "sales_manager",
+            "quản lý bán hàng": "sales_manager",
+            "sales_manager": "sales_manager",
+            "nhân viên kinh doanh": "sales",
+            "kinh doanh": "sales",
+            "sales": "sales",
+            "sale": "sales",
+            "thủ kho": "warehouse",
+            "warehouse": "warehouse",
+            "quản lý kho": "warehouse_manager",
+            "warehouse_manager": "warehouse_manager",
+            "kế toán": "accountant",
+            "kế toán công nợ": "accountant",
+            "accountant": "accountant",
+            "nhân viên mua hàng": "purchasing",
+            "mua hàng": "purchasing",
+            "purchasing": "purchasing",
+            "đại lý": "customer",
+            "khách hàng": "customer",
+            "customer": "customer",
+        }
+
         for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
             if all(v is None for v in row):
                 continue
@@ -62,7 +89,10 @@ class UserBulkImportService:
             full_name = str(row[0]).strip() if row[0] else ""
             email = str(row[1]).strip() if row[1] else ""
             phone = str(row[2]).strip() if row[2] else ""
-            role = str(row[3]).strip() if row[3] else ""
+            raw_role = str(row[3]).strip() if row[3] else ""
+            # Chuẩn hóa vai trò từ tiếng Việt hoặc code tiếng Anh
+            norm_role_key = raw_role.lower()
+            role = role_map_vi.get(norm_role_key, raw_role)
             branch = str(row[4]).strip() if len(row) > 4 and row[4] else "Kho Tổng Hà Nội"
             password = str(row[5]).strip() if len(row) > 5 and row[5] else "123"
 
@@ -98,10 +128,10 @@ class UserBulkImportService:
                     errors['phone'] = "Số điện thoại bị trùng lặp trong file."
                 phones_in_file.add(cleaned_phone)
 
-            if not role:
+            if not raw_role:
                 errors['role'] = "Bắt buộc nhập vai trò."
             elif role not in valid_roles:
-                errors['role'] = f"Vai trò không hợp lệ. Chọn từ: {', '.join(valid_roles)}"
+                errors['role'] = "Vai trò không hợp lệ. Vui lòng chọn một trong các vai trò: Nhân viên kinh doanh, Thủ kho, Quản lý kho, Kế toán, Đại lý, Quản trị hệ thống, Quản lý kinh doanh, Nhân viên mua hàng."
 
             if not password:
                 errors['password'] = "Bắt buộc nhập mật khẩu."
@@ -152,12 +182,12 @@ class UserBulkImportService:
         ]
         ws.append(headers)
         
-        # Mẫu dữ liệu phong phú minh họa chuẩn cho các vai trò
+        # Mẫu dữ liệu phong phú minh họa chuẩn cho các vai trò (cho phép điền Tiếng Việt có dấu hoặc mã code tiếng Anh)
         sample_rows = [
-            ["Nguyễn Văn A", "nguyenvana@gmail.com", "0912345678", "sales", "Kho Tổng Hà Nội", "123"],
-            ["Trần Thị B", "tranthib@gmail.com", "0987654321", "warehouse", "Kho Chi Nhánh Đà Nẵng", "123"],
-            ["Lê Văn C", "levanc@gmail.com", "0901234567", "customer", "Khu vực Miền Nam", "123"],
-            ["Phạm Minh D", "minhd@gmail.com", "0934567890", "accountant", "Trụ sở chính", "123"],
+            ["Nguyễn Văn A", "nguyenvana@gmail.com", "0912345678", "Nhân viên kinh doanh", "Kho Tổng Hà Nội", "123"],
+            ["Trần Thị B", "tranthib@gmail.com", "0987654321", "Thủ kho", "Kho Chi Nhánh Đà Nẵng", "123"],
+            ["Lê Văn C", "levanc@gmail.com", "0901234567", "Đại lý", "Khu vực Miền Nam", "123"],
+            ["Phạm Minh D", "minhd@gmail.com", "0934567890", "Kế toán", "Trụ sở chính", "123"],
         ]
         for row in sample_rows:
             ws.append(row)
@@ -200,7 +230,7 @@ class UserBulkImportService:
 
         # --- Sheet 2: Danh mục mã vai trò & Kho hợp lệ ---
         ws_ref = wb.create_sheet(title="Hướng dẫn mã vai trò")
-        ref_headers = ["Mã vai trò (Điền cột D)", "Tên vai trò", "Lưu ý địa bàn / Kho bắt buộc"]
+        ref_headers = ["Tên vai trò Tiếng Việt (Điền cột D)", "Mã vai trò tiếng Anh", "Lưu ý địa bàn / Kho bắt buộc"]
         ws_ref.append(ref_headers)
 
         ws_ref.row_dimensions[1].height = 26
@@ -213,14 +243,14 @@ class UserBulkImportService:
             cell.border = thin_border
 
         ref_data = [
-            ["admin", "Quản trị hệ thống", "Toàn quyền hệ thống"],
-            ["sales_manager", "Quản lý kinh doanh", "Khu vực hoặc Trụ sở chính"],
-            ["sales", "Nhân viên kinh doanh", "Chi nhánh hoặc địa bàn phụ trách"],
-            ["warehouse", "Thủ kho", "BẮT BUỘC: Kho Tổng Hà Nội, Kho Chi Nhánh Đà Nẵng, Kho Chi Nhánh TP. Hồ Chí Minh"],
-            ["warehouse_manager", "Quản lý kho", "BẮT BUỘC: Kho cụ thể"],
-            ["accountant", "Kế toán", "Trụ sở chính hoặc chi nhánh"],
-            ["purchasing", "Nhân viên mua hàng", "Trụ sở chính"],
-            ["customer", "Đại lý", "Khu vực hoạt động của đại lý"],
+            ["Quản trị hệ thống", "admin", "Toàn quyền hệ thống"],
+            ["Quản lý kinh doanh", "sales_manager", "Khu vực hoặc Trụ sở chính"],
+            ["Nhân viên kinh doanh", "sales", "Chi nhánh hoặc địa bàn phụ trách"],
+            ["Thủ kho", "warehouse", "BẮT BUỘC: Kho Tổng Hà Nội, Kho Chi Nhánh Đà Nẵng, Kho Chi Nhánh TP. Hồ Chí Minh"],
+            ["Quản lý kho", "warehouse_manager", "BẮT BUỘC: Kho cụ thể"],
+            ["Kế toán", "accountant", "Trụ sở chính hoặc chi nhánh"],
+            ["Nhân viên mua hàng", "purchasing", "Trụ sở chính"],
+            ["Đại lý", "customer", "Khu vực hoạt động của đại lý"],
         ]
         for item in ref_data:
             ws_ref.append(item)

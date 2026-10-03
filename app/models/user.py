@@ -26,6 +26,7 @@ class UserInDB(BaseModel):
     failed_attempts: int = 0
     locked_until: Optional[datetime] = None
     token_version: int = 1
+    avatar_url: Optional[str] = None
 
     def get_roles(self) -> List[str]:
         """Lấy danh sách các vai trò chuẩn hóa."""
@@ -150,6 +151,7 @@ def save_users_db():
                 db_user.failed_attempts = getattr(u, "failed_attempts", 0)
                 db_user.locked_until = getattr(u, "locked_until", None)
                 db_user.token_version = getattr(u, "token_version", 1)
+                db_user.avatar_url = getattr(u, "avatar_url", None)
 
             # Xóa các user trong DB nếu đã bị xóa khỏi USERS_DB
             existing_ids = [u.id for u in USERS_DB.values()]
@@ -201,6 +203,7 @@ def load_users_db():
                         failed_attempts=entity.failed_attempts or 0,
                         locked_until=entity.locked_until,
                         token_version=entity.token_version or 1,
+                        avatar_url=getattr(entity, "avatar_url", None),
                     )
                     USERS_DB[entity.username.lower()] = u
                 loaded_from_sql = True

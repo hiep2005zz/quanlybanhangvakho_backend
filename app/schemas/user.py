@@ -92,6 +92,7 @@ class UserItemResponse(BaseModel):
     can_view_cost: bool = False
     can_write_inventory: bool = False
     badge_color: str = "#64748b"
+    avatar_url: Optional[str] = None
 
 class UserListResponse(BaseModel):
     users: List[UserItemResponse]

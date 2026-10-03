@@ -16,6 +16,14 @@ class UserProfileResponse(BaseModel):
     warehouse_name: Optional[str] = None
     territory_name: Optional[str] = None
     branch: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+class ProfileAvatarResponse(BaseModel):
+    status: str = "success"
+    message: str
+    avatar_url: str
+    thumbnail_url: str
+    user: UserProfileResponse
 
 class UpdateProfileRequest(BaseModel):
     full_name: str = Field(..., min_length=1, max_length=255, description="Họ và tên")

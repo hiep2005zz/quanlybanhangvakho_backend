@@ -9,7 +9,7 @@
     "roles": [
       "admin"
     ],
-    "hashed_password": "$2b$12$Uc90sTxAjE587mPJnRsHFerMTsgrSpZLO7NyI2RCBG2YS3.iKnJt6",
+    "hashed_password": "$2b$12$zULqLVMggIG7BM3q8bctcujDMMjupSh1l1WwUKFX4NK3qKkOx4zTS",
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
@@ -17,7 +17,8 @@
     "locked_at": null,
     "failed_attempts": 0,
     "locked_until": null,
-    "token_version": 1
+    "token_version": 1,
+    "avatar_url": "/uploads/avatars/admin_cfb4ddf283cd_square.png"
   },
   "sales_manager": {
     "id": 2,
@@ -29,7 +30,7 @@
     "roles": [
       "sales_manager"
     ],
-    "hashed_password": "$2b$12$Uc90sTxAjE587mPJnRsHFerMTsgrSpZLO7NyI2RCBG2YS3.iKnJt6",
+    "hashed_password": "$2b$12$zULqLVMggIG7BM3q8bctcujDMMjupSh1l1WwUKFX4NK3qKkOx4zTS",
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
@@ -37,7 +38,8 @@
     "locked_at": null,
     "failed_attempts": 0,
     "locked_until": null,
-    "token_version": 1
+    "token_version": 1,
+    "avatar_url": null
   },
   "sales": {
     "id": 3,
@@ -49,7 +51,7 @@
     "roles": [
       "sales"
     ],
-    "hashed_password": "$2b$12$Uc90sTxAjE587mPJnRsHFerMTsgrSpZLO7NyI2RCBG2YS3.iKnJt6",
+    "hashed_password": "$2b$12$zULqLVMggIG7BM3q8bctcujDMMjupSh1l1WwUKFX4NK3qKkOx4zTS",
     "branch": "Khu vực Miền Bắc",
     "is_active": true,
     "status": "ACTIVE",
@@ -57,7 +59,8 @@
     "locked_at": null,
     "failed_attempts": 0,
     "locked_until": null,
-    "token_version": 1
+    "token_version": 1,
+    "avatar_url": "/uploads/avatars/sales_e2c33a6bc2b4_square.png"
   },
   "kho": {
     "id": 4,
@@ -69,7 +72,7 @@
     "roles": [
       "warehouse"
     ],
-    "hashed_password": "$2b$12$Uc90sTxAjE587mPJnRsHFerMTsgrSpZLO7NyI2RCBG2YS3.iKnJt6",
+    "hashed_password": "$2b$12$zULqLVMggIG7BM3q8bctcujDMMjupSh1l1WwUKFX4NK3qKkOx4zTS",
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -77,7 +80,8 @@
     "locked_at": null,
     "failed_attempts": 0,
     "locked_until": null,
-    "token_version": 1
+    "token_version": 1,
+    "avatar_url": "/uploads/avatars/kho_cbb51c2f2b1c_square.png"
   },
   "warehouse_mgr": {
     "id": 5,
@@ -89,7 +93,7 @@
     "roles": [
       "warehouse_manager"
     ],
-    "hashed_password": "$2b$12$Uc90sTxAjE587mPJnRsHFerMTsgrSpZLO7NyI2RCBG2YS3.iKnJt6",
+    "hashed_password": "$2b$12$zULqLVMggIG7BM3q8bctcujDMMjupSh1l1WwUKFX4NK3qKkOx4zTS",
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -97,7 +101,8 @@
     "locked_at": null,
     "failed_attempts": 0,
     "locked_until": null,
-    "token_version": 1
+    "token_version": 1,
+    "avatar_url": null
   },
   "ketoan": {
     "id": 6,
@@ -109,7 +114,7 @@
     "roles": [
       "accountant"
     ],
-    "hashed_password": "$2b$12$Uc90sTxAjE587mPJnRsHFerMTsgrSpZLO7NyI2RCBG2YS3.iKnJt6",
+    "hashed_password": "$2b$12$zULqLVMggIG7BM3q8bctcujDMMjupSh1l1WwUKFX4NK3qKkOx4zTS",
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",
@@ -117,7 +122,8 @@
     "locked_at": null,
     "failed_attempts": 0,
     "locked_until": null,
-    "token_version": 1
+    "token_version": 1,
+    "avatar_url": null
   },
   "muahang": {
     "id": 7,
@@ -125,11 +131,11 @@
     "full_name": "Vu Mua Hang",
     "email": "muahang@congty.vn",
     "phone": "0822516998",
-    "role": "purchasing",
+    "role": "sales_manager",
     "roles": [
-      "purchasing"
+      "sales_manager"
     ],
-    "hashed_password": "$2b$12$Uc90sTxAjE587mPJnRsHFerMTsgrSpZLO7NyI2RCBG2YS3.iKnJt6",
+    "hashed_password": "$2b$12$zULqLVMggIG7BM3q8bctcujDMMjupSh1l1WwUKFX4NK3qKkOx4zTS",
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",
@@ -137,6 +143,94 @@
     "locked_at": null,
     "failed_attempts": 0,
     "locked_until": null,
-    "token_version": 1
+    "token_version": 1,
+    "avatar_url": null
+  },
+  "nguyenvana": {
+    "id": 8,
+    "username": "nguyenvana",
+    "full_name": "Nguyễn Văn A",
+    "email": "nguyenvana@gmail.com",
+    "phone": "0912345678",
+    "role": "sales",
+    "roles": [
+      "sales",
+      "warehouse",
+      "accountant",
+      "purchasing"
+    ],
+    "hashed_password": "$2b$12$DBW53XiETJGdCOubboLsoO170uPBrfnn7ykSK741towmxO3xPIyZe",
+    "branch": "Kho Tổng Hà Nội",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  },
+  "tranthib": {
+    "id": 9,
+    "username": "tranthib",
+    "full_name": "Trần Thị B",
+    "email": "tranthib@gmail.com",
+    "phone": "0987654321",
+    "role": "warehouse",
+    "roles": [
+      "warehouse"
+    ],
+    "hashed_password": "$2b$12$IXi1isYlE9V0UonGvpUTXe8w83Ild4ccUpcYUSpB8IdL4P9XdqZeK",
+    "branch": "Kho Chi Nhánh Đà Nẵng",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  },
+  "levanc": {
+    "id": 10,
+    "username": "levanc",
+    "full_name": "Lê Văn C",
+    "email": "levanc@gmail.com",
+    "phone": "0901234567",
+    "role": "customer",
+    "roles": [
+      "customer"
+    ],
+    "hashed_password": "$2b$12$eUwduVF1jHfoSOhFoM1tMuQ1MTPYRk/aQ1hiMZUR2GkK63MZ5XOPO",
+    "branch": "Khu vực Miền Nam",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  },
+  "minhd": {
+    "id": 11,
+    "username": "minhd",
+    "full_name": "Phạm Minh D",
+    "email": "minhd@gmail.com",
+    "phone": "0934567890",
+    "role": "accountant",
+    "roles": [
+      "accountant"
+    ],
+    "hashed_password": "$2b$12$iKe/YACPwVy3rZqMRG9eE.3i4rHTN0IRkhVG2AAmpJNzJ4IUxHpda",
+    "branch": "Trụ sở chính",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
   }
 }

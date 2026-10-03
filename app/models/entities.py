@@ -38,6 +38,7 @@ class UserEntity(Base):
     failed_attempts = Column(Integer, default=0)
     locked_until = Column(DateTime, nullable=True)
     token_version = Column(Integer, default=1)
+    avatar_url = Column(Unicode(500), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
     @property

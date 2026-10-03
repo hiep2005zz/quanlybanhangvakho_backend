@@ -87,6 +87,7 @@ def _build_user_item(u: UserInDB) -> UserItemResponse:
         can_view_cost=can_view_cost,
         can_write_inventory=can_write_inventory,
         badge_color=role_info.get("badge_color", "#64748b"),
+        avatar_url=getattr(u, "avatar_url", None),
     )
 
 @router.get("", response_model=UserListResponse)
@@ -383,6 +384,10 @@ def update_user(
 
     if data.branch is not None:
         user.branch = data.branch.strip()
+
+    if data.password is not None and len(data.password.strip()) >= 3:
+        user.hashed_password = get_password_hash(data.password.strip())
+        user.token_version = getattr(user, "token_version", 1) + 1
 
     save_users_db()
 

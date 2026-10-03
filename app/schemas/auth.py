@@ -23,6 +23,7 @@ class UserResponse(BaseModel):
     territory_name: Optional[str] = None
     can_view_cost: bool = False
     can_write_inventory: bool = False
+    avatar_url: Optional[str] = None
 
 class TokenResponse(BaseModel):
     access_token: str
