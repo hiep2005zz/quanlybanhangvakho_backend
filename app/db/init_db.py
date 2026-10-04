@@ -34,7 +34,7 @@ def init_db():
                 except Exception as ex:
                     print(f"SQLite migration notice (avatar_url): {ex}")
 
-product_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(products)")).fetchall()]
+            product_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(products)")).fetchall()]
             if "base_unit" not in product_cols:
                 try:
                     conn.execute(text("ALTER TABLE products ADD COLUMN base_unit TEXT DEFAULT 'Cái';"))
