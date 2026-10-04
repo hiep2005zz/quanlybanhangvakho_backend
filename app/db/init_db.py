@@ -49,33 +49,63 @@ def init_db():
                 except Exception as ex:
                     print(f"SQLite migration notice (units_json): {ex}")
 
-            inv_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(inventory_transactions)")).fetchall()]
-            if "unit_name" not in inv_cols:
+            dealer_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(dealers)")).fetchall()]
+            if "customer_group" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN customer_group TEXT DEFAULT 'Đại lý cấp 1';"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (customer_group): {ex}")
+            if "status" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN status VARCHAR(20) DEFAULT 'ACTIVE';"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (dealers.status): {ex}")
+            if "region" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN region TEXT;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (region): {ex}")
+            if "lock_reason" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN lock_reason TEXT;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (dealers.lock_reason): {ex}")
+            if "locked_at" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN locked_at DATETIME;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (dealers.locked_at): {ex}")
+            if "locked_by" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN locked_by VARCHAR(50);"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (dealers.locked_by): {ex}")
+
+            tx_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(inventory_transactions)")).fetchall()]
+            if "unit_name" not in tx_cols:
                 try:
                     conn.execute(text("ALTER TABLE inventory_transactions ADD COLUMN unit_name TEXT DEFAULT 'Cái';"))
                     conn.commit()
                 except Exception as ex:
-                    print(f"SQLite migration notice (unit_name): {ex}")
-            if "conversion_rate" not in inv_cols:
+                    print(f"SQLite migration notice (tx.unit_name): {ex}")
+            if "conversion_rate" not in tx_cols:
                 try:
                     conn.execute(text("ALTER TABLE inventory_transactions ADD COLUMN conversion_rate REAL DEFAULT 1.0;"))
                     conn.commit()
                 except Exception as ex:
-                    print(f"SQLite migration notice (conversion_rate): {ex}")
-            if "base_quantity" not in inv_cols:
+                    print(f"SQLite migration notice (tx.conversion_rate): {ex}")
+            if "base_quantity" not in tx_cols:
                 try:
                     conn.execute(text("ALTER TABLE inventory_transactions ADD COLUMN base_quantity REAL DEFAULT 0.0;"))
                     conn.commit()
                 except Exception as ex:
-                    print(f"SQLite migration notice (base_quantity): {ex}")
-
-            dealer_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(dealers)")).fetchall()]
-            if "customer_group" not in dealer_cols:
-                try:
-                    conn.execute(text("ALTER TABLE dealers ADD COLUMN customer_group TEXT DEFAULT 'Dai_ly_cap_1';"))
-                    conn.commit()
-                except Exception as ex:
-                    print(f"SQLite migration notice (dealers.customer_group): {ex}")
+                    print(f"SQLite migration notice (tx.base_quantity): {ex}")
 
             pb_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(price_books)")).fetchall()]
             if pb_cols:
@@ -114,7 +144,12 @@ def init_db():
                 "IF COL_LENGTH('inventory_transactions', 'unit_name') IS NULL ALTER TABLE inventory_transactions ADD unit_name NVARCHAR(50) DEFAULT N'Cái';",
                 "IF COL_LENGTH('inventory_transactions', 'conversion_rate') IS NULL ALTER TABLE inventory_transactions ADD conversion_rate FLOAT DEFAULT 1.0;",
                 "IF COL_LENGTH('inventory_transactions', 'base_quantity') IS NULL ALTER TABLE inventory_transactions ADD base_quantity FLOAT DEFAULT 0.0;",
-                "IF COL_LENGTH('dealers', 'customer_group') IS NULL ALTER TABLE dealers ADD customer_group NVARCHAR(50) DEFAULT 'Dai_ly_cap_1';",
+                "IF COL_LENGTH('dealers', 'customer_group') IS NULL ALTER TABLE dealers ADD customer_group NVARCHAR(100) DEFAULT N'Đại lý cấp 1';",
+                "IF COL_LENGTH('dealers', 'status') IS NULL ALTER TABLE dealers ADD status NVARCHAR(50) DEFAULT N'Đang hoạt động';",
+                "IF COL_LENGTH('dealers', 'region') IS NULL ALTER TABLE dealers ADD region NVARCHAR(100);",
+                "IF COL_LENGTH('dealers', 'lock_reason') IS NULL ALTER TABLE dealers ADD lock_reason NVARCHAR(500);",
+                "IF COL_LENGTH('dealers', 'locked_at') IS NULL ALTER TABLE dealers ADD locked_at DATETIME;",
+                "IF COL_LENGTH('dealers', 'locked_by') IS NULL ALTER TABLE dealers ADD locked_by VARCHAR(50);",
                 "IF COL_LENGTH('price_books', 'version') IS NULL ALTER TABLE price_books ADD version INT DEFAULT 1;",
                 "IF COL_LENGTH('price_books', 'is_locked') IS NULL ALTER TABLE price_books ADD is_locked BIT DEFAULT 0;",
                 "IF COL_LENGTH('price_book_items', 'sale_price') IS NULL ALTER TABLE price_book_items ADD sale_price FLOAT DEFAULT 0.0;",
@@ -190,10 +225,10 @@ def init_db():
         if db.query(DealerEntity).count() == 0:
             print("Seeding initial dealers into SQL Server...")
             initial_dealers = [
-                DealerEntity(id=1, code="DL001", name="Đại Lý Phân Phối Miền Bắc - Sao Mai", phone="0912345678", email="saomai@daily.vn", address="120 Cầu Giấy, Hà Nội", assigned_sale_id=3),
-                DealerEntity(id=2, code="DL002", name="Đại Lý Thời Trang Tân Bình", phone="0987654321", email="tanbinh@daily.vn", address="45 Lý Thường Kiệt, TP. HCM", assigned_sale_id=3),
-                DealerEntity(id=3, code="DL003", name="Đại Lý Tổng Hợp Hải Phòng", phone="0934567890", email="haiphong@daily.vn", address="88 Lạch Tray, Hải Phòng", assigned_sale_id=3),
-                DealerEntity(id=4, code="DL004", name="Công Ty TNHH Bán Lẻ An Phát", phone="0945678901", email="anphat@daily.vn", address="66 Nguyễn Huệ, Đà Nẵng", assigned_sale_id=2),
+                DealerEntity(id=1, code="DL001", name="Đại Lý Phân Phối Miền Bắc - Sao Mai", phone="0912345678", email="saomai@daily.vn", address="120 Cầu Giấy, Hà Nội", region="Hà Nội", assigned_sale_id=3, customer_group="Đại lý cấp 1", status="Đang hoạt động"),
+                DealerEntity(id=2, code="DL002", name="Đại Lý Thời Trang Tân Bình", phone="0987654321", email="tanbinh@daily.vn", address="45 Lý Thường Kiệt, TP. HCM", region="TP. HCM", assigned_sale_id=3, customer_group="Đại lý cấp 2", status="Đang hoạt động"),
+                DealerEntity(id=3, code="DL003", name="Đại Lý Tổng Hợp Hải Phòng", phone="0934567890", email="haiphong@daily.vn", address="88 Lạch Tray, Hải Phòng", region="Hải Phòng", assigned_sale_id=3, customer_group="Khách sỉ", status="Đang hoạt động"),
+                DealerEntity(id=4, code="DL004", name="Công Ty TNHH Bán Lẻ An Phát", phone="0945678901", email="anphat@daily.vn", address="66 Nguyễn Huệ, Đà Nẵng", region="Đà Nẵng", assigned_sale_id=None, customer_group="Khách lẻ", status="Tạm ngừng"),
             ]
             db.add_all(initial_dealers)
             db.commit()

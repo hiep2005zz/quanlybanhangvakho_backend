@@ -6,9 +6,14 @@
     "phone": "0912345678",
     "email": "saomai@daily.vn",
     "address": "120 Cầu Giấy, Hà Nội",
-    "assigned_sale_id": 3,
-    "credit_limit": 100000000.0,
-    "customer_group": "Dai_ly_cap_1"
+    "region": "Hà Nội",
+    "assigned_sale_id": 2,
+    "credit_limit": 120000000.0,
+    "customer_group": "Đại lý cấp 1",
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   },
   "2": {
     "id": 2,
@@ -17,9 +22,14 @@
     "phone": "0987654321",
     "email": "tanbinh@daily.vn",
     "address": "45 Lý Thường Kiệt, TP. HCM",
-    "assigned_sale_id": 3,
+    "region": "TP. HCM",
+    "assigned_sale_id": 2,
     "credit_limit": 50000000.0,
-    "customer_group": "Dai_ly_cap_1"
+    "customer_group": "Đại lý cấp 2",
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   },
   "3": {
     "id": 3,
@@ -28,9 +38,14 @@
     "phone": "0934567890",
     "email": "haiphong@daily.vn",
     "address": "88 Lạch Tray, Hải Phòng",
-    "assigned_sale_id": 3,
+    "region": "Hải Phòng",
+    "assigned_sale_id": 2,
     "credit_limit": 50000000.0,
-    "customer_group": "Dai_ly_cap_1"
+    "customer_group": "Khách sỉ",
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   },
   "4": {
     "id": 4,
@@ -39,8 +54,13 @@
     "phone": "0945678901",
     "email": "anphat@daily.vn",
     "address": "66 Nguyễn Huệ, Đà Nẵng",
+    "region": "Đà Nẵng",
     "assigned_sale_id": 2,
     "credit_limit": 50000000.0,
-    "customer_group": "Dai_ly_cap_1"
+    "customer_group": "Khách lẻ",
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   }
 }

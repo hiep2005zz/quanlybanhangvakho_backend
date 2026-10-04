@@ -13,11 +13,14 @@ class Dealer(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
+    region: Optional[str] = None
     assigned_sale_id: Optional[int] = None  # user id of the sales staff responsible
     credit_limit: float = 50000000.0        # Hạn mức công nợ mặc định (VNĐ)
-    customer_group: Optional[str] = "Dai_ly_cap_1"
-
-
+    customer_group: Optional[str] = "Đại lý cấp 1"
+    status: str = "ACTIVE"                  # ACTIVE | LOCKED
+    lock_reason: Optional[str] = None
+    locked_at: Optional[str] = None
+    locked_by: Optional[str] = None
 # Initial seed data for dealers
 # Sales user: id=3 (username: 'sales', full_name: 'Trần Bán Hàng')
 DEALERS_DB: dict[int, Dealer] = {
@@ -28,8 +31,11 @@ DEALERS_DB: dict[int, Dealer] = {
         phone="0912345678",
         email="saomai@daily.vn",
         address="120 Cầu Giấy, Hà Nội",
+        region="Hà Nội",
         assigned_sale_id=3,
-        customer_group="Dai_ly_cap_1",
+        credit_limit=100000000.0,
+        customer_group="Đại lý cấp 1",
+        status="Đang hoạt động",
     ),
     2: Dealer(
         id=2,
@@ -38,8 +44,11 @@ DEALERS_DB: dict[int, Dealer] = {
         phone="0987654321",
         email="tanbinh@daily.vn",
         address="45 Lý Thường Kiệt, TP. HCM",
+        region="TP. HCM",
         assigned_sale_id=3,
-        customer_group="Dai_ly_cap_2",
+        credit_limit=50000000.0,
+        customer_group="Đại lý cấp 2",
+        status="Đang hoạt động",
     ),
     3: Dealer(
         id=3,
@@ -48,8 +57,11 @@ DEALERS_DB: dict[int, Dealer] = {
         phone="0934567890",
         email="haiphong@daily.vn",
         address="88 Lạch Tray, Hải Phòng",
+        region="Hải Phòng",
         assigned_sale_id=3,
-        customer_group="Dai_ly_cap_1",
+        credit_limit=50000000.0,
+        customer_group="Đại lý cấp 1",
+        status="Đang hoạt động",
     ),
     4: Dealer(
         id=4,
@@ -58,8 +70,11 @@ DEALERS_DB: dict[int, Dealer] = {
         phone="0945678901",
         email="anphat@daily.vn",
         address="66 Nguyễn Huệ, Đà Nẵng",
-        assigned_sale_id=2,  # id=2 is sales_manager
-        customer_group="Dai_ly_cap_2",
+        region="Đà Nẵng",
+        assigned_sale_id=None,  # Chưa chỉ định nhân viên kinh doanh phụ trách
+        credit_limit=50000000.0,
+        customer_group="Khách lẻ",
+        status="Tạm ngừng",
     ),
     5: Dealer(
         id=5,
@@ -68,8 +83,11 @@ DEALERS_DB: dict[int, Dealer] = {
         phone="0911223344",
         email="khachle@gmail.com",
         address="Số 10 Tràng Thi, Hoàn Kiếm, Hà Nội",
+        region="Hà Nội",
         assigned_sale_id=3,
-        customer_group="Khach_le",
+        credit_limit=20000000.0,
+        customer_group="Khách lẻ",
+        status="Đang hoạt động",
     ),
 }
 
@@ -99,8 +117,19 @@ def save_dealers_db():
                 db_dealer.phone = d.phone
                 db_dealer.email = d.email
                 db_dealer.address = d.address
+                db_dealer.region = d.region
                 db_dealer.assigned_sale_id = d.assigned_sale_id
+                db_dealer.credit_limit = getattr(d, "credit_limit", getattr(db_dealer, "credit_limit", 0))
+                db_dealer.customer_group = getattr(d, "customer_group", getattr(db_dealer, "customer_group", "Đại lý cấp 1"))
+                if hasattr(db_dealer, "status"):
+                    db_dealer.status = getattr(d, "status", "ACTIVE")
+                    db_dealer.lock_reason = getattr(d, "lock_reason", None)
+                    db_dealer.locked_at = getattr(d, "locked_at", None)
+                    db_dealer.locked_by = getattr(d, "locked_by", None)
 
+            if DEALERS_DB:
+                existing_ids = list(DEALERS_DB.keys())
+                db.query(DealerEntity).filter(DealerEntity.id.not_in(existing_ids)).delete(synchronize_session=False)
             db.commit()
         except Exception as sql_err:
             db.rollback()
@@ -135,7 +164,14 @@ def load_dealers_db():
                         phone=entity.phone,
                         email=entity.email,
                         address=entity.address,
+                        region=getattr(entity, "region", None),
                         assigned_sale_id=entity.assigned_sale_id,
+                        credit_limit=float(entity.credit_limit) if getattr(entity, "credit_limit", None) is not None else 50000000.0,
+                        customer_group=getattr(entity, "customer_group", None) or "Đại lý cấp 1",
+                        status=getattr(entity, "status", "ACTIVE") or "ACTIVE",
+                        lock_reason=getattr(entity, "lock_reason", None),
+                        locked_at=getattr(entity, "locked_at", None),
+                        locked_by=getattr(entity, "locked_by", None),
                     )
                     DEALERS_DB[entity.id] = d
                 loaded_from_sql = True
@@ -166,3 +202,23 @@ def get_dealers_by_sale_id(user_id: int) -> List[Dealer]:
     """Lấy danh sách đại lý do nhân viên phụ trách."""
     return [d for d in DEALERS_DB.values() if d.assigned_sale_id == user_id]
 
+def sync_dealer_for_user(user_id: int, full_name: str, email: Optional[str], phone: Optional[str], is_customer: bool):
+    """Đồng bộ tài khoản User với danh sách Dealer (nếu là customer)."""
+    if is_customer:
+        if user_id not in DEALERS_DB:
+            DEALERS_DB[user_id] = Dealer(
+                id=user_id,
+                code=f"DL{user_id:03d}",
+                name=full_name or "Đại lý mới",
+                email=email,
+                phone=phone
+            )
+        else:
+            dealer = DEALERS_DB[user_id]
+            dealer.name = full_name or dealer.name
+            if email: dealer.email = email
+            if phone: dealer.phone = phone
+        save_dealers_db()
+    else:
+        # Nếu không còn là customer nữa thì không cần thiết xóa, nhưng có thể khóa lại nếu muốn
+        pass
