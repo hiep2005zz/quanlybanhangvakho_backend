@@ -103,6 +103,11 @@ def search_dealers(
     group_clean = customer_group.strip().lower() if customer_group else None
     status_clean = status.strip().lower() if status else None
 
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    if "admin" not in user_roles and "sales_manager" not in user_roles and "accountant" not in user_roles:
+        # Sales chỉ thấy đại lý của mình
+        assigned_sale_id = current_user.id
+
     # Chuẩn hóa keyword dạng chữ số để hỗ trợ tìm số điện thoại khi có khoảng cách hoặc dấu chấm
     clean_kw_digits = "".join(ch for ch in keyword_clean if ch.isdigit()) if keyword_clean else ""
 
@@ -441,4 +446,173 @@ def update_dealer_status(
         "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
         "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
         "status": dealer.status,
+    }
+
+
+class DealerAssignRequest(BaseModel):
+    assigned_sale_id: int
+    reason: Optional[str] = None
+
+
+@router.put("/{dealer_id}/assign")
+@router.patch("/{dealer_id}/assign")
+def assign_dealer(
+    dealer_id: int,
+    payload: DealerAssignRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(
+        require_roles(["admin", "sales_manager"])
+    ),
+):
+    """
+    Phân công 1 đại lý cho nhân viên kinh doanh khác.
+    """
+    load_dealers_db()
+    load_users_db()
+    
+    dealer = DEALERS_DB.get(dealer_id)
+    if not dealer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đại lý có ID {dealer_id}."
+        )
+
+    new_sale_id = payload.assigned_sale_id
+    new_sale_user = next((u for u in USERS_DB.values() if u.id == new_sale_id), None)
+    if not new_sale_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Nhân viên ID {new_sale_id} không tồn tại."
+        )
+        
+    sale_roles = new_sale_user.get_roles() if hasattr(new_sale_user, "get_roles") else [new_sale_user.role]
+    if "sales" not in sale_roles:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Người dùng '{new_sale_user.full_name}' không phải là nhân viên kinh doanh (sales)."
+        )
+
+    old_sale_id = dealer.assigned_sale_id
+    if old_sale_id == new_sale_id:
+        return {"message": "Nhân viên này đang phụ trách đại lý, không có sự thay đổi."}
+
+    old_sale_name = get_sale_name(old_sale_id)
+    dealer.assigned_sale_id = new_sale_id
+    save_dealers_db()
+
+    # Ghi log lịch sử phân công
+    try:
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action_type="DEALER_ASSIGNMENT",
+            entity_type="Dealer",
+            entity_id=dealer.code,
+            old_val={"assigned_sale_id": old_sale_id, "assigned_sale_name": old_sale_name},
+            new_val={"assigned_sale_id": new_sale_id, "assigned_sale_name": new_sale_user.full_name},
+            reason=payload.reason or "Chuyển giao đại lý",
+            request=request,
+        )
+    except Exception as e:
+        print(f"Lỗi ghi audit log DEALER_ASSIGNMENT: {e}")
+
+    return {
+        "id": dealer.id,
+        "code": dealer.code,
+        "name": dealer.name,
+        "assigned_sale_id": dealer.assigned_sale_id,
+        "assigned_sale_name": new_sale_user.full_name,
+        "message": "Phân công thành công"
+    }
+
+
+class BulkAssignRequest(BaseModel):
+    dealer_ids: List[int]
+    new_sale_id: int
+    reason: Optional[str] = None
+
+
+@router.post("/bulk-assign")
+def bulk_assign_dealers(
+    payload: BulkAssignRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(
+        require_roles(["admin", "sales_manager"])
+    ),
+):
+    """
+    Chuyển giao hàng loạt đại lý sang nhân viên mới.
+    """
+    load_dealers_db()
+    load_users_db()
+
+    new_sale_id = payload.new_sale_id
+    new_sale_user = next((u for u in USERS_DB.values() if u.id == new_sale_id), None)
+    if not new_sale_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Nhân viên ID {new_sale_id} không tồn tại."
+        )
+
+    sale_roles = new_sale_user.get_roles() if hasattr(new_sale_user, "get_roles") else [new_sale_user.role]
+    if "sales" not in sale_roles:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Người dùng '{new_sale_user.full_name}' không phải là nhân viên kinh doanh (sales)."
+        )
+
+    assigned_count = 0
+    errors = []
+
+    # Bắt đầu xử lý (DB in-memory thì modify trực tiếp, ghi DB SQL bên trong save_dealers_db)
+    # Tuy nhiên vì save_dealers_db ghi toàn bộ, ta chỉ gọi save_dealers_db 1 lần sau khi đổi hết
+    try:
+        for did in payload.dealer_ids:
+            dealer = DEALERS_DB.get(did)
+            if not dealer:
+                errors.append(f"Không tìm thấy đại lý ID {did}")
+                continue
+                
+            old_sale_id = dealer.assigned_sale_id
+            if old_sale_id == new_sale_id:
+                continue
+                
+            old_sale_name = get_sale_name(old_sale_id)
+            dealer.assigned_sale_id = new_sale_id
+            
+            # Ghi log lịch sử cho từng đại lý
+            try:
+                log_audit_event(
+                    db=db,
+                    user=current_user,
+                    action_type="DEALER_ASSIGNMENT",
+                    entity_type="Dealer",
+                    entity_id=dealer.code,
+                    old_val={"assigned_sale_id": old_sale_id, "assigned_sale_name": old_sale_name},
+                    new_val={"assigned_sale_id": new_sale_id, "assigned_sale_name": new_sale_user.full_name},
+                    reason=payload.reason or "Chuyển giao hàng loạt",
+                    request=request,
+                )
+            except Exception as e:
+                print(f"Lỗi ghi audit log bulk DEALER_ASSIGNMENT cho {did}: {e}")
+                
+            assigned_count += 1
+
+        if assigned_count > 0:
+            save_dealers_db()
+
+    except Exception as ex:
+        # In-memory rollback strategy is tricky without full deepcopy, but normally simple properties won't throw halfway.
+        # Fallback reload from DB to cancel unsaved changes
+        load_dealers_db()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi khi chuyển giao: {ex}"
+        )
+
+    return {
+        "message": f"Đã chuyển giao {assigned_count} đại lý cho {new_sale_user.full_name}.",
+        "errors": errors if errors else None
     }

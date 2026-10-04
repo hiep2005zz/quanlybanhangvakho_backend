@@ -6,11 +6,14 @@
     "phone": "0912345678",
     "email": "saomai@daily.vn",
     "address": "120 Cầu Giấy, Hà Nội",
-    "region": "Hà Nội",
-    "assigned_sale_id": 2,
-    "credit_limit": 120000000.0,
+    "region": null,
+    "assigned_sale_id": 8,
+    "credit_limit": 50000000.0,
     "customer_group": "Đại lý cấp 1",
-    "status": "Đang hoạt động"
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   },
   "2": {
     "id": 2,
@@ -19,11 +22,14 @@
     "phone": "0987654321",
     "email": "tanbinh@daily.vn",
     "address": "45 Lý Thường Kiệt, TP. HCM",
-    "region": "TP. HCM",
-    "assigned_sale_id": 2,
+    "region": null,
+    "assigned_sale_id": 9,
     "credit_limit": 50000000.0,
-    "customer_group": "Đại lý cấp 2",
-    "status": "Đang hoạt động"
+    "customer_group": "Đại lý cấp 1",
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   },
   "3": {
     "id": 3,
@@ -32,11 +38,14 @@
     "phone": "0934567890",
     "email": "haiphong@daily.vn",
     "address": "88 Lạch Tray, Hải Phòng",
-    "region": "Hải Phòng",
-    "assigned_sale_id": 2,
+    "region": null,
+    "assigned_sale_id": 10,
     "credit_limit": 50000000.0,
-    "customer_group": "Khách sỉ",
-    "status": "Đang hoạt động"
+    "customer_group": "Đại lý cấp 1",
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   },
   "4": {
     "id": 4,
@@ -45,23 +54,13 @@
     "phone": "0945678901",
     "email": "anphat@daily.vn",
     "address": "66 Nguyễn Huệ, Đà Nẵng",
-    "region": "Đà Nẵng",
-    "assigned_sale_id": 2,
+    "region": null,
+    "assigned_sale_id": 11,
     "credit_limit": 50000000.0,
-    "customer_group": "Khách lẻ",
-    "status": "Đang hoạt động"
-  },
-  "5": {
-    "id": 5,
-    "code": "DL-1514",
-    "name": "dsvfd",
-    "phone": "0908567345",
-    "email": null,
-    "address": "dvdvd",
-    "region": "Hà Nội",
-    "assigned_sale_id": null,
-    "credit_limit": 50000000.0,
-    "customer_group": "Khách lẻ",
-    "status": "Tạm ngừng"
+    "customer_group": "Đại lý cấp 1",
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   }
 }
