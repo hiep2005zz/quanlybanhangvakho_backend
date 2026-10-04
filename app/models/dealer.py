@@ -155,7 +155,7 @@ def load_dealers_db():
                         assigned_sale_id=entity.assigned_sale_id,
                         credit_limit=float(entity.credit_limit) if getattr(entity, "credit_limit", None) is not None else 50000000.0,
                         customer_group=getattr(entity, "customer_group", None) or "Đại lý cấp 1",
-                        status=getattr(entity, "status", "ACTIVE") or "ACTIVE",
+                        status="Đang hoạt động" if ("ho?t" in str(getattr(entity, "status", "")) or "Ðang" in str(getattr(entity, "status", ""))) else (getattr(entity, "status", "Đang hoạt động") or "Đang hoạt động"),
                         lock_reason=getattr(entity, "lock_reason", None),
                         locked_at=getattr(entity, "locked_at", None),
                         locked_by=getattr(entity, "locked_by", None),
