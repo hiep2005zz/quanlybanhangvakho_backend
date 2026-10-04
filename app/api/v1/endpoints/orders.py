@@ -5,6 +5,9 @@ AC 3: Kiểm tra nhân viên phụ trách của Đại lý đó.
 Nếu tài khoản nhân viên đang ở trạng thái LOCKED, từ chối tạo đơn và báo lỗi:
 "Đại lý này thuộc nhân viên đã bị khóa tài khoản, vui lòng bàn giao trước khi lên đơn".
 """
+
+from fastapi import HTTPException
+from app.models.entities import DealerDeliveryPointEntity
 from typing import List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field
@@ -31,6 +34,7 @@ class OrderCreate(BaseModel):
     dealer_id: int
     items: List[OrderItemCreate]
     note: Optional[str] = None
+    delivery_point_id: int | None = None
 
 class OrderResponse(BaseModel):
     id: int
@@ -93,6 +97,29 @@ def create_order(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy đại lý có ID {data.dealer_id}."
         )
+        selected_delivery_point_id = None
+
+    if data.delivery_point_id is not None:
+        # Tìm điểm giao hàng theo ID
+        dp = db.get(DealerDeliveryPointEntity, data.delivery_point_id)
+        if not dp or not dp.is_active or dp.dealer_id != data.dealer_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Điểm giao hàng không hợp lệ hoặc không thuộc đại lý này."
+            )
+        selected_delivery_point_id = dp.id
+    else:
+        # Nếu không chọn, tự động tìm điểm mặc định của đại lý
+        from sqlalchemy import select
+        dp = db.scalars(
+            select(DealerDeliveryPointEntity).where(
+                DealerDeliveryPointEntity.dealer_id == data.dealer_id,
+                DealerDeliveryPointEntity.is_default == True,
+                DealerDeliveryPointEntity.is_active == True
+            )
+        ).first()
+        if dp:
+            selected_delivery_point_id = dp.id
 
     # 2. AC 3: Kiểm tra nhân viên phụ trách của đại lý
     assigned_sale_id = dealer.assigned_sale_id
@@ -171,6 +198,7 @@ def create_order(
     order_record = {
         "id": order_id,
         "order_code": order_code,
+        "delivery_point_id": selected_delivery_point_id,
         "dealer_id": dealer.id,
         "dealer_name": dealer.name,
         "created_by": current_user.username,

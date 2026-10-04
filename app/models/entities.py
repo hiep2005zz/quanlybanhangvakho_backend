@@ -152,7 +152,7 @@ class OrderEntity(Base):
     note = Column(UnicodeText, nullable=True)
     items_json = Column(UnicodeText, nullable=True)  # JSON order items
     created_at = Column(DateTime, default=get_utc_now)
-
+    delivery_point_id = Column(Integer, ForeignKey("dealer_delivery_points.id"), nullable=True)
 
 class AuditLogEntity(Base):
     __tablename__ = "audit_logs"
@@ -169,3 +169,16 @@ class AuditLogEntity(Base):
     ip_address = Column(String(45), nullable=True)
     created_at = Column(DateTime, default=get_utc_now, index=True)
 
+class DealerDeliveryPointEntity(Base):
+    __tablename__ = "dealer_delivery_points"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dealer_id = Column(Integer, ForeignKey("dealers.id"), nullable=False)
+    label = Column(Unicode(100), nullable=False)
+    address = Column(Unicode(500), nullable=False)
+    receiver_name = Column(Unicode(150), nullable=False)
+    receiver_phone = Column(String(20), nullable=False)
+    route_note = Column(Unicode(500), nullable=True)
+    is_default = Column(Boolean, nullable=False, default=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=get_utc_now)

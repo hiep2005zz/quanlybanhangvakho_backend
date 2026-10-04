@@ -9,6 +9,7 @@ from app.models.entities import (
     DealerEntity,
     InventoryTransactionEntity,
     OrderEntity,
+    DealerDeliveryPointEntity,
     CategoryEntity,
     AuditLogEntity,
 )
