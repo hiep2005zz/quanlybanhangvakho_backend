@@ -14,6 +14,7 @@ from app.core.rbac import (
 )
 from app.core.security import get_password_hash
 from app.models.user import USERS_DB, UserInDB, get_next_user_id, save_users_db
+from app.models.dealer import sync_dealer_for_user
 from app.schemas.auth import UserResponse
 from app.schemas.user import UserCreate, UserUpdate, UserItemResponse, UserListResponse, CustomerCreate, CustomerCreateResponse
 from app.services.customer_account import generate_temporary_password, send_customer_credentials
@@ -181,6 +182,17 @@ def create_user(
     )
     USERS_DB[clean_username] = new_user
     save_users_db()
+    
+    # Sync dealer if role is customer
+    is_customer = Role.CUSTOMER.value in chosen_roles
+    sync_dealer_for_user(
+        user_id=new_user.id,
+        full_name=new_user.full_name,
+        email=new_user.email,
+        phone=getattr(data, "phone", None) or getattr(new_user, "phone", None),
+        is_customer=is_customer
+    )
+
     return _build_user_item(new_user)
 
 @router.post("/customers", response_model=CustomerCreateResponse, status_code=status.HTTP_201_CREATED)
@@ -244,6 +256,15 @@ def create_customer(
     )
     USERS_DB[clean_username] = new_user
     save_users_db()
+
+    # Sync dealer since role is always customer here
+    sync_dealer_for_user(
+        user_id=new_user.id,
+        full_name=new_user.full_name,
+        email=new_user.email,
+        phone=new_user.phone,
+        is_customer=True
+    )
 
     email_sent = send_customer_credentials(
         email=clean_email,
@@ -419,6 +440,16 @@ def update_user(
                 db_session.close()
     except Exception as e:
         print(f"Warning: could not sync user to DB: {e}")
+
+    # Sync dealer if role is customer
+    is_customer = Role.CUSTOMER.value in user.get_roles()
+    sync_dealer_for_user(
+        user_id=user.id,
+        full_name=user.full_name,
+        email=user.email,
+        phone=user.phone,
+        is_customer=is_customer
+    )
 
     return _build_user_item(user)
 

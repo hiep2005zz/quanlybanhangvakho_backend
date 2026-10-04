@@ -10,7 +10,10 @@
     "assigned_sale_id": 3,
     "credit_limit": 120000000.0,
     "customer_group": "Đại lý cấp 1",
-    "status": "Đang hoạt động"
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   },
   "2": {
     "id": 2,
@@ -23,7 +26,10 @@
     "assigned_sale_id": 3,
     "credit_limit": 50000000.0,
     "customer_group": "Đại lý cấp 2",
-    "status": "Đang hoạt động"
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   },
   "3": {
     "id": 3,
@@ -36,7 +42,10 @@
     "assigned_sale_id": 3,
     "credit_limit": 50000000.0,
     "customer_group": "Khách sỉ",
-    "status": "Đang hoạt động"
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   },
   "4": {
     "id": 4,
@@ -49,6 +58,9 @@
     "assigned_sale_id": 2,
     "credit_limit": 50000000.0,
     "customer_group": "Khách lẻ",
-    "status": "Tạm ngừng"
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   }
 }
