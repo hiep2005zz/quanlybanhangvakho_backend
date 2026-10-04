@@ -113,7 +113,38 @@ def search_dealers(
 
     results = []
 
+    from app.api.v1.endpoints.orders import ORDERS_DB
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+
     for dealer in DEALERS_DB.values():
+        # Tính toán công nợ hiện tại và tuổi nợ
+        current_debt = 0.0
+        max_debt_age = 0
+        for o in ORDERS_DB.values():
+            if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
+                current_debt += o.get("total_amount", 0.0)
+                created_at_str = o.get("created_at")
+                if created_at_str:
+                    try:
+                        order_date = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                        days_old = (now - order_date).days
+                        if days_old > max_debt_age:
+                            max_debt_age = days_old
+                    except Exception:
+                        pass
+        
+        c_limit = getattr(dealer, "credit_limit", 50000000.0)
+        c_days = getattr(dealer, "max_debt_days", 30)
+        if current_debt > c_limit and max_debt_age > c_days:
+            debt_status = "Vượt hạn mức & Quá hạn"
+        elif current_debt > c_limit:
+            debt_status = "Vượt hạn mức"
+        elif max_debt_age > c_days:
+            debt_status = "Quá hạn thanh toán"
+        else:
+            debt_status = "Trong hạn mức"
+
         # ==========================================
         # 1. TÌM KIẾM NHANH THEO MÃ / TÊN / SĐT
         # ==========================================
@@ -172,7 +203,10 @@ def search_dealers(
             "email": dealer.email,
             "address": dealer.address,
             "region": dealer_region,
-            "credit_limit": getattr(dealer, "credit_limit", 50000000.0),
+            "credit_limit": c_limit,
+            "max_debt_days": c_days,
+            "current_debt": current_debt,
+            "debt_status": debt_status,
             "assigned_sale_id": dealer.assigned_sale_id,
             "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
             "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),

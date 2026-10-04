@@ -16,6 +16,7 @@ class Dealer(BaseModel):
     region: Optional[str] = None
     assigned_sale_id: Optional[int] = None  # user id of the sales staff responsible
     credit_limit: float = 50000000.0        # Hạn mức công nợ mặc định (VNĐ)
+    max_debt_days: int = 30                 # Số ngày nợ tối đa cho phép
     customer_group: Optional[str] = "Đại lý cấp 1"
     status: str = "ACTIVE"                  # ACTIVE | LOCKED
     lock_reason: Optional[str] = None
@@ -107,6 +108,7 @@ def save_dealers_db():
                 db_dealer.region = d.region
                 db_dealer.assigned_sale_id = d.assigned_sale_id
                 db_dealer.credit_limit = getattr(d, "credit_limit", getattr(db_dealer, "credit_limit", 0))
+                db_dealer.max_debt_days = getattr(d, "max_debt_days", getattr(db_dealer, "max_debt_days", 30))
                 db_dealer.customer_group = getattr(d, "customer_group", getattr(db_dealer, "customer_group", "Đại lý cấp 1"))
                 if hasattr(db_dealer, "status"):
                     db_dealer.status = getattr(d, "status", "ACTIVE")
@@ -154,6 +156,7 @@ def load_dealers_db():
                         region=getattr(entity, "region", None),
                         assigned_sale_id=entity.assigned_sale_id,
                         credit_limit=float(entity.credit_limit) if getattr(entity, "credit_limit", None) is not None else 50000000.0,
+                        max_debt_days=int(entity.max_debt_days) if getattr(entity, "max_debt_days", None) is not None else 30,
                         customer_group=getattr(entity, "customer_group", None) or "Đại lý cấp 1",
                         status=getattr(entity, "status", "ACTIVE") or "ACTIVE",
                         lock_reason=getattr(entity, "lock_reason", None),

@@ -52,6 +52,7 @@ class InvoiceEditRequest(BaseModel):
 
 class DebtLimitUpdateRequest(BaseModel):
     credit_limit: float = Field(..., ge=0)
+    max_debt_days: int = Field(default=30, ge=0)
     reason: str = Field(..., min_length=2, max_length=255)
 
 # Mock orders storage
@@ -118,7 +119,45 @@ def create_order(
             detail=lock_msg
         )
 
-    # 3. Tạo đơn hàng và tính base_quantity
+    # 3. Kiểm tra hạn mức công nợ và số ngày nợ tối đa
+    current_debt = 0.0
+    max_debt_age = 0
+    now = datetime.now(timezone.utc)
+    for o in ORDERS_DB.values():
+        if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
+            current_debt += o.get("total_amount", 0.0)
+            created_at_str = o.get("created_at")
+            if created_at_str:
+                try:
+                    order_date = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                    days_old = (now - order_date).days
+                    if days_old > max_debt_age:
+                        max_debt_age = days_old
+                except Exception:
+                    pass
+    
+    order_total = sum(item.quantity * item.price for item in data.items)
+    
+    over_limit = (current_debt + order_total) > getattr(dealer, "credit_limit", 50000000.0)
+    over_days = max_debt_age > getattr(dealer, "max_debt_days", 30)
+    
+    if over_limit and over_days:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đại lý đã vượt hạn mức công nợ và có công nợ quá hạn. Không thể xuất hàng."
+        )
+    elif over_limit:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đại lý đã vượt hạn mức công nợ. Không thể xuất hàng."
+        )
+    elif over_days:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đại lý có công nợ quá hạn. Không thể xuất hàng."
+        )
+
+    # 4. Tạo đơn hàng và tính base_quantity
     from app.api.v1.endpoints.products import RAW_PRODUCTS, _find_product_in_raw
     from app.models.entities import ProductEntity
 
@@ -254,13 +293,13 @@ def edit_or_cancel_invoice(
     }
 
 
-@router.put("/dealers/{dealer_id}/debt-limit")
+@router.put("/dealers/{dealer_id}/credit-limit")
 def update_customer_debt_limit(
     dealer_id: int,
     data: DebtLimitUpdateRequest,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.USER_MANAGE.value))
+    current_user: UserResponse = Depends(require_roles(["accountant", "sales_manager", "admin"]))
 ):
     """
     Cập nhật hạn mức công nợ khách hàng / đại lý.
@@ -274,7 +313,9 @@ def update_customer_debt_limit(
         )
 
     old_limit = getattr(dealer, "credit_limit", 50000000.0)
+    old_days = getattr(dealer, "max_debt_days", 30)
     dealer.credit_limit = data.credit_limit
+    dealer.max_debt_days = data.max_debt_days
     save_dealers_db()
 
     log_audit_event(
@@ -283,8 +324,8 @@ def update_customer_debt_limit(
         action_type="DEBT_LIMIT_CHANGE",
         entity_type="CustomerDebt",
         entity_id=dealer.code,
-        old_val={"credit_limit": old_limit, "customer_name": dealer.name},
-        new_val={"credit_limit": data.credit_limit},
+        old_val={"credit_limit": old_limit, "max_debt_days": old_days, "customer_name": dealer.name},
+        new_val={"credit_limit": data.credit_limit, "max_debt_days": data.max_debt_days},
         reason=data.reason,
         request=request,
     )
