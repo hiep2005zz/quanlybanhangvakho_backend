@@ -1,7 +1,7 @@
 # backend/app/db/init_db.py
 import json
 import os
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from app.core.database import engine, Base, SessionLocal
 from app.models.entities import (
     UserEntity,
@@ -16,12 +16,62 @@ from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 
+
+def _ensure_dealer_credit_limit_column(bind=engine):
+    """Add the credit limit column to databases created before it was introduced."""
+    columns = {column["name"] for column in inspect(bind).get_columns("dealers")}
+    if "credit_limit" in columns:
+        return
+
+    with bind.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE dealers "
+                "ADD credit_limit FLOAT NOT NULL DEFAULT 50000000.0"
+            )
+        )
+
+
+def _ensure_legacy_columns(bind=engine):
+    """Add columns introduced after existing SQLite or SQL Server databases were created."""
+    additions = {
+        "users": {
+            "avatar_url": ("TEXT", "NVARCHAR(500)"),
+        },
+        "products": {
+            "base_unit": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
+            "units_json": ("TEXT", "NVARCHAR(MAX)"),
+        },
+        "inventory_transactions": {
+            "unit_name": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
+            "conversion_rate": ("FLOAT DEFAULT 1.0", "FLOAT DEFAULT 1.0"),
+            "base_quantity": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+        },
+    }
+    inspector = inspect(bind)
+    dialect_name = bind.dialect.name
+    for table_name, columns_to_add in additions.items():
+        if not inspector.has_table(table_name):
+            continue
+        existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
+        for column_name, (sqlite_definition, sql_server_definition) in columns_to_add.items():
+            if column_name in existing_columns:
+                continue
+            definition = sqlite_definition if dialect_name == "sqlite" else sql_server_definition
+            add_column = "ADD COLUMN" if dialect_name == "sqlite" else "ADD"
+            with bind.begin() as connection:
+                connection.execute(
+                    text(f"ALTER TABLE {table_name} {add_column} {column_name} {definition}")
+                )
+
+
 def init_db():
-    print("Initializing Database tables in Microsoft SQL Server...")
+    print(f"Initializing database tables using {engine.dialect.name}...")
     # Tạo các bảng nếu chưa có
     Base.metadata.create_all(bind=engine)
+    _ensure_dealer_credit_limit_column(engine)
+    _ensure_legacy_columns(engine)
     print("Tables created successfully.")
-
     # Tự động migrate thêm cột nếu bảng đã tồn tại từ trước
     is_sqlite = engine.url.drivername.startswith("sqlite")
     with engine.connect() as conn:
@@ -160,12 +210,11 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"Migration notice: {ex}")
-
     db = SessionLocal()
     try:
         # 1. Seed Users nếu bảng đang trống
         if db.query(UserEntity).count() == 0:
-            print("Seeding initial users into SQL Server...")
+            print("Seeding initial users...")
             # Kiểm tra xem có file users_data.json để migrate dữ liệu cũ không
             json_path = os.path.join(os.path.dirname(__file__), "..", "models", "users_data.json")
             if os.path.exists(json_path):
@@ -209,7 +258,7 @@ def init_db():
 
         # 2. Seed Products nếu chưa có
         if db.query(ProductEntity).count() == 0:
-            print("Seeding initial products into SQL Server...")
+            print("Seeding initial products...")
             initial_products = [
                 ProductEntity(id=1, code="SP001", name="Áo thun Polo Nam Cao Cấp", category="Thời trang", category_id=6, stock=120, cost_price=85000.0, sell_price=199000.0, base_unit="Cái", units_json=json.dumps([{"unit_name": "Lốc", "conversion_rate": 6.0}, {"unit_name": "Thùng", "conversion_rate": 24.0}], ensure_ascii=False)),
                 ProductEntity(id=2, code="SP002", name="Quần Jeans Slimfit Co Giãn", category="Thời trang", category_id=5, stock=45, cost_price=160000.0, sell_price=380000.0, base_unit="Chiếc", units_json=json.dumps([{"unit_name": "Kiện", "conversion_rate": 10.0}], ensure_ascii=False)),
@@ -223,7 +272,7 @@ def init_db():
 
         # 3. Seed Dealers nếu chưa có
         if db.query(DealerEntity).count() == 0:
-            print("Seeding initial dealers into SQL Server...")
+            print("Seeding initial dealers...")
             initial_dealers = [
                 DealerEntity(id=1, code="DL001", name="Đại Lý Phân Phối Miền Bắc - Sao Mai", phone="0912345678", email="saomai@daily.vn", address="120 Cầu Giấy, Hà Nội", region="Hà Nội", assigned_sale_id=3, customer_group="dai_ly_cap_1", status="Đang hoạt động"),
                 DealerEntity(id=2, code="DL002", name="Đại Lý Thời Trang Tân Bình", phone="0987654321", email="tanbinh@daily.vn", address="45 Lý Thường Kiệt, TP. HCM", region="TP. HCM", assigned_sale_id=3, customer_group="dai_ly_cap_2", status="Đang hoạt động"),
@@ -234,7 +283,7 @@ def init_db():
             db.commit()
             print("Dealers seeded successfully.")
 
-        # 4. Seed Price Books nếu chưa có
+# 4. Seed Price Books nếu chưa có
         if db.query(PriceBookEntity).count() == 0:
             print("Seeding initial price books into Database...")
             from datetime import timedelta, timezone, datetime
@@ -326,6 +375,10 @@ def init_db():
 
             db.commit()
             print("Price books seeded successfully.")
+from app.models.dealer import load_dealers_db
+
+        load_dealers_db()
+
 
     except Exception as e:
         db.rollback()

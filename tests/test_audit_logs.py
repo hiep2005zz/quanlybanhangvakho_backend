@@ -6,6 +6,9 @@ Ghi và xem nhật ký thao tác trên tồn kho, giá, hạn mức công nợ v
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
+from app.api.v1.endpoints.products import RAW_PRODUCTS
+from app.models.dealer import DEALERS_DB
+from app.api.v1.endpoints.orders import ORDERS_DB
 
 client = TestClient(app)
 
@@ -119,23 +122,33 @@ def test_invoice_edit_creates_audit_log():
     """Khi sửa đổi hoặc hủy hóa đơn, hệ thống ghi INVOICE_EDIT."""
     admin_token = get_token("admin")
 
+    create_resp = client.post(
+        "/api/v1/orders",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "dealer_id": 1,
+            "items": [{"product_id": 1, "quantity": 1, "price": 199000, "unit": "Cái"}],
+        },
+    )
+    assert create_resp.status_code == 201
+    order_code = create_resp.json()["order_code"]
+
     edit_resp = client.put(
-        "/api/v1/orders/ORD00001",
+        f"/api/v1/orders/{order_code}",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"status": "CANCELLED", "note": "Hủy theo yêu cầu khách hàng", "reason": "Khách hủy hợp đồng"}
     )
     assert edit_resp.status_code == 200
 
-    # Tra cứu lịch sử của hóa đơn ORD00001
     entity_resp = client.get(
-        "/api/v1/audit-logs/entity/Invoice/ORD00001",
+        f"/api/v1/audit-logs/entity/Invoice/{order_code}",
         headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert entity_resp.status_code == 200
     items = entity_resp.json()
     assert len(items) > 0
     assert items[0]["action_type"] == "INVOICE_EDIT"
-    assert items[0]["entity_id"] == "ORD00001"
+    assert items[0]["entity_id"] == order_code
 
 
 def test_no_op_change_does_not_create_audit_log():
@@ -153,7 +166,7 @@ def test_no_op_change_does_not_create_audit_log():
     client.put(
         "/api/v1/products/2/price",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"sell_price": 395000.0, "cost_price": 165000.0, "reason": "Không thay đổi giá"}
+        json={"sell_price": next(p for p in RAW_PRODUCTS if p["id"] == 2)["sell_price"], "cost_price": next(p for p in RAW_PRODUCTS if p["id"] == 2)["cost_price"], "reason": "Không thay đổi giá"}
     )
 
     # 2. Update hạn mức công nợ bằng chính hạn mức hiện tại
@@ -166,10 +179,14 @@ def test_no_op_change_does_not_create_audit_log():
     )
 
     # 3. Update trạng thái hóa đơn đúng bằng trạng thái hiện tại (CANCELLED)
+    order = next(
+        (order for order in ORDERS_DB.values() if order["order_code"] == "ORD00001"),
+        {"status": "CANCELLED", "note": None},
+    )
     client.put(
         "/api/v1/orders/ORD00001",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"status": "CANCELLED", "note": "Hủy theo yêu cầu khách hàng", "reason": "Giữ nguyên trạng thái"}
+        json={"status": order["status"], "note": order.get("note"), "reason": "Giữ nguyên trạng thái"}
     )
 
     # Kiểm tra tổng số log không tăng lên
@@ -179,8 +196,6 @@ def test_no_op_change_does_not_create_audit_log():
     )
     after_total = after_resp.json()["total"]
     assert after_total == init_total, f"Expected total logs {init_total}, got {after_total}"
-
-
 def test_sales_manager_can_view_product_price_history():
     """
     Tiêu chí nghiệp vụ:
@@ -264,5 +279,3 @@ def test_audit_logs_immutable_cannot_delete():
         headers={"Authorization": f"Bearer {sales_mgr_token}"}
     )
     assert del_single_sm.status_code == 405
-
-
