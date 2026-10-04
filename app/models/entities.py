@@ -119,6 +119,7 @@ class DealerEntity(Base):
     region = Column(Unicode(100), nullable=True)
     assigned_sale_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     credit_limit = Column(Float, default=50000000.0)
+    max_debt_days = Column(Integer, default=30)
     customer_group = Column(Unicode(100), default="Đại lý cấp 1")
     status = Column(Unicode(50), default="Đang hoạt động")
     lock_reason = Column(Unicode(500), nullable=True)
