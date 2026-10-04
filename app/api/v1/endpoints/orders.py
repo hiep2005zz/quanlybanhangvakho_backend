@@ -174,14 +174,14 @@ def create_order(
         })
 
     # AC: Kiểm tra bảng giá áp dụng cho nhóm khách hàng của Đại lý
-    cust_group = getattr(dealer, "customer_group", None) or "Dai_ly_cap_1"
+    cust_group = getattr(dealer, "customer_group", None) or "dai_ly_cap_1"
     aliases = [cust_group]
-    if cust_group in ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1"]:
-        aliases = ["Dai_ly_cap_1", "CAP_1", "Đại lý cấp 1"]
-    elif cust_group in ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2"]:
-        aliases = ["Dai_ly_cap_2", "CAP_2", "Đại lý cấp 2"]
-    elif cust_group in ["RETAIL", "Khach_le", "Khách lẻ"]:
-        aliases = ["Khach_le", "RETAIL", "Khách lẻ"]
+    if cust_group in ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1", "dai_ly_cap_1"]:
+        aliases = ["dai_ly_cap_1", "Dai_ly_cap_1", "CAP_1", "Đại lý cấp 1"]
+    elif cust_group in ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2", "dai_ly_cap_2"]:
+        aliases = ["dai_ly_cap_2", "Dai_ly_cap_2", "CAP_2", "Đại lý cấp 2"]
+    elif cust_group in ["RETAIL", "Khach_le", "Khách lẻ", "khach_le"]:
+        aliases = ["khach_le", "Khach_le", "RETAIL", "Khách lẻ"]
 
     requires_approval = False
     approval_reasons = []
@@ -219,7 +219,7 @@ def create_order(
                     requires_approval = True
                     prod_name = next((pi["product_name"] for pi in processed_items if pi["product_id"] == it.product_id), f"SP #{it.product_id}")
                     approval_reasons.append(
-                        f"{prod_name}: Đơn giá bán {it.price:,.0f} đ thấp hơn giá sàn {fl_val:,.0f} đ (Bảng giá: {pb_matched.name})"
+                        f"Bán dưới giá sàn: {prod_name} có đơn giá {it.price:,.0f} đ thấp hơn giá sàn {fl_val:,.0f} đ (Bảng giá: {pb_matched.name})"
                     )
 
     if db:
@@ -291,6 +291,73 @@ def approve_order(
         old_val={"status": old_status},
         new_val={"status": "CONFIRMED"},
         reason="Duyệt đơn hàng bán dưới giá sàn",
+        request=request,
+    )
+
+    return OrderResponse(**target)
+
+
+class OrderRejectRequest(BaseModel):
+    reason: Optional[str] = "Từ chối duyệt đơn hàng bán dưới giá sàn"
+
+
+@router.post("/{order_code}/reject", response_model=OrderResponse)
+def reject_order(
+    order_code: str,
+    request: Request,
+    payload: Optional[OrderRejectRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value]))
+):
+    """
+    Từ chối đơn hàng: CHỈ sales_manager hoặc admin.
+    Chuyển đơn từ PENDING_APPROVAL sang REJECTED.
+    Hỗ trợ tra cứu theo cả order_code (ORD00001) lẫn order id (1).
+    """
+    target = None
+    for o in ORDERS_DB.values():
+        if o["order_code"].upper() == order_code.upper() or str(o.get("id")) == str(order_code):
+            target = o
+            break
+
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đơn hàng có mã hoặc ID {order_code}."
+        )
+
+    old_status = target.get("status")
+    reject_reason = (payload.reason if payload and payload.reason else "Từ chối duyệt đơn hàng bán dưới giá sàn")
+    target["status"] = "REJECTED"
+    target["requires_approval"] = False
+    target["approval_reason"] = f"Bị từ chối bởi {current_user.username}: {reject_reason}"
+
+    # Hoàn trả tồn kho nếu đơn đã trừ tồn kho lúc tạo
+    if old_status == "PENDING_APPROVAL":
+        from app.api.v1.endpoints.products import _find_product_in_raw
+        from app.models.entities import ProductEntity
+        for it in target.get("items", []):
+            p_id = it.get("product_id")
+            base_qty = it.get("base_quantity", it.get("quantity", 0))
+            raw_p = _find_product_in_raw(p_id)
+            if raw_p:
+                raw_p["stock"] = raw_p.get("stock", 0) + base_qty
+            if db:
+                pe = db.query(ProductEntity).filter(ProductEntity.id == p_id).first()
+                if pe:
+                    pe.stock = (pe.stock or 0) + base_qty
+        if db:
+            db.commit()
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action_type="ORDER_REJECT",
+        entity_type="Order",
+        entity_id=target["order_code"],
+        old_val={"status": old_status},
+        new_val={"status": "REJECTED"},
+        reason=reject_reason,
         request=request,
     )
 

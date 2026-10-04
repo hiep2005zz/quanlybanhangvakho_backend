@@ -108,12 +108,12 @@ def get_price_books(
     if customer_group:
         # Hỗ trợ cả key mã hóa và text hiển thị
         aliases = [customer_group]
-        if customer_group in ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1"]:
-            aliases = ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1"]
-        elif customer_group in ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2"]:
-            aliases = ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2"]
-        elif customer_group in ["RETAIL", "Khach_le", "Khách lẻ"]:
-            aliases = ["RETAIL", "Khach_le", "Khách lẻ"]
+        if customer_group in ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1", "dai_ly_cap_1"]:
+            aliases = ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1", "dai_ly_cap_1"]
+        elif customer_group in ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2", "dai_ly_cap_2"]:
+            aliases = ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2", "dai_ly_cap_2"]
+        elif customer_group in ["RETAIL", "Khach_le", "Khách lẻ", "khach_le"]:
+            aliases = ["RETAIL", "Khach_le", "Khách lẻ", "khach_le"]
         query = query.filter(PriceBookEntity.customer_group.in_(aliases))
 
     effective_status = status_filter or status
@@ -216,16 +216,16 @@ def resolve_price(
     với nhóm của khách hàng, trả về sale_price và floor_price.
     """
     # 1. Tìm thông tin khách hàng / đại lý
-    group = customer_group or "Dai_ly_cap_1"
+    group = customer_group or "dai_ly_cap_1"
     if customer_id is not None:
         dealer = db.query(DealerEntity).filter(DealerEntity.id == customer_id).first()
         if dealer:
-            group = getattr(dealer, "customer_group", None) or customer_group or "Dai_ly_cap_1"
+            group = getattr(dealer, "customer_group", None) or customer_group or "dai_ly_cap_1"
         else:
             from app.models.dealer import DEALERS_DB
             d_mem = DEALERS_DB.get(customer_id)
             if d_mem:
-                group = getattr(d_mem, "customer_group", None) or customer_group or "Dai_ly_cap_1"
+                group = getattr(d_mem, "customer_group", None) or customer_group or "dai_ly_cap_1"
             elif not customer_group:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -236,12 +236,12 @@ def resolve_price(
 
     # 2. Chuẩn hóa nhóm khách hàng
     aliases = [customer_group]
-    if customer_group in ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1"]:
-        aliases = ["Dai_ly_cap_1", "CAP_1", "Đại lý cấp 1"]
-    elif customer_group in ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2"]:
-        aliases = ["Dai_ly_cap_2", "CAP_2", "Đại lý cấp 2"]
-    elif customer_group in ["RETAIL", "Khach_le", "Khách lẻ"]:
-        aliases = ["Khach_le", "RETAIL", "Khách lẻ"]
+    if customer_group in ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1", "dai_ly_cap_1"]:
+        aliases = ["Dai_ly_cap_1", "CAP_1", "Đại lý cấp 1", "dai_ly_cap_1"]
+    elif customer_group in ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2", "dai_ly_cap_2"]:
+        aliases = ["Dai_ly_cap_2", "CAP_2", "Đại lý cấp 2", "dai_ly_cap_2"]
+    elif customer_group in ["RETAIL", "Khach_le", "Khách lẻ", "khach_le"]:
+        aliases = ["Khach_le", "RETAIL", "Khách lẻ", "khach_le"]
 
     now = get_utc_now()
     prod = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
@@ -287,6 +287,7 @@ def resolve_price(
     return ResolvePriceResponse(
         price_book_id=pb.id,
         price_book_code=pb.code,
+        price_book_name=pb.name,
         customer_id=customer_id,
         customer_group=pb.customer_group,
         product_id=product_id,
@@ -468,15 +469,15 @@ def validate_order_items(
         if not dealer:
             raise HTTPException(status_code=404, detail="Không tìm thấy đại lý.")
 
-    customer_group = getattr(dealer, "customer_group", None) or "Dai_ly_cap_1"
+    customer_group = getattr(dealer, "customer_group", None) or "dai_ly_cap_1"
 
     aliases = [customer_group]
-    if customer_group in ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1"]:
-        aliases = ["Dai_ly_cap_1", "CAP_1", "Đại lý cấp 1"]
-    elif customer_group in ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2"]:
-        aliases = ["Dai_ly_cap_2", "CAP_2", "Đại lý cấp 2"]
-    elif customer_group in ["RETAIL", "Khach_le", "Khách lẻ"]:
-        aliases = ["Khach_le", "RETAIL", "Khách lẻ"]
+    if customer_group in ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1", "dai_ly_cap_1"]:
+        aliases = ["Dai_ly_cap_1", "CAP_1", "Đại lý cấp 1", "dai_ly_cap_1"]
+    elif customer_group in ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2", "dai_ly_cap_2"]:
+        aliases = ["Dai_ly_cap_2", "CAP_2", "Đại lý cấp 2", "dai_ly_cap_2"]
+    elif customer_group in ["RETAIL", "Khach_le", "Khách lẻ", "khach_le"]:
+        aliases = ["Khach_le", "RETAIL", "Khách lẻ", "khach_le"]
 
     now = get_utc_now()
     pb = db.query(PriceBookEntity).filter(

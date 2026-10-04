@@ -16,7 +16,7 @@ class Dealer(BaseModel):
     region: Optional[str] = None
     assigned_sale_id: Optional[int] = None  # user id of the sales staff responsible
     credit_limit: float = 50000000.0        # Hạn mức công nợ mặc định (VNĐ)
-    customer_group: Optional[str] = "Đại lý cấp 1"
+    customer_group: Optional[str] = "dai_ly_cap_1"
     status: str = "ACTIVE"                  # ACTIVE | LOCKED
     lock_reason: Optional[str] = None
     locked_at: Optional[str] = None
@@ -34,7 +34,7 @@ DEALERS_DB: dict[int, Dealer] = {
         region="Hà Nội",
         assigned_sale_id=3,
         credit_limit=100000000.0,
-        customer_group="Đại lý cấp 1",
+        customer_group="dai_ly_cap_1",
         status="Đang hoạt động",
     ),
     2: Dealer(
@@ -47,7 +47,7 @@ DEALERS_DB: dict[int, Dealer] = {
         region="TP. HCM",
         assigned_sale_id=3,
         credit_limit=50000000.0,
-        customer_group="Đại lý cấp 2",
+        customer_group="dai_ly_cap_2",
         status="Đang hoạt động",
     ),
     3: Dealer(
@@ -60,7 +60,7 @@ DEALERS_DB: dict[int, Dealer] = {
         region="Hải Phòng",
         assigned_sale_id=3,
         credit_limit=50000000.0,
-        customer_group="Đại lý cấp 1",
+        customer_group="dai_ly_cap_1",
         status="Đang hoạt động",
     ),
     4: Dealer(
@@ -73,7 +73,7 @@ DEALERS_DB: dict[int, Dealer] = {
         region="Đà Nẵng",
         assigned_sale_id=None,  # Chưa chỉ định nhân viên kinh doanh phụ trách
         credit_limit=50000000.0,
-        customer_group="Khách lẻ",
+        customer_group="khach_le",
         status="Tạm ngừng",
     ),
     5: Dealer(
@@ -86,7 +86,7 @@ DEALERS_DB: dict[int, Dealer] = {
         region="Hà Nội",
         assigned_sale_id=3,
         credit_limit=20000000.0,
-        customer_group="Khách lẻ",
+        customer_group="khach_le",
         status="Đang hoạt động",
     ),
 }
@@ -120,7 +120,7 @@ def save_dealers_db():
                 db_dealer.region = d.region
                 db_dealer.assigned_sale_id = d.assigned_sale_id
                 db_dealer.credit_limit = getattr(d, "credit_limit", getattr(db_dealer, "credit_limit", 0))
-                db_dealer.customer_group = getattr(d, "customer_group", getattr(db_dealer, "customer_group", "Đại lý cấp 1"))
+                db_dealer.customer_group = getattr(d, "customer_group", getattr(db_dealer, "customer_group", "dai_ly_cap_1"))
                 if hasattr(db_dealer, "status"):
                     db_dealer.status = getattr(d, "status", "ACTIVE")
                     db_dealer.lock_reason = getattr(d, "lock_reason", None)
@@ -167,7 +167,7 @@ def load_dealers_db():
                         region=getattr(entity, "region", None),
                         assigned_sale_id=entity.assigned_sale_id,
                         credit_limit=float(entity.credit_limit) if getattr(entity, "credit_limit", None) is not None else 50000000.0,
-                        customer_group=getattr(entity, "customer_group", None) or "Đại lý cấp 1",
+                        customer_group=getattr(entity, "customer_group", None) or "dai_ly_cap_1",
                         status=getattr(entity, "status", "ACTIVE") or "ACTIVE",
                         lock_reason=getattr(entity, "lock_reason", None),
                         locked_at=getattr(entity, "locked_at", None),

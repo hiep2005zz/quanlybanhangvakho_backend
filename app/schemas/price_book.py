@@ -64,6 +64,7 @@ class PriceBookResponse(PriceBookBase):
 class ResolvePriceResponse(BaseModel):
     price_book_id: Optional[int] = None
     price_book_code: Optional[str] = None
+    price_book_name: Optional[str] = None
     customer_id: Optional[int] = None
     customer_group: str
     product_id: int

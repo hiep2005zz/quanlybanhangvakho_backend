@@ -119,7 +119,7 @@ class DealerEntity(Base):
     region = Column(Unicode(100), nullable=True)
     assigned_sale_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     credit_limit = Column(Float, default=50000000.0)
-    customer_group = Column(Unicode(100), default="Đại lý cấp 1")
+    customer_group = Column(Unicode(100), default="dai_ly_cap_1")
     status = Column(String(20), default="ACTIVE")
     lock_reason = Column(Unicode(500), nullable=True)
     locked_at = Column(DateTime, nullable=True)

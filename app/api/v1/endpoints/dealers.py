@@ -28,7 +28,7 @@ class DealerCreateRequest(BaseModel):
     region: Optional[str] = None
     assigned_sale_id: Optional[int] = None
     credit_limit: Optional[float] = 50000000.0
-    customer_group: Optional[str] = "Đại lý cấp 1"
+    customer_group: Optional[str] = "dai_ly_cap_1"
     status: Optional[str] = "Đang hoạt động"
 
 
@@ -175,7 +175,7 @@ def search_dealers(
             "credit_limit": getattr(dealer, "credit_limit", 50000000.0),
             "assigned_sale_id": dealer.assigned_sale_id,
             "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
-            "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
+            "customer_group": getattr(dealer, "customer_group", "dai_ly_cap_1"),
             "status": getattr(dealer, "status", "Đang hoạt động"),
         })
 
@@ -235,7 +235,7 @@ def get_dealer_filters(
             sales[u.id] = u.full_name
 
     # Đảm bảo có các nhóm mặc định phổ biến
-    default_groups = ["Đại lý cấp 1", "Đại lý cấp 2", "Khách sỉ", "Khách lẻ"]
+    default_groups = ["dai_ly_cap_1", "dai_ly_cap_2", "khach_le"]
     for dg in default_groups:
         customer_groups.add(dg)
 
@@ -337,7 +337,7 @@ def create_dealer(
         region=reg,
         assigned_sale_id=assigned_sale,
         credit_limit=payload.credit_limit or 50000000.0,
-        customer_group=payload.customer_group or "Đại lý cấp 1",
+        customer_group=payload.customer_group or "dai_ly_cap_1",
         status=payload.status or "Đang hoạt động",
     )
 
@@ -444,7 +444,7 @@ def update_dealer_status(
         "credit_limit": getattr(dealer, "credit_limit", 50000000.0),
         "assigned_sale_id": dealer.assigned_sale_id,
         "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
-        "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
+        "customer_group": getattr(dealer, "customer_group", "dai_ly_cap_1"),
         "status": dealer.status,
     }
 
@@ -638,7 +638,7 @@ def get_dealers(
             "assigned_sale_id": d.assigned_sale_id,
             "assigned_sale_name": get_sale_name(d.assigned_sale_id),
             "credit_limit": getattr(d, "credit_limit", 50000000.0),
-            "customer_group": getattr(d, "customer_group", "Đại lý cấp 1"),
+            "customer_group": getattr(d, "customer_group", "dai_ly_cap_1"),
             "status": getattr(d, "status", "Đang hoạt động"),
             "lock_reason": getattr(d, "lock_reason", None),
         })

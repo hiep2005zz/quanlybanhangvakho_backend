@@ -152,6 +152,25 @@ def test_order_creation_with_floor_price_and_approval():
         assert res_admin_approve.status_code == 200
         assert res_admin_approve.json()["status"] == "CONFIRMED"
 
+        # 8. Test từ chối duyệt đơn (reject)
+        res_order_low3 = client.post(
+            "/api/v1/orders",
+            json={
+                "dealer_id": 1,
+                "items": [{"product_id": 1, "quantity": 1, "price": 130000.0}],
+            },
+            headers={"Authorization": f"Bearer {sales_token}"}
+        )
+        assert res_order_low3.status_code == 201
+        order3_code = res_order_low3.json()["order_code"]
+        res_reject = client.post(
+            f"/api/v1/orders/{order3_code}/reject",
+            json={"reason": "Giá bán quá thấp, không chấp nhận"},
+            headers={"Authorization": f"Bearer {sm_token}"}
+        )
+        assert res_reject.status_code == 200
+        assert res_reject.json()["status"] == "REJECTED"
+
     finally:
         # Cleanup
         clean_db = SessionLocal()

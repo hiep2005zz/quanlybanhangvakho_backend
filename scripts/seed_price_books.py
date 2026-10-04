@@ -36,7 +36,7 @@ def seed_price_books():
         pb1 = PriceBookEntity(
             code=f"BG-DL1-{int(now.timestamp())}",
             name="Bảng giá Đại lý cấp 1 - Quý 4",
-            customer_group="Đại lý cấp 1",
+            customer_group="dai_ly_cap_1",
             valid_from=now - timedelta(days=5),
             valid_to=now + timedelta(days=90),
             status="ACTIVE",
@@ -58,7 +58,7 @@ def seed_price_books():
         pb2 = PriceBookEntity(
             code=f"BG-LE-{int(now.timestamp())}",
             name="Bảng giá Khách lẻ chung",
-            customer_group="Khách lẻ",
+            customer_group="khach_le",
             valid_from=now - timedelta(days=30),
             valid_to=now + timedelta(days=180),
             status="ACTIVE",
@@ -79,7 +79,7 @@ def seed_price_books():
         pb3 = PriceBookEntity(
             code=f"BG-DL2-OLD-{int(now.timestamp())}",
             name="Bảng giá Cấp 2 - Mùa Hè",
-            customer_group="Đại lý cấp 2",
+            customer_group="dai_ly_cap_2",
             valid_from=now - timedelta(days=90),
             valid_to=now - timedelta(days=10),  # Đã hết hạn
             status="EXPIRED", # Đã hết hạn

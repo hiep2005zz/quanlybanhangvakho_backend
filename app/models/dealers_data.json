@@ -62,5 +62,37 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null
+  },
+  "5": {
+    "id": 5,
+    "code": "DL-5795",
+    "name": "Trần Ngọc HUy",
+    "phone": "0938272627",
+    "email": null,
+    "address": "Thái Nguyên",
+    "region": "Hà Nội",
+    "assigned_sale_id": 3,
+    "credit_limit": 50000000.0,
+    "customer_group": "Đại lý cấp 1",
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
+  },
+  "6": {
+    "id": 6,
+    "code": "DL-3085",
+    "name": "Tran Ngoc Huy",
+    "phone": "0937827143",
+    "email": null,
+    "address": "ha noi",
+    "region": "Hà Nội",
+    "assigned_sale_id": 3,
+    "credit_limit": 50000000.0,
+    "customer_group": "Dai_ly_cap_1",
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
   }
 }

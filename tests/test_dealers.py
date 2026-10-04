@@ -87,7 +87,7 @@ def test_dealer_search_and_filters():
     filters = res.json()
     assert "regions" in filters and len(filters["regions"]) >= 1
     assert "sales" in filters and len(filters["sales"]) >= 1
-    assert "customer_groups" in filters and "Đại lý cấp 1" in filters["customer_groups"]
+    assert "customer_groups" in filters and "dai_ly_cap_1" in filters["customer_groups"]
     assert "statuses" in filters and "Đang hoạt động" in filters["statuses"]
 
     # 10. Tạo mới đại lý qua API POST
@@ -100,7 +100,7 @@ def test_dealer_search_and_filters():
         "email": "hadong.test@daily.vn",
         "address": "45 Quang Trung, Hà Đông, Hà Nội",
         "region": "Hà Nội",
-        "customer_group": "Đại lý cấp 1",
+        "customer_group": "dai_ly_cap_1",
         "status": "Đang hoạt động"
     }
     create_res = client.post("/api/v1/dealers", json=new_dealer_payload, headers=headers)
@@ -108,7 +108,7 @@ def test_dealer_search_and_filters():
     created = create_res.json()
     assert created["code"] == unique_code
     assert created["name"] == "Đại Lý Thử Nghiệm Hà Đông"
-    assert created["customer_group"] == "Đại lý cấp 1"
+    assert created["customer_group"] == "dai_ly_cap_1"
     assert created["status"] == "Đang hoạt động"
 
     # Tìm lại đại lý vừa tạo bằng keyword
