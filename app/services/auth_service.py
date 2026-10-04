@@ -1,4 +1,5 @@
 # backend/app/services/auth_service.py
+from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from fastapi import HTTPException, status

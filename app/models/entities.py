@@ -1,4 +1,5 @@
 # backend/app/models/entities.py
+from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from sqlalchemy import (

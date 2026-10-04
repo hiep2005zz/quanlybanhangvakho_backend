@@ -124,8 +124,12 @@ def get_products(
 
     for p in RAW_PRODUCTS:
         db_p = db_prod_map.get(p["id"])
-        base_unit = db_p.base_unit if (db_p and db_p.base_unit) else p.get("base_unit", "Cái")
-        units_raw = db_p.units if (db_p and db_p.units) else p.get("units", [])
+        base_unit = getattr(db_p, "base_unit", None) if db_p else None
+        if not base_unit:
+            base_unit = p.get("base_unit", "Cái")
+        units_raw = getattr(db_p, "units", None) if db_p else None
+        if not units_raw:
+            units_raw = p.get("units", [])
         units_converted = [UnitConversionItem(unit_name=u["unit_name"], conversion_rate=float(u["conversion_rate"])) for u in units_raw]
 
         stock = p["stock"]
@@ -158,7 +162,6 @@ def get_products(
                 profit_margin=margin,
                 profit_per_unit=profit_unit,
                 images=images,
-                base_unit=base_unit,
                 packaging_specification=packaging_spec,
                 status=status_val,
             )
@@ -178,7 +181,6 @@ def get_products(
                 profit_margin=None,
                 profit_per_unit=None,
                 images=images,
-                base_unit=base_unit,
                 packaging_specification=packaging_spec,
                 status=status_val,
             )
