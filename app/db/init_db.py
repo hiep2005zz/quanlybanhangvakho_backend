@@ -137,6 +137,12 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (dealers.locked_by): {ex}")
+            if "max_debt_days" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN max_debt_days INTEGER DEFAULT 30;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (dealers.max_debt_days): {ex}")
 
             tx_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(inventory_transactions)")).fetchall()]
             if "unit_name" not in tx_cols:
