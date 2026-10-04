@@ -653,6 +653,7 @@ def edit_or_cancel_invoice(
 
 
 @router.put("/dealers/{dealer_id}/credit-limit")
+@router.put("/dealers/{dealer_id}/debt-limit")
 def update_customer_debt_limit(
     dealer_id: int,
     data: DebtLimitUpdateRequest,

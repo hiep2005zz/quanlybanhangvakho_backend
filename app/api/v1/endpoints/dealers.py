@@ -650,3 +650,62 @@ def bulk_assign_dealers(
         "message": f"Đã chuyển giao {assigned_count} đại lý cho {new_sale_user.full_name}.",
         "errors": errors if errors else None
     }
+
+
+@router.delete("/{dealer_id}")
+def delete_dealer(
+    dealer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager"])),
+):
+    """
+    Xóa đại lý/khách hàng khỏi hệ thống (Chỉ dành cho Quản trị viên và Quản lý kinh doanh).
+    """
+    load_dealers_db()
+    dealer = DEALERS_DB.get(dealer_id)
+    if not dealer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đại lý ID {dealer_id}."
+        )
+
+    # Kiểm tra xem có đơn hàng đang hoạt động không
+    from app.models.entities import OrderEntity, DealerEntity
+    active_orders = db.query(OrderEntity).filter(
+        OrderEntity.dealer_id == dealer_id,
+        OrderEntity.status.in_(["PENDING", "PROCESSING", "CONFIRMED"])
+    ).count()
+    if active_orders > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đại lý đang có {active_orders} đơn hàng chưa hoàn tất, không thể xóa."
+        )
+
+    # Xóa các đơn hàng đã hủy hoặc đã thanh toán của đại lý nếu có
+    db.query(OrderEntity).filter(OrderEntity.dealer_id == dealer_id).delete(synchronize_session=False)
+    # Xóa trong SQL
+    db.query(DealerEntity).filter(DealerEntity.id == dealer_id).delete(synchronize_session=False)
+    db.commit()
+
+    # Ghi log thao tác
+    try:
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action_type="DEALER_DELETE",
+            entity_type="Dealer",
+            entity_id=dealer.code,
+            old_val={"id": dealer.id, "code": dealer.code, "name": dealer.name},
+            new_val=None,
+            reason="Xóa đại lý khỏi hệ thống",
+            request=request,
+        )
+    except Exception as e:
+        print(f"Lỗi ghi log DEALER_DELETE: {e}")
+
+    # Xóa khỏi DEALERS_DB in-memory và sync file json
+    del DEALERS_DB[dealer_id]
+    save_dealers_db()
+
+    return {"status": "success", "message": f"Đã xóa đại lý {dealer.name} ({dealer.code}) thành công."}
