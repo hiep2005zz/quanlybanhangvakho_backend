@@ -16,10 +16,11 @@ class Dealer(BaseModel):
     region: Optional[str] = None
     assigned_sale_id: Optional[int] = None  # user id of the sales staff responsible
     credit_limit: float = 50000000.0        # Hạn mức công nợ mặc định (VNĐ)
-    customer_group: Optional[str] = "Đại lý cấp 1"
-    status: Optional[str] = "Đang hoạt động"
-
-
+customer_group: Optional[str] = "Đại lý cấp 1"
+    status: str = "ACTIVE"                  # ACTIVE | LOCKED
+    lock_reason: Optional[str] = None
+    locked_at: Optional[str] = None
+    locked_by: Optional[str] = None
 # Initial seed data for dealers
 # Sales user: id=3 (username: 'sales', full_name: 'Trần Bán Hàng')
 DEALERS_DB: dict[int, Dealer] = {
@@ -105,14 +106,17 @@ def save_dealers_db():
                 db_dealer.address = d.address
                 db_dealer.region = d.region
                 db_dealer.assigned_sale_id = d.assigned_sale_id
-                db_dealer.credit_limit = d.credit_limit
-                db_dealer.customer_group = d.customer_group
-                db_dealer.status = d.status
+db_dealer.credit_limit = getattr(d, "credit_limit", getattr(db_dealer, "credit_limit", 0))
+                db_dealer.customer_group = getattr(d, "customer_group", getattr(db_dealer, "customer_group", "Đại lý cấp 1"))
+                if hasattr(db_dealer, "status"):
+                    db_dealer.status = getattr(d, "status", "ACTIVE")
+                    db_dealer.lock_reason = getattr(d, "lock_reason", None)
+                    db_dealer.locked_at = getattr(d, "locked_at", None)
+                    db_dealer.locked_by = getattr(d, "locked_by", None)
 
             if DEALERS_DB:
                 existing_ids = list(DEALERS_DB.keys())
                 db.query(DealerEntity).filter(DealerEntity.id.not_in(existing_ids)).delete(synchronize_session=False)
-
             db.commit()
         except Exception as sql_err:
             db.rollback()
@@ -149,9 +153,12 @@ def load_dealers_db():
                         address=entity.address,
                         region=getattr(entity, "region", None),
                         assigned_sale_id=entity.assigned_sale_id,
-                        credit_limit=float(entity.credit_limit) if getattr(entity, "credit_limit", None) is not None else 50000000.0,
+credit_limit=float(entity.credit_limit) if getattr(entity, "credit_limit", None) is not None else 50000000.0,
                         customer_group=getattr(entity, "customer_group", None) or "Đại lý cấp 1",
-                        status=getattr(entity, "status", None) or "Đang hoạt động",
+                        status=getattr(entity, "status", "ACTIVE") or "ACTIVE",
+                        lock_reason=getattr(entity, "lock_reason", None),
+                        locked_at=getattr(entity, "locked_at", None),
+                        locked_by=getattr(entity, "locked_by", None),
                     )
                     DEALERS_DB[entity.id] = d
                 loaded_from_sql = True
@@ -182,3 +189,23 @@ def get_dealers_by_sale_id(user_id: int) -> List[Dealer]:
     """Lấy danh sách đại lý do nhân viên phụ trách."""
     return [d for d in DEALERS_DB.values() if d.assigned_sale_id == user_id]
 
+def sync_dealer_for_user(user_id: int, full_name: str, email: Optional[str], phone: Optional[str], is_customer: bool):
+    """Đồng bộ tài khoản User với danh sách Dealer (nếu là customer)."""
+    if is_customer:
+        if user_id not in DEALERS_DB:
+            DEALERS_DB[user_id] = Dealer(
+                id=user_id,
+                code=f"DL{user_id:03d}",
+                name=full_name or "Đại lý mới",
+                email=email,
+                phone=phone
+            )
+        else:
+            dealer = DEALERS_DB[user_id]
+            dealer.name = full_name or dealer.name
+            if email: dealer.email = email
+            if phone: dealer.phone = phone
+        save_dealers_db()
+    else:
+        # Nếu không còn là customer nữa thì không cần thiết xóa, nhưng có thể khóa lại nếu muốn
+        pass
