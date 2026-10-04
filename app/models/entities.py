@@ -45,7 +45,11 @@ class UserEntity(Base):
     def roles(self) -> list[str]:
         if self.roles_json:
             try:
-                return json.loads(self.roles_json)
+                res = json.loads(self.roles_json)
+                if isinstance(res, str):
+                    res = json.loads(res)
+                if isinstance(res, list):
+                    return res
             except Exception:
                 pass
         return [self.role] if self.role else []
@@ -112,8 +116,14 @@ class DealerEntity(Base):
     phone = Column(String(50), nullable=True)
     email = Column(String(255), nullable=True)
     address = Column(Unicode(500), nullable=True)
+    region = Column(Unicode(100), nullable=True)
     assigned_sale_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     credit_limit = Column(Float, default=50000000.0)
+    customer_group = Column(Unicode(100), default="Đại lý cấp 1")
+    status = Column(Unicode(50), default="Đang hoạt động")
+    lock_reason = Column(Unicode(500), nullable=True)
+    locked_at = Column(DateTime, nullable=True)
+    locked_by = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
 
@@ -180,5 +190,18 @@ class DealerDeliveryPointEntity(Base):
     receiver_phone = Column(String(20), nullable=False)
     route_note = Column(Unicode(500), nullable=True)
     is_default = Column(Boolean, nullable=False, default=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=get_utc_now)
+
+
+class MasterDeliveryPointEntity(Base):
+    __tablename__ = "master_delivery_points"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    label = Column(Unicode(100), nullable=False)
+    address = Column(Unicode(500), nullable=False)
+    receiver_name = Column(Unicode(150), nullable=True)
+    receiver_phone = Column(String(50), nullable=True)
+    route_note = Column(Unicode(500), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, nullable=False, default=get_utc_now)

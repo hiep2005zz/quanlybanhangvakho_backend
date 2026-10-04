@@ -92,10 +92,14 @@ def test_debt_limit_change_creates_audit_log():
     """Khi thay đổi hạn mức công nợ khách hàng, hệ thống ghi DEBT_LIMIT_CHANGE."""
     admin_token = get_token("admin")
 
+    from app.models.dealer import DEALERS_DB
+    cur_limit = getattr(DEALERS_DB.get(1), "credit_limit", 50000000.0)
+    new_limit = 120000000.0 if cur_limit != 120000000.0 else 85000000.0
+
     debt_resp = client.put(
         "/api/v1/orders/dealers/1/debt-limit",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"credit_limit": 100000000.0, "reason": "Nâng hạn mức tín dụng khách hàng VIP"}
+        json={"credit_limit": new_limit, "reason": "Nâng hạn mức tín dụng khách hàng VIP"}
     )
     assert debt_resp.status_code == 200
 
@@ -153,10 +157,12 @@ def test_no_op_change_does_not_create_audit_log():
     )
 
     # 2. Update hạn mức công nợ bằng chính hạn mức hiện tại
+    from app.models.dealer import DEALERS_DB
+    cur_limit = getattr(DEALERS_DB.get(1), "credit_limit", 100000000.0)
     client.put(
         "/api/v1/orders/dealers/1/debt-limit",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"credit_limit": 100000000.0, "reason": "Giữ nguyên hạn mức"}
+        json={"credit_limit": cur_limit, "reason": "Giữ nguyên hạn mức"}
     )
 
     # 3. Update trạng thái hóa đơn đúng bằng trạng thái hiện tại (CANCELLED)

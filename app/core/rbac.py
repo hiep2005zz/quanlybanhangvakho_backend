@@ -110,10 +110,11 @@ ROLE_PERMISSIONS: Dict[str, Set[str]] = {
         Permission.INVENTORY_READ.value,
     },
 
-    # 8. Đại lý (Customer / Dealer): Xem danh mục sản phẩm, xem tồn kho để đặt hàng sỉ, xem đơn hàng của mình
+    # 8. Đại lý (Customer / Dealer): Xem danh mục sản phẩm, xem tồn kho để đặt hàng sỉ, tự tạo đơn hàng
     Role.CUSTOMER.value: {
         Permission.PRODUCT_READ.value,
         Permission.ORDER_READ.value,
+        Permission.ORDER_WRITE.value,
     },
 }
 

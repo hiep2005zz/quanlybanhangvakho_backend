@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
-from app.api.deps import get_current_user, require_permission
+from app.api.deps import get_current_user, require_permission, require_roles
 from app.core.database import get_db
 from app.core.rbac import Permission
 from app.schemas.auth import UserResponse
@@ -121,7 +121,7 @@ def create_order(
         if dp:
             selected_delivery_point_id = dp.id
 
-    # 2. AC 3: Kiểm tra nhân viên phụ trách của đại lý
+    # 1. AC 3: Kiểm tra nhân viên phụ trách của đại lý
     assigned_sale_id = dealer.assigned_sale_id
     assigned_user = None
     if assigned_sale_id:
@@ -135,6 +135,14 @@ def create_order(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Đại lý này thuộc nhân viên đã bị khóa tài khoản, vui lòng bàn giao trước khi lên đơn"
+        )
+
+    # 2. Kiểm tra trạng thái khóa giao dịch của chính Đại lý
+    if getattr(dealer, "status", "ACTIVE") == "LOCKED":
+        lock_msg = f"Đại lý này đang bị KHÓA giao dịch (Lý do: {dealer.lock_reason or 'Không có lý do'}). Không thể tạo đơn hàng mới!"
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=lock_msg
         )
 
     # 3. Tạo đơn hàng và tính base_quantity
@@ -260,9 +268,16 @@ def edit_or_cancel_invoice(
         request=request,
     )
 
+    # Kiểm tra nếu đại lý của đơn hàng đang bị khóa -> Đơn đang dở vẫn xử lý được nhưng có cảnh báo
+    dealer = DEALERS_DB.get(target.get("dealer_id"))
+    warning_message = None
+    if dealer and getattr(dealer, "status", "ACTIVE") == "LOCKED":
+        warning_message = f"CẢNH BÁO: Đại lý '{dealer.name}' hiện đang bị KHÓA giao dịch (Lý do: {dealer.lock_reason or 'Không rõ'}). Vui lòng lưu ý khi xử lý công nợ và hoàn tất đơn dở dang này!"
+
     return {
         "status": "success",
         "message": f"Đã cập nhật hóa đơn {order_code} thành công.",
+        "warning": warning_message,
         "order": target
     }
 
@@ -307,4 +322,89 @@ def update_customer_debt_limit(
         "message": f"Đã cập nhật hạn mức công nợ cho {dealer.name} thành {data.credit_limit:,.0f} đ.",
         "dealer": dealer
     }
+
+
+class DealerLockRequest(BaseModel):
+    lock_reason: str = Field(..., min_length=1, max_length=500)
+
+
+@router.get("/dealers")
+def list_dealers(
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Lấy danh sách toàn bộ đại lý kèm trạng thái giao dịch (ACTIVE / LOCKED),
+    lý do khóa, người khóa, thời điểm khóa.
+    """
+    dealers_list = []
+    for d in DEALERS_DB.values():
+        sale_name = None
+        if d.assigned_sale_id:
+            for u in USERS_DB.values():
+                if u.id == d.assigned_sale_id:
+                    sale_name = u.full_name or u.username
+                    break
+
+        d_dict = d.model_dump(mode="json")
+        d_dict["assigned_sale_name"] = sale_name
+        dealers_list.append(d_dict)
+
+    return {"dealers": sorted(dealers_list, key=lambda x: x["id"])}
+
+
+@router.post("/dealers/{dealer_id}/lock")
+def lock_dealer(
+    dealer_id: int,
+    data: DealerLockRequest,
+    current_user: UserResponse = Depends(require_roles(["accountant", "admin"]))
+):
+    """
+    Kế toán công nợ / Quản trị viên: Khóa giao dịch của đại lý có dấu hiệu mất khả năng thanh toán.
+    Bắt buộc nhập lý do khóa.
+    """
+    if not data.lock_reason or not data.lock_reason.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Bắt buộc phải nhập lý do khóa đại lý."
+        )
+
+    dealer = DEALERS_DB.get(dealer_id)
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Không tìm thấy đại lý.")
+
+    if getattr(dealer, "status", "ACTIVE") == "LOCKED":
+        raise HTTPException(status_code=400, detail="Đại lý này đã ở trạng thái KHÓA trước đó.")
+
+    dealer.status = "LOCKED"
+    dealer.lock_reason = data.lock_reason.strip()
+    dealer.locked_at = datetime.now(timezone.utc).isoformat()
+    dealer.locked_by = current_user.username
+    save_dealers_db()
+
+    return {"message": "Đã khóa giao dịch đại lý thành công.", "dealer": dealer}
+
+
+@router.post("/dealers/{dealer_id}/unlock")
+def unlock_dealer(
+    dealer_id: int,
+    current_user: UserResponse = Depends(require_roles(["accountant", "admin"]))
+):
+    """
+    Kế toán công nợ / Quản trị viên: Mở lại giao dịch cho đại lý khi đã xử lý xong công nợ.
+    """
+    dealer = DEALERS_DB.get(dealer_id)
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Không tìm thấy đại lý.")
+
+    if getattr(dealer, "status", "ACTIVE") == "ACTIVE":
+        raise HTTPException(status_code=400, detail="Đại lý đang hoạt động bình thường, không cần mở khóa.")
+
+    dealer.status = "ACTIVE"
+    dealer.lock_reason = None
+    dealer.locked_at = None
+    dealer.locked_by = None
+    save_dealers_db()
+
+    return {"message": "Đã mở khóa giao dịch đại lý thành công.", "dealer": dealer}
+
 

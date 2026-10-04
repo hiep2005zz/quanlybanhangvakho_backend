@@ -51,10 +51,8 @@ def test_ac1_lock_user_session_revoked_and_cannot_login():
     admin_token = get_token("admin")
     sales_token = get_token("sales")
 
-    DEALERS_DB[1].assigned_sale_id = 3
-    DEALERS_DB[2].assigned_sale_id = 3
-    DEALERS_DB[3].assigned_sale_id = 3
-    DEALERS_DB[4].assigned_sale_id = 2
+    for did, d in DEALERS_DB.items():
+        d.assigned_sale_id = 3 if did in [1, 2, 3] else (2 if did == 4 else None)
 
 
     # Phiên của sales trước khi khóa hoạt động bình thường
@@ -97,10 +95,8 @@ def test_ac3_dealers_marked_needing_handover_and_block_orders():
     """
     admin_token = get_token("admin")
 
-    DEALERS_DB[1].assigned_sale_id = 3
-    DEALERS_DB[2].assigned_sale_id = 3
-    DEALERS_DB[3].assigned_sale_id = 3
-    DEALERS_DB[4].assigned_sale_id = 2
+    for did, d in DEALERS_DB.items():
+        d.assigned_sale_id = 3 if did in [1, 2, 3] else (2 if did == 4 else None)
 
     # Đảm bảo tài khoản sales ở trạng thái LOCKED để kiểm tra quy trình bàn giao
 
