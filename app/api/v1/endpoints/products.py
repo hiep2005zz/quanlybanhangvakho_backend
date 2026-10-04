@@ -291,23 +291,30 @@ def update_product_price(
         if p["id"] == product_id:
             old_val = {}
             new_val = {}
-            if data.sell_price is not None:
+            if data.sell_price is not None and data.sell_price != p["sell_price"]:
                 old_val["sell_price"] = p["sell_price"]
                 p["sell_price"] = data.sell_price
                 new_val["sell_price"] = data.sell_price
-            if data.cost_price is not None:
+            if data.cost_price is not None and data.cost_price != p["cost_price"]:
                 old_val["cost_price"] = p["cost_price"]
                 p["cost_price"] = data.cost_price
                 new_val["cost_price"] = data.cost_price
+
+            if not new_val:
+                return {
+                    "status": "success",
+                    "message": "Giá sản phẩm không thay đổi.",
+                    "product": p,
+                }
 
             # Đồng bộ thay đổi vào DB nếu tồn tại bản ghi ProductEntity
             from app.models.entities import ProductEntity
             try:
                 db_p = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
                 if db_p:
-                    if data.sell_price is not None:
+                    if "sell_price" in new_val:
                         db_p.sell_price = data.sell_price
-                    if data.cost_price is not None:
+                    if "cost_price" in new_val:
                         db_p.cost_price = data.cost_price
                     db.commit()
             except Exception as e:
