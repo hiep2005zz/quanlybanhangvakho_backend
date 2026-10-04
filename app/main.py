@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1.endpoints import auth, products, inventory, users, orders, categories, audit_logs, profile, suppliers
+from app.api.v1.endpoints import auth, products, inventory, users, orders, categories, audit_logs, profile, suppliers, dealers
 
 from contextlib import asynccontextmanager
 from app.db.init_db import init_db
@@ -52,6 +52,7 @@ app.include_router(profile.router, prefix="/api/v1/me", tags=["Profile"])
 app.include_router(profile.router, prefix="/api/v1/profile", tags=["Profile"])
 
 app.include_router(suppliers.router, prefix="/api/v1/suppliers", tags=["Suppliers"])
+app.include_router(dealers.router, prefix="/api/v1/dealers", tags=["Dealers"])
 
 # Mount static folder for user avatars / media uploads
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")

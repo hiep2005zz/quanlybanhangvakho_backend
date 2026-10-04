@@ -7,6 +7,7 @@ class AuditLogItem(BaseModel):
     id: int
     user_id: Optional[int] = None
     user_name: Optional[str] = None
+    user_avatar: Optional[str] = None
     action_type: str
     entity_type: str
     entity_id: str
