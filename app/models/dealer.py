@@ -15,6 +15,7 @@ class Dealer(BaseModel):
     address: Optional[str] = None
     assigned_sale_id: Optional[int] = None  # user id of the sales staff responsible
     credit_limit: float = 50000000.0        # Hạn mức công nợ mặc định (VNĐ)
+    customer_group: Optional[str] = "Dai_ly_cap_1"
 
 
 # Initial seed data for dealers
@@ -28,6 +29,7 @@ DEALERS_DB: dict[int, Dealer] = {
         email="saomai@daily.vn",
         address="120 Cầu Giấy, Hà Nội",
         assigned_sale_id=3,
+        customer_group="Dai_ly_cap_1",
     ),
     2: Dealer(
         id=2,
@@ -37,6 +39,7 @@ DEALERS_DB: dict[int, Dealer] = {
         email="tanbinh@daily.vn",
         address="45 Lý Thường Kiệt, TP. HCM",
         assigned_sale_id=3,
+        customer_group="Dai_ly_cap_2",
     ),
     3: Dealer(
         id=3,
@@ -46,6 +49,7 @@ DEALERS_DB: dict[int, Dealer] = {
         email="haiphong@daily.vn",
         address="88 Lạch Tray, Hải Phòng",
         assigned_sale_id=3,
+        customer_group="Dai_ly_cap_1",
     ),
     4: Dealer(
         id=4,
@@ -55,6 +59,17 @@ DEALERS_DB: dict[int, Dealer] = {
         email="anphat@daily.vn",
         address="66 Nguyễn Huệ, Đà Nẵng",
         assigned_sale_id=2,  # id=2 is sales_manager
+        customer_group="Dai_ly_cap_2",
+    ),
+    5: Dealer(
+        id=5,
+        code="DL005",
+        name="Khách Mua Lẻ Trực Tiếp",
+        phone="0911223344",
+        email="khachle@gmail.com",
+        address="Số 10 Tràng Thi, Hoàn Kiếm, Hà Nội",
+        assigned_sale_id=3,
+        customer_group="Khach_le",
     ),
 }
 

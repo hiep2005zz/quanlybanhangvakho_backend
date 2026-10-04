@@ -122,6 +122,7 @@ def search_dealers(
             "email": dealer.email,
             "address": dealer.address,
             "region": dealer_region,
+            "customer_group": getattr(dealer, "customer_group", "Dai_ly_cap_1"),
             "credit_limit": getattr(dealer, "credit_limit", 50000000.0),
             "assigned_sale_id": dealer.assigned_sale_id,
             "assigned_sale_name": get_sale_name(
@@ -133,6 +134,36 @@ def search_dealers(
         "items": results,
         "total": len(results),
     }
+
+
+@router.get("")
+def get_dealers(
+    current_user: UserResponse = Depends(
+        require_roles([
+            "admin",
+            "sales_manager",
+            "sales",
+            "accountant",
+        ])
+    ),
+):
+    """Lấy toàn bộ danh sách đại lý và khách hàng kèm nhóm khách hàng."""
+    results = []
+    for dealer in DEALERS_DB.values():
+        results.append({
+            "id": dealer.id,
+            "code": dealer.code,
+            "name": dealer.name,
+            "phone": dealer.phone,
+            "email": dealer.email,
+            "address": dealer.address,
+            "region": get_region(dealer.address),
+            "customer_group": getattr(dealer, "customer_group", "Dai_ly_cap_1"),
+            "credit_limit": getattr(dealer, "credit_limit", 50000000.0),
+            "assigned_sale_id": dealer.assigned_sale_id,
+            "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
+        })
+    return results
 
 
 @router.get("/filters")

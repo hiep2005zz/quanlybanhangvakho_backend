@@ -114,6 +114,7 @@ class DealerEntity(Base):
     address = Column(Unicode(500), nullable=True)
     assigned_sale_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     credit_limit = Column(Float, default=50000000.0)
+    customer_group = Column(String(50), nullable=True, default="Dai_ly_cap_1")
     created_at = Column(DateTime, default=get_utc_now)
 
 

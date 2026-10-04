@@ -12,6 +12,7 @@ from app.models.entities import (
     CategoryEntity,
     AuditLogEntity,
 )
+from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 
@@ -33,6 +34,78 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (avatar_url): {ex}")
+
+            product_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(products)")).fetchall()]
+            if "base_unit" not in product_cols:
+                try:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN base_unit TEXT DEFAULT 'Cái';"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (base_unit): {ex}")
+            if "units_json" not in product_cols:
+                try:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN units_json TEXT;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (units_json): {ex}")
+
+            inv_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(inventory_transactions)")).fetchall()]
+            if "unit_name" not in inv_cols:
+                try:
+                    conn.execute(text("ALTER TABLE inventory_transactions ADD COLUMN unit_name TEXT DEFAULT 'Cái';"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (unit_name): {ex}")
+            if "conversion_rate" not in inv_cols:
+                try:
+                    conn.execute(text("ALTER TABLE inventory_transactions ADD COLUMN conversion_rate REAL DEFAULT 1.0;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (conversion_rate): {ex}")
+            if "base_quantity" not in inv_cols:
+                try:
+                    conn.execute(text("ALTER TABLE inventory_transactions ADD COLUMN base_quantity REAL DEFAULT 0.0;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (base_quantity): {ex}")
+
+            dealer_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(dealers)")).fetchall()]
+            if "customer_group" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN customer_group TEXT DEFAULT 'Dai_ly_cap_1';"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (dealers.customer_group): {ex}")
+
+            pb_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(price_books)")).fetchall()]
+            if pb_cols:
+                if "version" not in pb_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE price_books ADD COLUMN version INTEGER DEFAULT 1;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (price_books.version): {ex}")
+                if "is_locked" not in pb_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE price_books ADD COLUMN is_locked INTEGER DEFAULT 0;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (price_books.is_locked): {ex}")
+
+            pbi_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(price_book_items)")).fetchall()]
+            if pbi_cols:
+                if "sale_price" not in pbi_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE price_book_items ADD COLUMN sale_price REAL DEFAULT 0.0;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (price_book_items.sale_price): {ex}")
+                if "floor_price" not in pbi_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE price_book_items ADD COLUMN floor_price REAL DEFAULT 0.0;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (price_book_items.floor_price): {ex}")
         else:
             for sql_statement in [
                 "IF COL_LENGTH('users', 'avatar_url') IS NULL ALTER TABLE users ADD avatar_url NVARCHAR(500);",
@@ -41,6 +114,11 @@ def init_db():
                 "IF COL_LENGTH('inventory_transactions', 'unit_name') IS NULL ALTER TABLE inventory_transactions ADD unit_name NVARCHAR(50) DEFAULT N'Cái';",
                 "IF COL_LENGTH('inventory_transactions', 'conversion_rate') IS NULL ALTER TABLE inventory_transactions ADD conversion_rate FLOAT DEFAULT 1.0;",
                 "IF COL_LENGTH('inventory_transactions', 'base_quantity') IS NULL ALTER TABLE inventory_transactions ADD base_quantity FLOAT DEFAULT 0.0;",
+                "IF COL_LENGTH('dealers', 'customer_group') IS NULL ALTER TABLE dealers ADD customer_group NVARCHAR(50) DEFAULT 'Dai_ly_cap_1';",
+                "IF COL_LENGTH('price_books', 'version') IS NULL ALTER TABLE price_books ADD version INT DEFAULT 1;",
+                "IF COL_LENGTH('price_books', 'is_locked') IS NULL ALTER TABLE price_books ADD is_locked BIT DEFAULT 0;",
+                "IF COL_LENGTH('price_book_items', 'sale_price') IS NULL ALTER TABLE price_book_items ADD sale_price FLOAT DEFAULT 0.0;",
+                "IF COL_LENGTH('price_book_items', 'floor_price') IS NULL ALTER TABLE price_book_items ADD floor_price FLOAT DEFAULT 0.0;",
             ]:
                 try:
                     conn.execute(text(sql_statement))
@@ -120,6 +198,99 @@ def init_db():
             db.add_all(initial_dealers)
             db.commit()
             print("Dealers seeded successfully.")
+
+        # 4. Seed Price Books nếu chưa có
+        if db.query(PriceBookEntity).count() == 0:
+            print("Seeding initial price books into Database...")
+            from datetime import timedelta, timezone, datetime
+            now_dt = datetime.now(timezone.utc)
+            
+            # Lấy các sản phẩm có sẵn
+            prods = db.query(ProductEntity).all()
+            
+            pb1 = PriceBookEntity(
+                code="BG-DL1",
+                name="Bảng giá Đại lý cấp 1",
+                customer_group="Dai_ly_cap_1",
+                valid_from=now_dt - timedelta(days=5),
+                valid_to=now_dt + timedelta(days=90),
+                status="ACTIVE",
+                version=1,
+                is_locked=False,
+                note="Bảng giá chuẩn dành cho Đại lý cấp 1 toàn quốc",
+                created_by="admin"
+            )
+            db.add(pb1)
+            db.flush()
+
+            for p in prods[:4]:
+                sale_p = round(p.sell_price * 0.85, -3) if p.sell_price else 100000.0
+                floor_p = round(p.sell_price * 0.75, -3) if p.sell_price else 80000.0
+                db.add(PriceBookItemEntity(
+                    price_book_id=pb1.id,
+                    product_id=p.id,
+                    sale_price=sale_p,
+                    floor_price=floor_p,
+                    price=sale_p,
+                    min_price=floor_p
+                ))
+
+            pb2 = PriceBookEntity(
+                code="BG-LE",
+                name="Bảng giá Khách lẻ",
+                customer_group="Khach_le",
+                valid_from=now_dt - timedelta(days=30),
+                valid_to=now_dt + timedelta(days=180),
+                status="ACTIVE",
+                version=1,
+                is_locked=False,
+                note="Bảng giá niêm yết bán lẻ",
+                created_by="admin"
+            )
+            db.add(pb2)
+            db.flush()
+
+            for p in prods[:4]:
+                sale_p = p.sell_price or 120000.0
+                floor_p = round((p.sell_price or 120000.0) * 0.9, -3)
+                db.add(PriceBookItemEntity(
+                    price_book_id=pb2.id,
+                    product_id=p.id,
+                    sale_price=sale_p,
+                    floor_price=floor_p,
+                    price=sale_p,
+                    min_price=floor_p
+                ))
+
+            pb3 = PriceBookEntity(
+                code="BG-DL2-OLD",
+                name="Bảng giá Đại lý cấp 2 (Đã khóa)",
+                customer_group="Dai_ly_cap_2",
+                valid_from=now_dt - timedelta(days=90),
+                valid_to=now_dt - timedelta(days=5),
+                status="EXPIRED",
+                version=1,
+                is_locked=True,
+                note="Bảng giá đã phát sinh đơn hàng, không được phép chỉnh sửa",
+                created_by="admin"
+            )
+            db.add(pb3)
+            db.flush()
+
+            for p in prods[:3]:
+                sale_p = round((p.sell_price or 150000.0) * 0.9, -3)
+                floor_p = round((p.sell_price or 150000.0) * 0.8, -3)
+                db.add(PriceBookItemEntity(
+                    price_book_id=pb3.id,
+                    product_id=p.id,
+                    sale_price=sale_p,
+                    floor_price=floor_p,
+                    price=sale_p,
+                    min_price=floor_p
+                ))
+
+            db.commit()
+            print("Price books seeded successfully.")
 
     except Exception as e:
         db.rollback()

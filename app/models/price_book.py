@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Unicode, UnicodeText
 from sqlalchemy.orm import relationship
 from app.core.database import Base
+from app.models.entities import ProductEntity
 
 def get_utc_now():
     return datetime.now(timezone.utc)
@@ -21,7 +22,7 @@ class PriceBookEntity(Base):
     parent_id = Column(Integer, ForeignKey("price_books.id"), nullable=True)
     is_locked = Column(Boolean, default=False)
     note = Column(UnicodeText, nullable=True)
-    created_by = Column(Unicode(100), nullable=False)
+    created_by = Column(Unicode(100), nullable=True, default="admin")
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 
@@ -34,10 +35,10 @@ class PriceBookItemEntity(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     price_book_id = Column(Integer, ForeignKey("price_books.id", ondelete="CASCADE"), nullable=False, index=True)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
-    price = Column(Float, nullable=False)
-    min_price = Column(Float, nullable=False)
-    sale_price = Column(Float, nullable=True)
-    floor_price = Column(Float, nullable=True)
+    price = Column(Float, nullable=True, default=0.0)
+    min_price = Column(Float, nullable=True, default=0.0)
+    sale_price = Column(Float, nullable=False, default=0.0)
+    floor_price = Column(Float, nullable=False, default=0.0)
     created_at = Column(DateTime, default=get_utc_now)
 
     product = relationship("ProductEntity")

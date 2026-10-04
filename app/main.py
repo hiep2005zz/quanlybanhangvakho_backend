@@ -53,6 +53,8 @@ app.include_router(profile.router, prefix="/api/v1/profile", tags=["Profile"])
 
 app.include_router(suppliers.router, prefix="/api/v1/suppliers", tags=["Suppliers"])
 app.include_router(dealers.router, prefix="/api/v1/dealers", tags=["Dealers"])
+from app.api.v1.endpoints import price_books
+app.include_router(price_books.router, prefix="/api/v1/price-books", tags=["PriceBooks"])
 
 # Mount static folder for user avatars / media uploads
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
