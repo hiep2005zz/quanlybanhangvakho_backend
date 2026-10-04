@@ -1,0 +1,265 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select, update
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_current_user
+from app.core.database import get_db
+from app.models.dealer import DEALERS_DB
+from app.models.entities import DealerDeliveryPointEntity, MasterDeliveryPointEntity
+from app.api.v1.endpoints.orders import ORDERS_DB
+from app.schemas.delivery_point import (
+    DeliveryPointCreate, DeliveryPointUpdate, DeliveryPointOut,
+)
+
+router = APIRouter(prefix="/{dealer_id}/delivery-points")
+dealers_router = APIRouter()
+
+
+def _sync_to_master(db: Session, label: str, address: str, receiver_name: str = "", receiver_phone: str = "", route_note: str = ""):
+    lbl_clean = label.strip()
+    addr_clean = address.strip()
+    existing = db.scalars(
+        select(MasterDeliveryPointEntity).where(
+            MasterDeliveryPointEntity.label == lbl_clean,
+            MasterDeliveryPointEntity.address == addr_clean,
+        )
+    ).first()
+    if existing:
+        if not existing.is_active:
+            existing.is_active = True
+        if receiver_name:
+            existing.receiver_name = receiver_name
+        if receiver_phone:
+            existing.receiver_phone = receiver_phone
+        if route_note:
+            existing.route_note = route_note
+    else:
+        new_master = MasterDeliveryPointEntity(
+            label=lbl_clean,
+            address=addr_clean,
+            receiver_name=receiver_name or "",
+            receiver_phone=receiver_phone or "",
+            route_note=route_note or "",
+            is_active=True,
+        )
+        db.add(new_master)
+    db.flush()
+
+
+@dealers_router.get("")
+def list_dealers(user=Depends(get_current_user)):
+    """Lấy danh sách các đại lý mà người dùng hiện tại có quyền truy cập."""
+    roles = getattr(user, "roles", None) or [getattr(user, "role", None)]
+    roles = {str(r).lower() for r in roles if r}
+    if roles & {"admin", "sales_manager", "sales"}:
+        dealers = list(DEALERS_DB.values())
+    else:
+        dealers = list(DEALERS_DB.values())
+
+    return [
+        {
+            "id": d.id,
+            "code": d.code,
+            "name": d.name,
+            "phone": d.phone,
+            "email": d.email,
+            "address": d.address,
+            "assigned_sale_id": d.assigned_sale_id,
+        }
+        for d in dealers
+    ]
+
+
+@dealers_router.get("/all-delivery-points")
+def list_all_delivery_points(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Lấy danh sách tất cả các điểm giao hàng hiện có trong danh mục chung."""
+    # Tự động đồng bộ các điểm giao từ dealer_delivery_points vào master_delivery_points nếu chưa có
+    existing_dealers_pts = db.scalars(select(DealerDeliveryPointEntity)).all()
+    for dp in existing_dealers_pts:
+        _sync_to_master(db, dp.label, dp.address, dp.receiver_name, dp.receiver_phone, dp.route_note)
+    db.commit()
+
+    q = select(MasterDeliveryPointEntity).where(
+        MasterDeliveryPointEntity.is_active == True,  # noqa: E712
+    ).order_by(MasterDeliveryPointEntity.id.desc())
+    items = db.scalars(q).all()
+
+    return [
+        {
+            "id": item.id,
+            "label": item.label,
+            "address": item.address,
+            "receiver_name": item.receiver_name or "",
+            "receiver_phone": item.receiver_phone or "",
+            "route_note": item.route_note or "",
+            "is_default": False,
+            "is_active": item.is_active,
+        }
+        for item in items
+    ]
+
+
+@dealers_router.post("/master-delivery-points", status_code=201)
+def create_master_point(body: DeliveryPointCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Tạo điểm giao hàng mới vào danh mục điểm giao chung."""
+    _sync_to_master(db, body.label, body.address, body.receiver_name or "", body.receiver_phone or "", body.route_note or "")
+    db.commit()
+    item = db.scalars(select(MasterDeliveryPointEntity).where(
+        MasterDeliveryPointEntity.label == body.label.strip(),
+        MasterDeliveryPointEntity.address == body.address.strip(),
+        MasterDeliveryPointEntity.is_active == True,
+    )).first()
+    return {
+        "id": item.id if item else 0,
+        "label": body.label,
+        "address": body.address,
+        "receiver_name": body.receiver_name or "",
+        "receiver_phone": body.receiver_phone or "",
+        "route_note": body.route_note or "",
+        "is_default": False,
+        "is_active": True,
+    }
+
+
+@dealers_router.put("/master-delivery-points/{point_id}")
+def update_master_point(point_id: int, body: DeliveryPointUpdate, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Cập nhật thông tin điểm giao trong danh mục điểm giao chung."""
+    item = db.get(MasterDeliveryPointEntity, point_id)
+    if not item or not item.is_active:
+        raise HTTPException(404, "Không tìm thấy điểm giao trong danh mục")
+    data = body.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        if hasattr(item, k):
+            setattr(item, k, v)
+    db.commit()
+    db.refresh(item)
+    return {
+        "id": item.id,
+        "label": item.label,
+        "address": item.address,
+        "receiver_name": item.receiver_name or "",
+        "receiver_phone": item.receiver_phone or "",
+        "route_note": item.route_note or "",
+        "is_default": False,
+        "is_active": item.is_active,
+    }
+
+
+@dealers_router.delete("/master-delivery-points/{point_id}", status_code=204)
+def delete_master_point(point_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Xóa điểm giao khỏi danh mục điểm giao chung."""
+    item = db.get(MasterDeliveryPointEntity, point_id)
+    if not item or not item.is_active:
+        raise HTTPException(404, "Không tìm thấy điểm giao trong danh mục")
+    item.is_active = False
+    db.commit()
+
+
+def _check_access(db: Session, dealer_id: int, user):
+    dealer = next((d for d in DEALERS_DB.values() if getattr(d, "id", None) == dealer_id), None)
+    if not dealer:
+        raise HTTPException(404, "Không tìm thấy đại lý")
+
+    roles = getattr(user, "roles", None) or [getattr(user, "role", None)]
+    roles = {str(r).lower() for r in roles if r}
+    if roles & {"admin", "sales_manager", "sales"}:
+        return dealer
+    raise HTTPException(403, "Bạn không phụ trách đại lý này")
+
+
+def _clear_default(db: Session, dealer_id: int):
+    db.execute(
+        update(DealerDeliveryPointEntity)
+        .where(DealerDeliveryPointEntity.dealer_id == dealer_id,
+               DealerDeliveryPointEntity.is_default == True)  # noqa: E712
+        .values(is_default=False)
+    )
+    db.flush()
+
+
+@router.get("", response_model=list[DeliveryPointOut])
+def list_points(dealer_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    _check_access(db, dealer_id, user)
+    q = select(DealerDeliveryPointEntity).where(
+        DealerDeliveryPointEntity.dealer_id == dealer_id,
+        DealerDeliveryPointEntity.is_active == True,  # noqa: E712
+    ).order_by(DealerDeliveryPointEntity.is_default.desc(), DealerDeliveryPointEntity.id)
+    return db.scalars(q).all()
+
+
+@router.post("", response_model=DeliveryPointOut, status_code=201)
+def create_point(dealer_id: int, body: DeliveryPointCreate,
+                 db: Session = Depends(get_db), user=Depends(get_current_user)):
+    _check_access(db, dealer_id, user)
+    has_any = db.scalars(select(DealerDeliveryPointEntity.id).where(
+        DealerDeliveryPointEntity.dealer_id == dealer_id,
+        DealerDeliveryPointEntity.is_active == True)).first()  # noqa: E712
+    data = body.model_dump()
+    if not has_any:
+        data["is_default"] = True          # điểm đầu tiên tự là mặc định
+    if data["is_default"]:
+        _clear_default(db, dealer_id)
+    point = DealerDeliveryPointEntity(dealer_id=dealer_id, **data)
+    db.add(point)
+    _sync_to_master(db, point.label, point.address, point.receiver_name, point.receiver_phone, point.route_note)
+    db.commit()
+    db.refresh(point)
+    return point
+
+
+@router.put("/{point_id}", response_model=DeliveryPointOut)
+def update_point(dealer_id: int, point_id: int, body: DeliveryPointUpdate,
+                 db: Session = Depends(get_db), user=Depends(get_current_user)):
+    _check_access(db, dealer_id, user)
+    point = db.get(DealerDeliveryPointEntity, point_id)
+    if not point or point.dealer_id != dealer_id or not point.is_active:
+        raise HTTPException(404, "Không tìm thấy điểm giao")
+    data = body.model_dump()
+    if data["is_default"] and not point.is_default:
+        _clear_default(db, dealer_id)
+    for k, v in data.items():
+        setattr(point, k, v)
+    db.commit()
+    db.refresh(point)
+    return point
+
+
+@router.post("/{point_id}/set-default", response_model=DeliveryPointOut)
+def set_default(dealer_id: int, point_id: int,
+                db: Session = Depends(get_db), user=Depends(get_current_user)):
+    _check_access(db, dealer_id, user)
+    point = db.get(DealerDeliveryPointEntity, point_id)
+    if not point or point.dealer_id != dealer_id or not point.is_active:
+        raise HTTPException(404, "Không tìm thấy điểm giao")
+    _clear_default(db, dealer_id)
+    point.is_default = True
+    db.commit()
+    db.refresh(point)
+    return point
+
+
+@router.delete("/{point_id}", status_code=204)
+def delete_point(dealer_id: int, point_id: int,
+                 db: Session = Depends(get_db), user=Depends(get_current_user)):
+    _check_access(db, dealer_id, user)
+    point = db.get(DealerDeliveryPointEntity, point_id)
+    if not point or point.dealer_id != dealer_id or not point.is_active:
+        raise HTTPException(404, "Không tìm thấy điểm giao")
+
+    used = any(o.get("delivery_point_id") == point_id for o in ORDERS_DB.values())
+    was_default = point.is_default
+    if used:
+        point.is_active = False      # đã có đơn dùng -> ẩn đi, không xóa cứng
+        point.is_default = False
+    else:
+        db.delete(point)
+    db.flush()
+
+    if was_default:                  # xóa điểm mặc định -> đẩy điểm khác lên thay
+        nxt = db.scalars(select(DealerDeliveryPointEntity).where(
+            DealerDeliveryPointEntity.dealer_id == dealer_id,
+            DealerDeliveryPointEntity.is_active == True)  # noqa: E712
+            .order_by(DealerDeliveryPointEntity.id)).first()
+        if nxt:
+            nxt.is_default = True
+    db.commit()

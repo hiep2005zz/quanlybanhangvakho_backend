@@ -4,7 +4,7 @@
     "username": "admin",
     "full_name": "Đào Ngọc Hiệp",
     "email": "daongochiep645@gmail.com",
-    "phone": "0822516998",
+    "phone": null,
     "role": "admin",
     "roles": [
       "admin"
@@ -23,9 +23,9 @@
   "sales_manager": {
     "id": 2,
     "username": "sales_manager",
-    "full_name": "nguyễn thị ly",
-    "email": "hiep2005zz@gmail.com",
-    "phone": "0822516778",
+    "full_name": "Phạm Trưởng Phòng Sales",
+    "email": "sales.manager@congty.vn",
+    "phone": "0822516998",
     "role": "sales_manager",
     "roles": [
       "sales_manager"
@@ -81,7 +81,7 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
-    "avatar_url": "/uploads/avatars/kho_cbb51c2f2b1c_square.png"
+    "avatar_url": null
   },
   "warehouse_mgr": {
     "id": 5,
@@ -107,7 +107,7 @@
   "ketoan": {
     "id": 6,
     "username": "ketoan",
-    "full_name": "Dang Ke Toan",
+    "full_name": "Đặng Kế Toán",
     "email": "ketoan@congty.vn",
     "phone": null,
     "role": "accountant",
@@ -128,9 +128,9 @@
   "muahang": {
     "id": 7,
     "username": "muahang",
-    "full_name": "Vu Mua Hang",
+    "full_name": "Vũ Mua Hàng",
     "email": "muahang@congty.vn",
-    "phone": "0822516998",
+    "phone": null,
     "role": "purchasing",
     "roles": [
       "purchasing"

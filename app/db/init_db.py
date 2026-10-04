@@ -9,6 +9,8 @@ from app.models.entities import (
     DealerEntity,
     InventoryTransactionEntity,
     OrderEntity,
+    DealerDeliveryPointEntity,
+    MasterDeliveryPointEntity,
     CategoryEntity,
     AuditLogEntity,
 )
@@ -40,6 +42,10 @@ def _ensure_legacy_columns(bind=engine):
         "products": {
             "base_unit": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
             "units_json": ("TEXT", "NVARCHAR(MAX)"),
+        },
+        "dealers": {
+            "max_debt_days": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
+            "locked_by": ("VARCHAR(50)", "NVARCHAR(50)"),
         },
         "inventory_transactions": {
             "unit_name": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
@@ -253,6 +259,31 @@ def init_db():
             db.add_all(initial_dealers)
             db.commit()
             print("Dealers seeded successfully.")
+
+        # 4. Seed Master Delivery Points nếu chưa có
+        if db.query(MasterDeliveryPointEntity).count() == 0:
+            print("Seeding master delivery points...")
+            existing_dealer_points = db.query(DealerDeliveryPointEntity).all()
+            seen_pts = set()
+            master_seeds = []
+            for dp in existing_dealer_points:
+                key = (dp.label.strip().lower(), dp.address.strip().lower())
+                if key not in seen_pts:
+                    seen_pts.add(key)
+                    master_seeds.append(
+                        MasterDeliveryPointEntity(
+                            label=dp.label,
+                            address=dp.address,
+                            receiver_name=dp.receiver_name or "",
+                            receiver_phone=dp.receiver_phone or "",
+                            route_note=dp.route_note or "",
+                            is_active=True,
+                        )
+                    )
+            if master_seeds:
+                db.add_all(master_seeds)
+                db.commit()
+                print(f"Seeded {len(master_seeds)} master delivery points.")
 
         from app.models.dealer import load_dealers_db
 
