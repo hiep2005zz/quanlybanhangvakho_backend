@@ -43,6 +43,10 @@ def _ensure_legacy_columns(bind=engine):
             "base_unit": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
             "units_json": ("TEXT", "NVARCHAR(MAX)"),
         },
+        "dealers": {
+            "max_debt_days": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
+            "locked_by": ("VARCHAR(50)", "NVARCHAR(50)"),
+        },
         "inventory_transactions": {
             "unit_name": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
             "conversion_rate": ("FLOAT DEFAULT 1.0", "FLOAT DEFAULT 1.0"),
