@@ -375,8 +375,8 @@ def init_db():
 
             db.commit()
             print("Price books seeded successfully.")
-from app.models.dealer import load_dealers_db
 
+        from app.models.dealer import load_dealers_db
         load_dealers_db()
 
 
