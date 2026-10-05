@@ -7,6 +7,7 @@ Nếu tài khoản nhân viên đang ở trạng thái LOCKED, từ chối tạo
 """
 import json
 from uuid import uuid4
+from app.models.entities import DealerDeliveryPointEntity
 from typing import List, Optional
 from datetime import date, datetime, timezone
 from pydantic import BaseModel, Field
@@ -41,6 +42,7 @@ class OrderCreate(BaseModel):
     dealer_id: int
     items: List[OrderItemCreate]
     note: Optional[str] = None
+    delivery_point_id: Optional[int] = None
     delivery_point: Optional[str] = Field(default=None, max_length=500)
     desired_delivery_date: Optional[date] = None
     discount_percent: float = Field(default=0, ge=0, le=100)
@@ -78,6 +80,7 @@ class InvoiceEditRequest(BaseModel):
 
 class DebtLimitUpdateRequest(BaseModel):
     credit_limit: float = Field(..., ge=0)
+    max_debt_days: int = Field(default=30, ge=0)
     reason: str = Field(..., min_length=2, max_length=255)
 
 # Orders created through the API are stored in the database and this process-local cache.
@@ -164,6 +167,29 @@ def create_order(
             detail=f"Không tìm thấy đại lý có ID {data.dealer_id}."
         )
 
+    selected_delivery_point_id = None
+    if data.delivery_point_id is not None:
+        # Tìm điểm giao hàng theo ID
+        dp = db.get(DealerDeliveryPointEntity, data.delivery_point_id)
+        if not dp or not dp.is_active or dp.dealer_id != data.dealer_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Điểm giao hàng không hợp lệ hoặc không thuộc đại lý này."
+            )
+        selected_delivery_point_id = dp.id
+    else:
+        # Nếu không chọn, tự động tìm điểm mặc định của đại lý
+        from sqlalchemy import select
+        dp = db.scalars(
+            select(DealerDeliveryPointEntity).where(
+                DealerDeliveryPointEntity.dealer_id == data.dealer_id,
+                DealerDeliveryPointEntity.is_default == True,
+                DealerDeliveryPointEntity.is_active == True
+            )
+        ).first()
+        if dp:
+            selected_delivery_point_id = dp.id
+
     # 1. AC 3: Kiểm tra nhân viên phụ trách của đại lý
     assigned_sale_id = dealer.assigned_sale_id
     assigned_user = None
@@ -188,7 +214,45 @@ def create_order(
             detail=lock_msg
         )
 
-    # 3. Tạo đơn hàng và tính base_quantity
+    # 3. Kiểm tra hạn mức công nợ và số ngày nợ tối đa
+    current_debt = 0.0
+    max_debt_age = 0
+    now = datetime.now(timezone.utc)
+    for o in ORDERS_DB.values():
+        if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
+            current_debt += o.get("total_amount", 0.0)
+            created_at_str = o.get("created_at")
+            if created_at_str:
+                try:
+                    order_date = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                    days_old = (now - order_date).days
+                    if days_old > max_debt_age:
+                        max_debt_age = days_old
+                except Exception:
+                    pass
+    
+    order_total = sum(item.quantity * item.price for item in data.items)
+    
+    over_limit = (current_debt + order_total) > getattr(dealer, "credit_limit", 50000000.0)
+    over_days = max_debt_age > getattr(dealer, "max_debt_days", 30)
+    
+    if over_limit and over_days:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đại lý đã vượt hạn mức công nợ và có công nợ quá hạn. Không thể xuất hàng."
+        )
+    elif over_limit:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đại lý đã vượt hạn mức công nợ. Không thể xuất hàng."
+        )
+    elif over_days:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đại lý có công nợ quá hạn. Không thể xuất hàng."
+        )
+
+    # 4. Tạo đơn hàng và tính base_quantity
     from app.api.v1.endpoints.products import RAW_PRODUCTS, _find_product_in_raw
     from app.models.entities import ProductEntity
 
@@ -304,6 +368,7 @@ def create_order(
     order_record = {
         "id": order_id,
         "order_code": order_code,
+        "delivery_point_id": selected_delivery_point_id,
         "dealer_id": dealer.id,
         "dealer_name": dealer.name,
         "created_by": current_user.username,
@@ -784,13 +849,14 @@ def edit_or_cancel_invoice(
     }
 
 
+@router.put("/dealers/{dealer_id}/credit-limit")
 @router.put("/dealers/{dealer_id}/debt-limit")
 def update_customer_debt_limit(
     dealer_id: int,
     data: DebtLimitUpdateRequest,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.USER_MANAGE.value))
+    current_user: UserResponse = Depends(require_roles(["accountant", "sales_manager", "admin"]))
 ):
     """
     Cập nhật hạn mức công nợ khách hàng / đại lý.
@@ -804,14 +870,15 @@ def update_customer_debt_limit(
         )
 
     old_limit = getattr(dealer, "credit_limit", 50000000.0)
-    if old_limit == data.credit_limit:
+    old_days = getattr(dealer, "max_debt_days", 30)
+    if old_limit == data.credit_limit and old_days == data.max_debt_days:
         return {
             "status": "success",
             "message": "Hạn mức công nợ không thay đổi.",
             "dealer": dealer,
         }
-
     dealer.credit_limit = data.credit_limit
+    dealer.max_debt_days = data.max_debt_days
     save_dealers_db()
 
     log_audit_event(
@@ -820,8 +887,8 @@ def update_customer_debt_limit(
         action_type="DEBT_LIMIT_CHANGE",
         entity_type="CustomerDebt",
         entity_id=dealer.code,
-        old_val={"credit_limit": old_limit, "customer_name": dealer.name},
-        new_val={"credit_limit": data.credit_limit},
+        old_val={"credit_limit": old_limit, "max_debt_days": old_days, "customer_name": dealer.name},
+        new_val={"credit_limit": data.credit_limit, "max_debt_days": data.max_debt_days},
         reason=data.reason,
         request=request,
     )

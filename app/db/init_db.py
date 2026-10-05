@@ -9,6 +9,8 @@ from app.models.entities import (
     DealerEntity,
     InventoryTransactionEntity,
     OrderEntity,
+    DealerDeliveryPointEntity,
+    MasterDeliveryPointEntity,
     CategoryEntity,
     AuditLogEntity,
 )
@@ -42,10 +44,17 @@ def _ensure_legacy_columns(bind=engine):
             "base_unit": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
             "units_json": ("TEXT", "NVARCHAR(MAX)"),
         },
+        "dealers": {
+            "max_debt_days": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
+            "locked_by": ("VARCHAR(50)", "NVARCHAR(50)"),
+        },
         "inventory_transactions": {
             "unit_name": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
             "conversion_rate": ("FLOAT DEFAULT 1.0", "FLOAT DEFAULT 1.0"),
             "base_quantity": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+        },
+        "orders": {
+            "delivery_point_id": ("INTEGER", "INT NULL"),
         },
     }
     inspector = inspect(bind)
@@ -136,6 +145,12 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (dealers.locked_by): {ex}")
+            if "max_debt_days" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN max_debt_days INTEGER DEFAULT 30;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (dealers.max_debt_days): {ex}")
 
             tx_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(inventory_transactions)")).fetchall()]
             if "unit_name" not in tx_cols:
@@ -283,7 +298,32 @@ def init_db():
             db.commit()
             print("Dealers seeded successfully.")
 
-# 4. Seed Price Books nếu chưa có
+        # 4. Seed Master Delivery Points nếu chưa có
+        if db.query(MasterDeliveryPointEntity).count() == 0:
+            print("Seeding master delivery points...")
+            existing_dealer_points = db.query(DealerDeliveryPointEntity).all()
+            seen_pts = set()
+            master_seeds = []
+            for dp in existing_dealer_points:
+                key = (dp.label.strip().lower(), dp.address.strip().lower())
+                if key not in seen_pts:
+                    seen_pts.add(key)
+                    master_seeds.append(
+                        MasterDeliveryPointEntity(
+                            label=dp.label,
+                            address=dp.address,
+                            receiver_name=dp.receiver_name or "",
+                            receiver_phone=dp.receiver_phone or "",
+                            route_note=dp.route_note or "",
+                            is_active=True,
+                        )
+                    )
+            if master_seeds:
+                db.add_all(master_seeds)
+                db.commit()
+                print(f"Seeded {len(master_seeds)} master delivery points.")
+
+        # 5. Seed Price Books nếu chưa có
         if db.query(PriceBookEntity).count() == 0:
             print("Seeding initial price books into Database...")
             from datetime import timedelta, timezone, datetime
@@ -388,4 +428,5 @@ def init_db():
         db.close()
 
 if __name__ == "__main__":
+    init_db()
     init_db()
