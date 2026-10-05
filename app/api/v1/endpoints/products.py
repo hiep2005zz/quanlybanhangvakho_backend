@@ -125,6 +125,11 @@ def get_products(
         total_stock += stock
         total_sell_val += sell_price * stock
 
+        cat_name = db_p.category if (db_p and db_p.category) else p.get("category", "Chưa phân loại")
+        cat_id = db_p.category_id if (db_p and db_p.category_id is not None) else p.get("category_id")
+        p["category"] = cat_name
+        p["category_id"] = cat_id
+
         if can_view_cost:
             profit_unit = sell_price - cost_price
             margin = round((profit_unit / sell_price) * 100, 2) if sell_price > 0 else 0.0
@@ -133,8 +138,8 @@ def get_products(
                 id=p["id"],
                 code=p["code"],
                 name=p["name"],
-                category=p["category"],
-                category_id=p.get("category_id"),
+                category=cat_name,
+                category_id=cat_id,
                 stock=stock,
                 sell_price=sell_price,
                 base_unit=base_unit,
@@ -149,8 +154,8 @@ def get_products(
                 id=p["id"],
                 code=p["code"],
                 name=p["name"],
-                category=p["category"],
-                category_id=p.get("category_id"),
+                category=cat_name,
+                category_id=cat_id,
                 stock=stock,
                 sell_price=sell_price,
                 base_unit=base_unit,
