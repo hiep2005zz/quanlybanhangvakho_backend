@@ -52,6 +52,9 @@ def _ensure_legacy_columns(bind=engine):
             "conversion_rate": ("FLOAT DEFAULT 1.0", "FLOAT DEFAULT 1.0"),
             "base_quantity": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
         },
+        "orders": {
+            "delivery_point_id": ("INTEGER", "INT NULL"),
+        },
     }
     inspector = inspect(bind)
     dialect_name = bind.dialect.name
