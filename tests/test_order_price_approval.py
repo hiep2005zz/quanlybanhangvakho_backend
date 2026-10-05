@@ -171,6 +171,24 @@ def test_order_creation_with_floor_price_and_approval():
         assert res_reject.status_code == 200
         assert res_reject.json()["status"] == "REJECTED"
 
+        # 9. Test bán dưới giá niêm yết khi sản phẩm chưa có bảng giá riêng
+        res_list_low = client.post(
+            "/api/v1/orders",
+            json={
+                "dealer_id": 1,
+                "items": [{"product_id": 2, "quantity": 1, "price": 100000.0}],
+            },
+            headers={"Authorization": f"Bearer {sales_token}"}
+        )
+        assert res_list_low.status_code == 201
+        list_low_data = res_list_low.json()
+        assert list_low_data["status"] == "PENDING_APPROVAL"
+        assert list_low_data.get("requires_approval") is True
+        assert (
+            "thấp hơn giá niêm yết" in (list_low_data.get("approval_reason") or "")
+            or "thấp hơn giá sàn" in (list_low_data.get("approval_reason") or "")
+        )
+
     finally:
         # Cleanup
         clean_db = SessionLocal()

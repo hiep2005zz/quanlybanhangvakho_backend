@@ -61,7 +61,7 @@ DEALERS_DB: dict[int, Dealer] = {
         region="Hải Phòng",
         assigned_sale_id=3,
         credit_limit=50000000.0,
-        customer_group="dai_ly_cap_1",
+        customer_group="Khách sỉ",
         status="Đang hoạt động",
     ),
     4: Dealer(

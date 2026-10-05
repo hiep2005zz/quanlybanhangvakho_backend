@@ -176,7 +176,19 @@ def search_dealers(
         # ==========================================
         dealer_group = getattr(dealer, "customer_group", "") or ""
         if group_clean:
-            if group_clean not in dealer_group.lower():
+            def _normalize_group(g: str) -> str:
+                g_low = g.lower().replace("_", " ").strip()
+                if "sỉ" in g_low or "si" in g_low:
+                    return "khách sỉ"
+                if "cấp 1" in g_low or "cap 1" in g_low:
+                    return "đại lý cấp 1"
+                if "cấp 2" in g_low or "cap 2" in g_low:
+                    return "đại lý cấp 2"
+                if "lẻ" in g_low or "le" in g_low:
+                    return "khách lẻ"
+                return g_low
+
+            if _normalize_group(group_clean) != _normalize_group(dealer_group) and group_clean not in dealer_group.lower():
                 continue
 
         # ==========================================

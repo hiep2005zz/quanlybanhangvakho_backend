@@ -341,15 +341,30 @@ def create_order(
                 PriceBookItemEntity.product_id == it.product_id
             ).order_by(PriceBookEntity.version.desc(), PriceBookEntity.created_at.desc()).first()
 
+            prod_entity = db.query(ProductEntity).filter(ProductEntity.id == it.product_id).first()
+            raw_p = _find_product_in_raw(it.product_id)
+            listed_price = prod_entity.sell_price if prod_entity and prod_entity.sell_price is not None else (raw_p.get("sell_price") if raw_p else None)
+            cur_name = prod_entity.name if prod_entity else (raw_p.get("name") if raw_p else f"SP #{it.product_id}")
+
             if item_match:
                 pbi, pb_matched = item_match
                 pb_matched.is_locked = True
                 fl_val = pbi.floor_price if pbi.floor_price is not None else pbi.min_price
                 if fl_val is not None and it.price < fl_val:
                     requires_approval = True
-                    prod_name = next((pi["product_name"] for pi in processed_items if pi["product_id"] == it.product_id), f"SP #{it.product_id}")
                     approval_reasons.append(
-                        f"Bán dưới giá sàn: {prod_name} có đơn giá {it.price:,.0f} đ thấp hơn giá sàn {fl_val:,.0f} đ (Bảng giá: {pb_matched.name})"
+                        f"Bán dưới giá sàn: {cur_name} có đơn giá {it.price:,.0f} đ thấp hơn giá sàn {fl_val:,.0f} đ (Bảng giá: {pb_matched.name})"
+                    )
+                elif fl_val is None and listed_price is not None and it.price < listed_price:
+                    requires_approval = True
+                    approval_reasons.append(
+                        f"Bán dưới giá niêm yết: {cur_name} có đơn giá {it.price:,.0f} đ thấp hơn giá niêm yết {listed_price:,.0f} đ"
+                    )
+            else:
+                if listed_price is not None and it.price < listed_price:
+                    requires_approval = True
+                    approval_reasons.append(
+                        f"Bán dưới giá niêm yết: {cur_name} có đơn giá {it.price:,.0f} đ thấp hơn giá niêm yết {listed_price:,.0f} đ"
                     )
 
     if db:
