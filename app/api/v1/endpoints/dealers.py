@@ -671,7 +671,7 @@ def delete_dealer(
         )
 
     # Kiểm tra xem có đơn hàng đang hoạt động không
-    from app.models.entities import OrderEntity, DealerEntity
+    from app.models.entities import OrderEntity, DealerEntity, DealerDeliveryPointEntity
     active_orders = db.query(OrderEntity).filter(
         OrderEntity.dealer_id == dealer_id,
         OrderEntity.status.in_(["PENDING", "PROCESSING", "CONFIRMED"])
@@ -682,9 +682,11 @@ def delete_dealer(
             detail=f"Đại lý đang có {active_orders} đơn hàng chưa hoàn tất, không thể xóa."
         )
 
-    # Xóa các đơn hàng đã hủy hoặc đã thanh toán của đại lý nếu có
+    # 1. Xóa các đơn hàng đã hủy hoặc đã thanh toán của đại lý nếu có
     db.query(OrderEntity).filter(OrderEntity.dealer_id == dealer_id).delete(synchronize_session=False)
-    # Xóa trong SQL
+    # 2. Xóa các điểm giao hàng của đại lý để tránh lỗi ràng buộc khóa ngoại
+    db.query(DealerDeliveryPointEntity).filter(DealerDeliveryPointEntity.dealer_id == dealer_id).delete(synchronize_session=False)
+    # 3. Xóa trong SQL
     db.query(DealerEntity).filter(DealerEntity.id == dealer_id).delete(synchronize_session=False)
     db.commit()
 
