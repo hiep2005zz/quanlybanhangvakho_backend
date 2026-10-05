@@ -35,7 +35,7 @@ DEALERS_DB: dict[int, Dealer] = {
         region="Hà Nội",
         assigned_sale_id=3,
         credit_limit=100000000.0,
-        customer_group="Đại lý cấp 1",
+        customer_group="dai_ly_cap_1",
         status="Đang hoạt động",
     ),
     2: Dealer(
@@ -48,7 +48,7 @@ DEALERS_DB: dict[int, Dealer] = {
         region="TP. HCM",
         assigned_sale_id=3,
         credit_limit=50000000.0,
-        customer_group="Đại lý cấp 2",
+        customer_group="dai_ly_cap_2",
         status="Đang hoạt động",
     ),
     3: Dealer(
@@ -74,8 +74,21 @@ DEALERS_DB: dict[int, Dealer] = {
         region="Đà Nẵng",
         assigned_sale_id=None,  # Chưa chỉ định nhân viên kinh doanh phụ trách
         credit_limit=50000000.0,
-        customer_group="Khách lẻ",
+        customer_group="khach_le",
         status="Tạm ngừng",
+    ),
+    5: Dealer(
+        id=5,
+        code="DL005",
+        name="Khách Mua Lẻ Trực Tiếp",
+        phone="0911223344",
+        email="khachle@gmail.com",
+        address="Số 10 Tràng Thi, Hoàn Kiếm, Hà Nội",
+        region="Hà Nội",
+        assigned_sale_id=3,
+        credit_limit=20000000.0,
+        customer_group="khach_le",
+        status="Đang hoạt động",
     ),
 }
 

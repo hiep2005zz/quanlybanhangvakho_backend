@@ -16,11 +16,13 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_permission, require_roles
 from app.core.database import get_db
-from app.core.rbac import Permission
+from app.core.rbac import Permission, Role
 from app.schemas.auth import UserResponse
 from app.api.v1.endpoints.products import RAW_PRODUCTS
 from app.models.dealer import DEALERS_DB, save_dealers_db
+from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.entities import OrderEntity
+
 from app.models.user import USERS_DB
 from app.services.audit_service import log_audit_event
 
@@ -55,8 +57,12 @@ class OrderResponse(BaseModel):
     assigned_sale_name: Optional[str] = None
     total_amount: float
     status: str
+    requires_approval: Optional[bool] = False
+    approval_reason: Optional[str] = None
     items: Optional[List[dict]] = None
     created_at: str
+    approved_by: Optional[str] = None
+    approved_at: Optional[str] = None
 
 class SalesOrderResponse(OrderResponse):
     subtotal_amount: float = 0
@@ -297,6 +303,70 @@ def create_order(
             "base_quantity": base_quantity,
         })
 
+    # AC: Kiểm tra bảng giá áp dụng cho nhóm khách hàng của Đại lý
+    cust_group = getattr(dealer, "customer_group", None) or "dai_ly_cap_1"
+    aliases = [cust_group]
+    if cust_group in ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1", "dai_ly_cap_1"]:
+        aliases = ["dai_ly_cap_1", "Dai_ly_cap_1", "CAP_1", "Đại lý cấp 1"]
+    elif cust_group in ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2", "dai_ly_cap_2"]:
+        aliases = ["dai_ly_cap_2", "Dai_ly_cap_2", "CAP_2", "Đại lý cấp 2"]
+    elif cust_group in ["RETAIL", "Khach_le", "Khách lẻ", "khach_le"]:
+        aliases = ["khach_le", "Khach_le", "RETAIL", "Khách lẻ"]
+
+    requires_approval = False
+    approval_reasons = []
+    now_dt = datetime.now(timezone.utc)
+    if db:
+        # 1. Tìm và khóa các bảng giá đang hiệu lực của nhóm khách hàng
+        active_pbs = db.query(PriceBookEntity).filter(
+            PriceBookEntity.customer_group.in_(aliases),
+            PriceBookEntity.status == "ACTIVE",
+            PriceBookEntity.valid_from <= now_dt,
+            PriceBookEntity.valid_to >= now_dt
+        ).order_by(PriceBookEntity.version.desc(), PriceBookEntity.created_at.desc()).all()
+
+        for pb in active_pbs:
+            pb.is_locked = True
+
+        # 2. Kiểm tra đơn giá thực tế của từng sản phẩm so với floor_price
+        for it in data.items:
+            # Tra cứu chính xác dòng sản phẩm trong bảng giá hiệu lực
+            item_match = db.query(PriceBookItemEntity, PriceBookEntity).join(
+                PriceBookEntity, PriceBookItemEntity.price_book_id == PriceBookEntity.id
+            ).filter(
+                PriceBookEntity.customer_group.in_(aliases),
+                PriceBookEntity.status == "ACTIVE",
+                PriceBookEntity.valid_from <= now_dt,
+                PriceBookEntity.valid_to >= now_dt,
+                PriceBookItemEntity.product_id == it.product_id
+            ).order_by(PriceBookEntity.version.desc(), PriceBookEntity.created_at.desc()).first()
+
+            prod_entity = db.query(ProductEntity).filter(ProductEntity.id == it.product_id).first()
+            raw_p = _find_product_in_raw(it.product_id)
+            listed_price = prod_entity.sell_price if prod_entity and prod_entity.sell_price is not None else (raw_p.get("sell_price") if raw_p else None)
+            cur_name = prod_entity.name if prod_entity else (raw_p.get("name") if raw_p else f"SP #{it.product_id}")
+
+            if item_match:
+                pbi, pb_matched = item_match
+                pb_matched.is_locked = True
+                fl_val = pbi.floor_price if pbi.floor_price is not None else pbi.min_price
+                if fl_val is not None and it.price < fl_val:
+                    requires_approval = True
+                    approval_reasons.append(
+                        f"Bán dưới giá sàn: {cur_name} có đơn giá {it.price:,.0f} đ thấp hơn giá sàn {fl_val:,.0f} đ (Bảng giá: {pb_matched.name})"
+                    )
+                elif fl_val is None and listed_price is not None and it.price < listed_price:
+                    requires_approval = True
+                    approval_reasons.append(
+                        f"Bán dưới giá niêm yết: {cur_name} có đơn giá {it.price:,.0f} đ thấp hơn giá niêm yết {listed_price:,.0f} đ"
+                    )
+            else:
+                if listed_price is not None and it.price < listed_price:
+                    requires_approval = True
+                    approval_reasons.append(
+                        f"Bán dưới giá niêm yết: {cur_name} có đơn giá {it.price:,.0f} đ thấp hơn giá niêm yết {listed_price:,.0f} đ"
+                    )
+
     if db:
         db.commit()
 
@@ -307,6 +377,8 @@ def create_order(
 
     order_code = f"ORD{order_id:05d}"
     now_str = datetime.now(timezone.utc).isoformat()
+    order_status = "PENDING_APPROVAL" if requires_approval else "CONFIRMED"
+    approval_reason = " | ".join(approval_reasons) if approval_reasons else None
 
     order_record = {
         "id": order_id,
@@ -318,7 +390,9 @@ def create_order(
         "assigned_sale_id": assigned_sale_id,
         "assigned_sale_name": assigned_user.full_name if assigned_user else None,
         "total_amount": total_amount,
-        "status": "CONFIRMED",
+        "status": order_status,
+        "requires_approval": requires_approval,
+        "approval_reason": approval_reason,
         "items": processed_items,
         "created_at": now_str,
         "subtotal_amount": subtotal_amount,
@@ -594,6 +668,118 @@ def get_order_detail(
         "discount_amount": discount_amount,
     })
     return SalesOrderResponse(**detail_response)
+
+
+@router.post("/{order_code}/approve", response_model=OrderResponse)
+def approve_order(
+    order_code: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value]))
+):
+    """
+    Quyền duyệt đơn khi bán dưới giá sàn: CHỈ sales_manager hoặc admin.
+    Chuyển đơn từ PENDING_APPROVAL sang CONFIRMED.
+    Hỗ trợ tra cứu theo cả order_code (ORD00001) lẫn order id (1).
+    """
+    target = None
+    for o in ORDERS_DB.values():
+        if o["order_code"].upper() == order_code.upper() or str(o.get("id")) == str(order_code):
+            target = o
+            break
+
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đơn hàng có mã hoặc ID {order_code}."
+        )
+
+    old_status = target.get("status")
+    target["status"] = "CONFIRMED"
+    target["requires_approval"] = False
+    target["approved_by"] = current_user.username
+    target["approved_at"] = datetime.now(timezone.utc).isoformat()
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action_type="ORDER_APPROVE",
+        entity_type="Order",
+        entity_id=target["order_code"],
+        old_val={"status": old_status},
+        new_val={"status": "CONFIRMED"},
+        reason="Duyệt đơn hàng bán dưới giá sàn",
+        request=request,
+    )
+
+    return OrderResponse(**target)
+
+
+class OrderRejectRequest(BaseModel):
+    reason: Optional[str] = "Từ chối duyệt đơn hàng bán dưới giá sàn"
+
+
+@router.post("/{order_code}/reject", response_model=OrderResponse)
+def reject_order(
+    order_code: str,
+    request: Request,
+    payload: Optional[OrderRejectRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value]))
+):
+    """
+    Từ chối đơn hàng: CHỈ sales_manager hoặc admin.
+    Chuyển đơn từ PENDING_APPROVAL sang REJECTED.
+    Hỗ trợ tra cứu theo cả order_code (ORD00001) lẫn order id (1).
+    """
+    target = None
+    for o in ORDERS_DB.values():
+        if o["order_code"].upper() == order_code.upper() or str(o.get("id")) == str(order_code):
+            target = o
+            break
+
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đơn hàng có mã hoặc ID {order_code}."
+        )
+
+    old_status = target.get("status")
+    reject_reason = (payload.reason if payload and payload.reason else "Từ chối duyệt đơn hàng bán dưới giá sàn")
+    target["status"] = "REJECTED"
+    target["requires_approval"] = False
+    target["approval_reason"] = f"Bị từ chối bởi {current_user.username}: {reject_reason}"
+
+    # Hoàn trả tồn kho nếu đơn đã trừ tồn kho lúc tạo
+    if old_status == "PENDING_APPROVAL":
+        from app.api.v1.endpoints.products import _find_product_in_raw
+        from app.models.entities import ProductEntity
+        for it in target.get("items", []):
+            p_id = it.get("product_id")
+            base_qty = it.get("base_quantity", it.get("quantity", 0))
+            raw_p = _find_product_in_raw(p_id)
+            if raw_p:
+                raw_p["stock"] = raw_p.get("stock", 0) + base_qty
+            if db:
+                pe = db.query(ProductEntity).filter(ProductEntity.id == p_id).first()
+                if pe:
+                    pe.stock = (pe.stock or 0) + base_qty
+        if db:
+            db.commit()
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action_type="ORDER_REJECT",
+        entity_type="Order",
+        entity_id=target["order_code"],
+        old_val={"status": old_status},
+        new_val={"status": "REJECTED"},
+        reason=reject_reason,
+        request=request,
+    )
+
+    return OrderResponse(**target)
 
 
 @router.put("/{order_code}")

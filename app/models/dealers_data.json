@@ -7,10 +7,17 @@
     "email": "saomai@daily.vn",
     "address": "120 Cầu Giấy, Hà Nội",
     "region": "Hà Nội",
+<<<<<<< HEAD
+    "assigned_sale_id": 3,
+    "credit_limit": 120000000.0,
+    "max_debt_days": 30,
+    "customer_group": "Dai_ly_cap_1",
+=======
     "assigned_sale_id": 2,
     "credit_limit": 100000000.0,
     "max_debt_days": 30,
     "customer_group": "Đại lý cấp 1",
+>>>>>>> 609829ab2cfc31038895a5aa59c1543ddcf2120f
     "status": "Đang hoạt động",
     "lock_reason": null,
     "locked_at": null,
@@ -24,10 +31,14 @@
     "email": "tanbinh@daily.vn",
     "address": "45 Lý Thường Kiệt, TP. HCM",
     "region": "TP. HCM",
+<<<<<<< HEAD
+    "assigned_sale_id": 3,
+=======
     "assigned_sale_id": 2,
+>>>>>>> 609829ab2cfc31038895a5aa59c1543ddcf2120f
     "credit_limit": 50000000.0,
     "max_debt_days": 30,
-    "customer_group": "Đại lý cấp 2",
+    "customer_group": "dai_ly_cap_2",
     "status": "Đang hoạt động",
     "lock_reason": null,
     "locked_at": null,
@@ -41,7 +52,11 @@
     "email": "haiphong@daily.vn",
     "address": "88 Lạch Tray, Hải Phòng",
     "region": "Hải Phòng",
+<<<<<<< HEAD
+    "assigned_sale_id": 3,
+=======
     "assigned_sale_id": 2,
+>>>>>>> 609829ab2cfc31038895a5aa59c1543ddcf2120f
     "credit_limit": 50000000.0,
     "max_debt_days": 30,
     "customer_group": "Khách sỉ",
@@ -61,8 +76,47 @@
     "assigned_sale_id": 2,
     "credit_limit": 50000000.0,
     "max_debt_days": 30,
+<<<<<<< HEAD
+    "customer_group": "khach_le",
+    "status": "Tạm ngừng",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
+  },
+  "5": {
+    "id": 5,
+    "code": "DL005",
+    "name": "Khách Mua Lẻ Trực Tiếp",
+    "phone": "0911223344",
+    "email": "khachle@gmail.com",
+    "address": "Số 10 Tràng Thi, Hoàn Kiếm, Hà Nội",
+    "region": "Hà Nội",
+    "assigned_sale_id": null,
+    "credit_limit": 20000000.0,
+    "max_debt_days": 30,
+    "customer_group": "khach_le",
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null
+  },
+  "6": {
+    "id": 6,
+    "code": "DL-9964",
+    "name": "Trần Ngọc Huy",
+    "phone": "0937286172",
+    "email": null,
+    "address": "thái nguyên",
+    "region": "Hà Nội",
+    "assigned_sale_id": 3,
+    "credit_limit": 50000000.0,
+    "max_debt_days": 30,
+    "customer_group": "Đại lý cấp 1",
+    "status": "Đang hoạt động",
+=======
     "customer_group": "Khách lẻ",
     "status": "Tạm ngừng",
+>>>>>>> 609829ab2cfc31038895a5aa59c1543ddcf2120f
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null

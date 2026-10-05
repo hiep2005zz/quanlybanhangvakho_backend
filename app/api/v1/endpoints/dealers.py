@@ -143,8 +143,7 @@ def search_dealers(
         elif max_debt_age > c_days:
             debt_status = "Quá hạn thanh toán"
         else:
-            debt_status = "Trong hạn mức"
-
+            debt_status = "Trong hạn mức" 
         # ==========================================
         # 1. TÌM KIẾM NHANH THEO MÃ / TÊN / SĐT
         # ==========================================
@@ -177,7 +176,19 @@ def search_dealers(
         # ==========================================
         dealer_group = getattr(dealer, "customer_group", "") or ""
         if group_clean:
-            if group_clean not in dealer_group.lower():
+            def _normalize_group(g: str) -> str:
+                g_low = g.lower().replace("_", " ").strip()
+                if "sỉ" in g_low or "si" in g_low:
+                    return "khách sỉ"
+                if "cấp 1" in g_low or "cap 1" in g_low:
+                    return "đại lý cấp 1"
+                if "cấp 2" in g_low or "cap 2" in g_low:
+                    return "đại lý cấp 2"
+                if "lẻ" in g_low or "le" in g_low:
+                    return "khách lẻ"
+                return g_low
+
+            if _normalize_group(group_clean) != _normalize_group(dealer_group) and group_clean not in dealer_group.lower():
                 continue
 
         # ==========================================
@@ -710,4 +721,32 @@ def delete_dealer(
     del DEALERS_DB[dealer_id]
     save_dealers_db()
 
-    return {"status": "success", "message": f"Đã xóa đại lý {dealer.name} ({dealer.code}) thành công."}
+    return {"status": "success", "message": f"Đã xóa đại lý {dealer.name} ({dealer.code}) thành công."}
+
+
+@router.get("")
+@router.get("/")
+def get_dealers(
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "accountant"]))
+):
+    """Lấy danh sách tất cả đại lý."""
+    load_dealers_db()
+    res = []
+    for d in DEALERS_DB.values():
+        res.append({
+            "id": d.id,
+            "code": d.code,
+            "name": d.name,
+            "phone": d.phone,
+            "email": d.email,
+            "address": d.address,
+            "region": getattr(d, "region", None) or get_region(d.address),
+            "assigned_sale_id": d.assigned_sale_id,
+            "assigned_sale_name": get_sale_name(d.assigned_sale_id),
+            "credit_limit": getattr(d, "credit_limit", 50000000.0),
+            "max_debt_days": getattr(d, "max_debt_days", 30),
+            "customer_group": getattr(d, "customer_group", "Đại lý cấp 1"),
+            "status": getattr(d, "status", "Đang hoạt động"),
+            "lock_reason": getattr(d, "lock_reason", None),
+        })
+    return res
