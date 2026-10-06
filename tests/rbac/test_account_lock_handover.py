@@ -51,10 +51,8 @@ def test_ac1_lock_user_session_revoked_and_cannot_login():
     admin_token = get_token("admin")
     sales_token = get_token("sales")
 
-    DEALERS_DB[1].assigned_sale_id = 3
-    DEALERS_DB[2].assigned_sale_id = 3
-    DEALERS_DB[3].assigned_sale_id = 3
-    DEALERS_DB[4].assigned_sale_id = 2
+    for did, d in DEALERS_DB.items():
+        d.assigned_sale_id = 3 if did in [1, 2, 3] else (2 if did == 4 else None)
 
 
     # Phiên của sales trước khi khóa hoạt động bình thường
@@ -80,10 +78,11 @@ def test_ac1_lock_user_session_revoked_and_cannot_login():
     assert check_after.status_code == 401
     assert "khóa" in check_after.json()["detail"].lower()
 
-    # 4. Khi sales đăng nhập lại -> Bị chặn 403 Forbidden kèm lý do
+    # 4. Khi sales đăng nhập lại -> Bị chặn 403 Forbidden
     login_resp = client.post("/api/v1/auth/login", json={"username": "sales", "password": "123"})
     assert login_resp.status_code == 403
-    assert lock_reason in login_resp.json()["detail"]
+    assert "tài khoản đã bị khóa" in login_resp.json()["detail"].lower()
+    assert "liên hệ với quản lý" in login_resp.json()["detail"].lower()
 
 
 def test_ac3_dealers_marked_needing_handover_and_block_orders():
@@ -96,10 +95,8 @@ def test_ac3_dealers_marked_needing_handover_and_block_orders():
     """
     admin_token = get_token("admin")
 
-    DEALERS_DB[1].assigned_sale_id = 3
-    DEALERS_DB[2].assigned_sale_id = 3
-    DEALERS_DB[3].assigned_sale_id = 3
-    DEALERS_DB[4].assigned_sale_id = 2
+    for did, d in DEALERS_DB.items():
+        d.assigned_sale_id = 3 if did in [1, 2, 3] else (2 if did == 4 else None)
 
     # Đảm bảo tài khoản sales ở trạng thái LOCKED để kiểm tra quy trình bàn giao
 

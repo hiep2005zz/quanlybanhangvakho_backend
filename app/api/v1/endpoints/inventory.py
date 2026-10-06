@@ -20,35 +20,9 @@ from app.services.audit_service import log_audit_event
 
 router = APIRouter()
 
-# Mock transactions log in-memory
-INVENTORY_TRANSACTIONS: List[InventoryTransaction] = [
-    InventoryTransaction(
-        id=1,
-        product_id=1,
-        product_name="Áo thun Polo Nam Cao Cấp",
-        type="receipt",
-        quantity=50,
-        previous_stock=70,
-        new_stock=120,
-        performed_by="kho",
-        user_role="warehouse",
-        reason="Nhập kho định kỳ đầu tháng từ xưởng may",
-        created_at="2026-09-20 08:30:00",
-    ),
-    InventoryTransaction(
-        id=2,
-        product_id=2,
-        product_name="Quần Jeans Slimfit Co Giãn",
-        type="issue",
-        quantity=15,
-        previous_stock=60,
-        new_stock=45,
-        performed_by="kho",
-        user_role="warehouse",
-        reason="Xuất hàng giao đại lý miền Trung",
-        created_at="2026-09-22 14:15:00",
-    ),
-]
+# In-memory transactions log
+INVENTORY_TRANSACTIONS: List[InventoryTransaction] = []
+
 
 
 def _find_product(product_id: int):

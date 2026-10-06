@@ -17,7 +17,8 @@ from app.core.database import get_db
 from app.core.rbac import Role, Permission
 from app.schemas.auth import UserResponse
 from app.schemas.audit import AuditLogItem, AuditLogListResponse
-from app.models.entities import AuditLogEntity
+from app.models.entities import AuditLogEntity, UserEntity
+from app.models.user import USERS_DB, load_users_db
 from app.services.audit_service import MEMORY_AUDIT_LOGS
 
 router = APIRouter()
@@ -27,6 +28,40 @@ def _format_datetime(dt) -> str:
     if isinstance(dt, datetime):
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     return str(dt)
+
+
+def _get_user_avatar(user_id: Optional[int], user_name: Optional[str], db: Optional[Session] = None) -> Optional[str]:
+    """Tìm avatar_url của người dùng theo user_id hoặc user_name để hiển thị trong nhật ký."""
+    try:
+        load_users_db()
+        for u in USERS_DB.values():
+            if user_id is not None and u.id == user_id:
+                if getattr(u, "avatar_url", None):
+                    return u.avatar_url
+            if user_name:
+                uname = user_name.strip().lower()
+                if u.username.lower() == uname or (u.full_name and u.full_name.strip().lower() == uname):
+                    if getattr(u, "avatar_url", None):
+                        return u.avatar_url
+    except Exception:
+        pass
+
+    if db is not None:
+        try:
+            user_rec = None
+            if user_id is not None:
+                user_rec = db.query(UserEntity).filter(UserEntity.id == user_id).first()
+            if not user_rec and user_name:
+                user_rec = db.query(UserEntity).filter(
+                    (UserEntity.username.ilike(user_name.strip())) |
+                    (UserEntity.full_name.ilike(user_name.strip()))
+                ).first()
+            if user_rec and getattr(user_rec, "avatar_url", None):
+                return user_rec.avatar_url
+        except Exception:
+            pass
+
+    return None
 
 
 @router.get("", response_model=AuditLogListResponse)
@@ -108,6 +143,7 @@ def get_audit_logs(
                 id=r.id,
                 user_id=r.user_id,
                 user_name=r.user_name,
+                user_avatar=_get_user_avatar(r.user_id, r.user_name, db),
                 action_type=r.action_type,
                 entity_type=r.entity_type,
                 entity_id=r.entity_id,
@@ -166,6 +202,7 @@ def get_audit_logs(
                 id=m["id"],
                 user_id=m.get("user_id"),
                 user_name=m.get("user_name"),
+                user_avatar=_get_user_avatar(m.get("user_id"), m.get("user_name"), db),
                 action_type=m["action_type"],
                 entity_type=m["entity_type"],
                 entity_id=str(m["entity_id"]),
@@ -215,6 +252,7 @@ def get_entity_audit_logs(
                 id=r.id,
                 user_id=r.user_id,
                 user_name=r.user_name,
+                user_avatar=_get_user_avatar(r.user_id, r.user_name, db),
                 action_type=r.action_type,
                 entity_type=r.entity_type,
                 entity_id=r.entity_id,
@@ -237,6 +275,7 @@ def get_entity_audit_logs(
                 id=m["id"],
                 user_id=m.get("user_id"),
                 user_name=m.get("user_name"),
+                user_avatar=_get_user_avatar(m.get("user_id"), m.get("user_name"), db),
                 action_type=m["action_type"],
                 entity_type=m["entity_type"],
                 entity_id=str(m["entity_id"]),
@@ -250,58 +289,30 @@ def get_entity_audit_logs(
         ]
 
 
-@router.delete("/{log_id}", status_code=status.HTTP_200_OK)
+@router.delete("/{log_id}", status_code=status.HTTP_405_METHOD_NOT_ALLOWED)
 def delete_audit_log(
     log_id: int,
-    db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value])),
+    current_user: UserResponse = Depends(get_current_user),
 ):
     """
-    Xóa 1 bản ghi nhật ký thao tác (Chỉ Admin).
+    Theo nguyên tắc toàn vẹn và bất biến (Audit Trail Immutability):
+    Nhật ký thao tác (Audit log) là bất biến (Append-only), tuyệt đối không được phép chỉnh sửa hoặc xóa dưới bất kỳ hình thức nào.
     """
-    # 1. Xóa trong database
-    deleted_from_db = False
-    try:
-        record = db.query(AuditLogEntity).filter(AuditLogEntity.id == log_id).first()
-        if record:
-            db.delete(record)
-            db.commit()
-            deleted_from_db = True
-    except Exception as e:
-        db.rollback()
-        print(f"Error deleting audit log from DB: {e}")
-
-    # 2. Xóa trong MEMORY_AUDIT_LOGS
-    global MEMORY_AUDIT_LOGS
-    initial_len = len(MEMORY_AUDIT_LOGS)
-    MEMORY_AUDIT_LOGS = [m for m in MEMORY_AUDIT_LOGS if m.get("id") != log_id]
-    deleted_from_mem = len(MEMORY_AUDIT_LOGS) < initial_len
-
-    if not deleted_from_db and not deleted_from_mem:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy bản ghi nhật ký ID {log_id}",
-        )
-
-    return {"message": f"Đã xóa bản ghi nhật ký ID {log_id} thành công", "deleted_id": log_id}
+    raise HTTPException(
+        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+        detail="Nhật ký thao tác là dữ liệu bất biến (Append-only), nghiêm cấm chỉnh sửa và xóa để đảm bảo tính minh bạch và tuân thủ kiểm toán."
+    )
 
 
-@router.delete("", status_code=status.HTTP_200_OK)
+@router.delete("", status_code=status.HTTP_405_METHOD_NOT_ALLOWED)
 def clear_all_audit_logs(
-    db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value])),
+    current_user: UserResponse = Depends(get_current_user),
 ):
     """
-    Xóa toàn bộ bản ghi nhật ký thao tác (Chỉ Admin).
+    Theo nguyên tắc toàn vẹn và bất biến (Audit Trail Immutability):
+    Nhật ký thao tác (Audit log) là bất biến (Append-only), tuyệt đối không được phép chỉnh sửa hoặc xóa dưới bất kỳ hình thức nào.
     """
-    try:
-        db.query(AuditLogEntity).delete()
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        print(f"Error clearing audit logs from DB: {e}")
-
-    global MEMORY_AUDIT_LOGS
-    MEMORY_AUDIT_LOGS.clear()
-
-    return {"message": "Đã dọn sạch toàn bộ nhật ký thao tác thành công"}
+    raise HTTPException(
+        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+        detail="Nhật ký thao tác là dữ liệu bất biến (Append-only), nghiêm cấm chỉnh sửa và xóa để đảm bảo tính minh bạch và tuân thủ kiểm toán."
+    )

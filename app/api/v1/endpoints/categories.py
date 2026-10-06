@@ -1,10 +1,12 @@
+import json
+from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from app.api.deps import require_permission, get_current_user, require_roles
 from app.core.database import get_db
 from app.core.rbac import Permission, Role
-from app.models.entities import CategoryEntity, ProductEntity
+from app.models.entities import CategoryEntity, ProductEntity, OrderEntity
 from app.schemas.auth import UserResponse
 from app.schemas.category import CategoryCreate, CategoryUpdate, CategoryResponse, CategoryTreeResponse
 
@@ -125,62 +127,133 @@ def delete_category(
 
 @router.get("/sales-report")
 def get_category_sales_report(
+    period: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value]))
 ):
     """
     Báo cáo doanh số theo ngành hàng.
-    Tổng hợp doanh số lũy kế từ các nhóm con lên nhóm cha.
+    Hỗ trợ lọc theo thời gian: 'today', 'month', 'quarter', 'all'.
+    Tổng hợp doanh số lũy kế từ các nhóm con lên nhóm cha (hierarchical rollup).
+    Dữ liệu được trích xuất từ các đơn hàng thực tế (OrderEntity trong CSDL và cache bộ nhớ ORDERS_DB).
     """
     categories = db.query(CategoryEntity).all()
-    # Tính doanh số từ RAW_PRODUCTS 
+    cat_by_id = {cat.id: cat for cat in categories}
+    cat_by_name = {cat.name.strip().lower(): cat.id for cat in categories}
+
+    # 1. Xây dựng bản đồ ánh xạ sản phẩm -> ngành hàng (prod_to_cat)
+    # Ưu tiên lấy từ ProductEntity trong CSDL, sau đó kiểm tra RAW_PRODUCTS
+    prod_to_cat: dict[int, Optional[int]] = {}
+    db_products = db.query(ProductEntity).all()
+    for pe in db_products:
+        if pe.category_id and pe.category_id in cat_by_id:
+            prod_to_cat[pe.id] = pe.category_id
+        elif pe.category and pe.category.strip().lower() in cat_by_name:
+            prod_to_cat[pe.id] = cat_by_name[pe.category.strip().lower()]
+        else:
+            prod_to_cat[pe.id] = None
+
     from app.api.v1.endpoints.products import RAW_PRODUCTS
-    
-    # Doanh số trực tiếp cho mỗi category
-    direct_sales = {cat.id: 0.0 for cat in categories}
-    direct_sales[None] = 0.0
-    
-    for p in RAW_PRODUCTS:
-        cid = p.get("category_id")
-        stock = p.get("stock", 0)
-        sell_price = p.get("sell_price", 0.0)
-        # Using stock * sell_price as a mock for sales, or we should use ORDERS_DB for actual sales!
-        # Wait, the instruction says "Báo cáo doanh số theo ngành hàng". If we use stock*sell_price, that's inventory value. 
-        pass
-    
-    # Calculate real sales from orders
-    from app.api.v1.endpoints.orders import ORDERS_DB
-    
-    product_sales = {}
-    for order_id, order in ORDERS_DB.items():
-        if order.get("status") not in ["CANCELLED"]:
-            for item in order.get("items", []):
-                pid = item.get("product_id")
-                qty = item.get("quantity", 0)
-                price = item.get("price", 0.0)
-                product_sales[pid] = product_sales.get(pid, 0.0) + (qty * price)
-                
-    direct_sales = {cat.id: 0.0 for cat in categories}
-    direct_sales[None] = 0.0
-    
     for p in RAW_PRODUCTS:
         pid = p.get("id")
-        cid = p.get("category_id")
-        if pid in product_sales:
-            if cid in direct_sales:
-                direct_sales[cid] += product_sales[pid]
-            else:
-                direct_sales[None] += product_sales[pid]
+        if pid not in prod_to_cat or prod_to_cat[pid] is None:
+            if p.get("category_id") and p.get("category_id") in cat_by_id:
+                prod_to_cat[pid] = p["category_id"]
+            elif p.get("category") and p.get("category").strip().lower() in cat_by_name:
+                prod_to_cat[pid] = cat_by_name[p.get("category").strip().lower()]
 
-    # hierarchical calculation
-    # We need to build a graph from bottom to top, or recursively sum
-    def get_descendants_sales(cat_id):
+    # 2. Thu thập và khử trùng lặp đơn hàng từ DB và ORDERS_DB
+    from app.api.v1.endpoints.orders import ORDERS_DB
+    seen_codes = set()
+    orders_to_process = []
+
+    db_orders = db.query(OrderEntity).all()
+    for o in db_orders:
+        if o.status != "CANCELLED":
+            code = (o.order_code or f"DB_{o.id}").strip().upper()
+            if code not in seen_codes:
+                seen_codes.add(code)
+                items = []
+                if o.items_json:
+                    try:
+                        parsed = json.loads(o.items_json)
+                        if isinstance(parsed, dict) and "items" in parsed:
+                            items = parsed["items"]
+                        elif isinstance(parsed, list):
+                            items = parsed
+                    except Exception:
+                        items = []
+                orders_to_process.append({
+                    "id": o.id,
+                    "order_code": o.order_code,
+                    "created_at": o.created_at,
+                    "items": items
+                })
+
+    for oid, o in ORDERS_DB.items():
+        if o.get("status") != "CANCELLED":
+            code = (o.get("order_code") or f"MEM_{oid}").strip().upper()
+            if code not in seen_codes:
+                seen_codes.add(code)
+                created_at_val = o.get("created_at")
+                if isinstance(created_at_val, str):
+                    try:
+                        created_at_val = datetime.fromisoformat(created_at_val.replace("Z", "+00:00"))
+                    except Exception:
+                        created_at_val = None
+                orders_to_process.append({
+                    "id": o.get("id", oid),
+                    "order_code": o.get("order_code"),
+                    "created_at": created_at_val,
+                    "items": o.get("items", [])
+                })
+
+    # 3. Lọc theo khoảng thời gian (period)
+    now = datetime.now(timezone.utc)
+    filtered_orders = []
+    for ord_obj in orders_to_process:
+        dt = ord_obj["created_at"]
+        if period and period != "all" and dt:
+            ord_dt = dt if (isinstance(dt, datetime) and dt.tzinfo) else (dt.replace(tzinfo=timezone.utc) if isinstance(dt, datetime) else None)
+            if ord_dt:
+                if period == "today":
+                    if ord_dt.date() != now.date():
+                        continue
+                elif period == "month":
+                    if (ord_dt.year, ord_dt.month) != (now.year, now.month):
+                        continue
+                elif period == "quarter":
+                    current_q = (now.month - 1) // 3 + 1
+                    ord_q = (ord_dt.month - 1) // 3 + 1
+                    if ord_dt.year != now.year or ord_q != current_q:
+                        continue
+        filtered_orders.append(ord_obj)
+
+    # 4. Tính toán doanh số trực tiếp cho từng ngành hàng
+    direct_sales = {cat.id: 0.0 for cat in categories}
+    direct_sales[None] = 0.0
+
+    for ord_obj in filtered_orders:
+        for item in ord_obj.get("items", []):
+            pid = item.get("product_id")
+            qty = float(item.get("quantity", 0) or 0)
+            price = float(item.get("price", 0.0) or 0.0)
+            amount = qty * price
+
+            cid = prod_to_cat.get(pid)
+            if cid in direct_sales:
+                direct_sales[cid] += amount
+            else:
+                direct_sales[None] += amount
+
+    # 5. Phân tầng lũy kế từ nhóm con lên nhóm cha (Hierarchical aggregation)
+    def get_descendants_sales(cat_id: int) -> float:
         total = direct_sales.get(cat_id, 0.0)
         for cat in categories:
             if cat.parent_id == cat_id:
                 total += get_descendants_sales(cat.id)
         return total
-        
+
     report = []
     for cat in categories:
         report.append({
@@ -190,5 +263,5 @@ def get_category_sales_report(
             "direct_sales": direct_sales.get(cat.id, 0.0),
             "total_sales": get_descendants_sales(cat.id)
         })
-        
+
     return report

@@ -26,7 +26,7 @@ def download_template(current_user: UserResponse = Depends(require_permission(Pe
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=Import_Users_Template.xlsx"}
+        headers={"Content-Disposition": "attachment; filename=Mau_Nhap_Nguoi_Dung.xlsx"}
     )
 
 @router.post("/preview", response_model=BulkImportPreviewResponse)
@@ -176,17 +176,29 @@ def export_errors(
     ws = wb.active
     ws.title = "Errors"
     
-    headers = ["Dòng", "Họ và tên", "Email", "Số điện thoại", "Vai trò (Role)", "Chi nhánh / Địa bàn", "Mật khẩu", "Lý do lỗi"]
+    headers = ["Dòng", "Họ và tên", "Email", "Số điện thoại", "Vai trò", "Chi nhánh / Địa bàn", "Mật khẩu", "Lý do lỗi"]
     ws.append(headers)
     
+    role_vi_export_map = {
+        "admin": "Quản trị hệ thống",
+        "sales_manager": "Quản lý kinh doanh",
+        "sales": "Nhân viên kinh doanh",
+        "warehouse": "Thủ kho",
+        "warehouse_manager": "Quản lý kho",
+        "accountant": "Kế toán",
+        "purchasing": "Nhân viên mua hàng",
+        "customer": "Đại lý"
+    }
+
     for row in request.rows:
         error_msgs = ", ".join(f"{k}: {v}" for k, v in row.errors.items())
+        role_display = role_vi_export_map.get(row.role, row.role)
         ws.append([
             row.row_index,
             row.full_name,
             row.email,
             row.phone,
-            row.role,
+            role_display,
             row.branch,
             row.password,
             error_msgs

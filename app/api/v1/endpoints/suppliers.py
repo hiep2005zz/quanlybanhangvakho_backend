@@ -9,7 +9,8 @@ Quản lý danh mục nhà cung cấp.
 """
 import re
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
+from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
@@ -134,7 +135,45 @@ def _commit(db: Session) -> None:
         )
 
 
-@router.get("", response_model=SupplierListResponse)
+def _supplier_has_receipts(db: Session, entity: SupplierEntity) -> bool:
+    """Kiểm tra xem nhà cung cấp đã có phiếu nhập kho nào liên kết hay chưa."""
+    from app.models.entities import InventoryTransactionEntity
+    from app.api.v1.endpoints.inventory import INVENTORY_TRANSACTIONS
+
+    like_name = f"%{entity.name}%"
+    like_code = f"%{entity.code}%"
+    has_db = db.query(InventoryTransactionEntity).filter(
+        InventoryTransactionEntity.type == "receipt",
+        or_(
+            InventoryTransactionEntity.reason.ilike(like_name),
+            InventoryTransactionEntity.reason.ilike(like_code)
+        )
+    ).first() is not None
+
+    if has_db:
+        return True
+
+    for tx in INVENTORY_TRANSACTIONS:
+        tx_type = getattr(tx, "type", None) or (tx.get("type") if isinstance(tx, dict) else None)
+        tx_reason = getattr(tx, "reason", "") or (tx.get("reason", "") if isinstance(tx, dict) else "")
+        if tx_type == "receipt" and (entity.name.lower() in tx_reason.lower() or entity.code.lower() in tx_reason.lower()):
+            return True
+
+    return False
+
+
+class SupplierDetailResponse(SupplierResponse):
+    has_receipts: bool = False
+
+
+class SupplierListDetailResponse(BaseModel):
+    items: List[SupplierDetailResponse]
+    total: int
+    active_count: int
+    inactive_count: int
+
+
+@router.get("", response_model=SupplierListDetailResponse)
 def list_suppliers(
     search: Optional[str] = Query(None, max_length=100, description="Tìm theo mã, tên, MST, người liên hệ"),
     status_filter: str = Query("all", alias="status", description="all | active | inactive"),
@@ -167,21 +206,52 @@ def list_suppliers(
     elif status_filter == "inactive":
         rows = [r for r in rows if not r.is_active]
 
-    return SupplierListResponse(
-        items=rows,
-        total=len(rows),
+    detail_items = []
+    for r in rows:
+        item_dict = {c.name: getattr(r, c.name) for c in r.__table__.columns}
+        item_dict["has_receipts"] = _supplier_has_receipts(db, r)
+        detail_items.append(SupplierDetailResponse(**item_dict))
+
+    return SupplierListDetailResponse(
+        items=detail_items,
+        total=len(detail_items),
         active_count=active_count,
         inactive_count=inactive_count,
     )
 
 
-@router.get("/{code}", response_model=SupplierResponse)
+@router.get("/{code}", response_model=SupplierDetailResponse)
 def get_supplier(
     code: str,
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_supplier_read),
 ):
-    return _get_or_404(db, code)
+    entity = _get_or_404(db, code)
+    item_dict = {c.name: getattr(entity, c.name) for c in entity.__table__.columns}
+    item_dict["has_receipts"] = _supplier_has_receipts(db, entity)
+    return SupplierDetailResponse(**item_dict)
+
+
+@router.delete("/{code}")
+def delete_supplier(
+    code: str,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_supplier_write),
+):
+    """
+    Xóa nhà cung cấp.
+    Nếu nhà cung cấp đã có phiếu nhập kho: CHẶN xóa (HTTP 400), chỉ cho phép ngừng giao dịch.
+    """
+    entity = _get_or_404(db, code)
+    if _supplier_has_receipts(db, entity):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Nhà cung cấp đã có phiếu nhập thì không xoá được, chỉ ngừng giao dịch."
+        )
+
+    db.delete(entity)
+    _commit(db)
+    return {"message": f"Đã xóa nhà cung cấp '{entity.name}' ({entity.code}) thành công."}
 
 
 @router.post("", response_model=SupplierResponse, status_code=status.HTTP_201_CREATED)
