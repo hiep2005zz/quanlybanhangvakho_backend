@@ -55,6 +55,8 @@ def _ensure_legacy_columns(bind=engine):
         },
         "orders": {
             "delivery_point_id": ("INTEGER", "INT NULL"),
+            "discount_rate": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "discount_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
         },
     }
     inspector = inspect(bind)

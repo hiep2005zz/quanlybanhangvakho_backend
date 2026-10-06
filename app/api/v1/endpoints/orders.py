@@ -25,6 +25,7 @@ from app.models.entities import OrderEntity
 
 from app.models.user import USERS_DB
 from app.services.audit_service import log_audit_event
+from app.api.v1.endpoints.discounts import resolve_best_discount
 
 router = APIRouter()
 
@@ -46,6 +47,7 @@ class OrderCreate(BaseModel):
     delivery_point: Optional[str] = Field(default=None, max_length=500)
     desired_delivery_date: Optional[date] = None
     discount_percent: float = Field(default=0, ge=0, le=100)
+    discount_rate: Optional[float] = Field(default=None, ge=0, le=100)
 
 class OrderResponse(BaseModel):
     id: int
@@ -63,10 +65,15 @@ class OrderResponse(BaseModel):
     created_at: str
     approved_by: Optional[str] = None
     approved_at: Optional[str] = None
+    subtotal_amount: Optional[float] = 0.0
+    discount_percent: float = 0.0
+    discount_rate: Optional[float] = 0.0
+    discount_amount: float = 0.0
 
 class SalesOrderResponse(OrderResponse):
     subtotal_amount: float = 0
     discount_percent: float = 0
+    discount_rate: Optional[float] = 0
     discount_amount: float = 0
     delivery_point: Optional[str] = None
     desired_delivery_date: Optional[str] = None
@@ -136,6 +143,19 @@ def get_orders(
     }
     for order in db.query(OrderEntity).order_by(OrderEntity.id.desc()).all():
         if order.order_code not in orders_by_code:
+            disc_rate = getattr(order, "discount_rate", 0.0) or 0.0
+            disc_amt = getattr(order, "discount_amount", 0.0) or 0.0
+            sub_amt = (order.total_amount or 0.0) + disc_amt
+            items_parsed = None
+            if order.items_json:
+                try:
+                    ij = json.loads(order.items_json)
+                    items_parsed = ij.get("items", [])
+                    disc_rate = ij.get("discount_percent", ij.get("discount_rate", disc_rate))
+                    disc_amt = ij.get("discount_amount", disc_amt)
+                    sub_amt = ij.get("subtotal_amount", sub_amt)
+                except Exception:
+                    pass
             orders_by_code[order.order_code] = OrderResponse(
                 id=order.id,
                 order_code=order.order_code,
@@ -145,7 +165,12 @@ def get_orders(
                 assigned_sale_id=order.assigned_sale_id,
                 assigned_sale_name=order.assigned_sale_name,
                 total_amount=order.total_amount,
+                subtotal_amount=sub_amt,
+                discount_percent=disc_rate,
+                discount_rate=disc_rate,
+                discount_amount=disc_amt,
                 status=order.status,
+                items=items_parsed,
                 created_at=order.created_at.isoformat() if order.created_at else "",
             )
     return sorted(orders_by_code.values(), key=lambda order: order.id, reverse=True)
@@ -371,14 +396,65 @@ def create_order(
         db.commit()
 
     subtotal_amount = total_amount
-    discount_amount = round(subtotal_amount * data.discount_percent / 100, 2)
-    total_amount = subtotal_amount - discount_amount
+    total_quantity = sum(item.get("quantity", 0) for item in processed_items)
+    best_disc = resolve_best_discount(
+        items=processed_items,
+        dealer=dealer,
+        total_quantity=total_quantity,
+        subtotal_amount=subtotal_amount,
+    )
+    best_pct = float(best_disc["discount_percent"])
+
+    req_discount = data.discount_rate if data.discount_rate is not None and data.discount_percent == 0 else data.discount_percent
+
+    if req_discount == 0:
+        effective_pct = best_pct
+    else:
+        effective_pct = req_discount
+        if best_pct > 0 and effective_pct > best_pct:
+            requires_approval = True
+            approval_reasons.append(
+                f"Chiết khấu thủ công ({effective_pct}%) vượt mức chính sách {best_disc.get('applied_policy_code', '')} ({best_pct}%)"
+            )
+
+    discount_amount = round(subtotal_amount * effective_pct / 100, 2)
+    final_total_amount = subtotal_amount - discount_amount
     order_id = _allocate_order_id(db)
 
     order_code = f"ORD{order_id:05d}"
     now_str = datetime.now(timezone.utc).isoformat()
     order_status = "PENDING_APPROVAL" if requires_approval else "CONFIRMED"
     approval_reason = " | ".join(approval_reasons) if approval_reasons else None
+
+    if db:
+        db_order = OrderEntity(
+            id=order_id,
+            order_code=order_code,
+            dealer_id=dealer.id,
+            dealer_name=dealer.name,
+            created_by=current_user.username,
+            assigned_sale_id=assigned_sale_id,
+            assigned_sale_name=assigned_user.full_name if assigned_user else None,
+            total_amount=final_total_amount,
+            status=order_status,
+            note=data.note,
+            delivery_point_id=selected_delivery_point_id,
+            discount_rate=effective_pct,
+            discount_amount=discount_amount,
+            items_json=json.dumps({
+                "items": processed_items,
+                "delivery_point_id": selected_delivery_point_id,
+                "subtotal_amount": subtotal_amount,
+                "discount_percent": effective_pct,
+                "discount_rate": effective_pct,
+                "discount_amount": discount_amount,
+                "applied_policy_code": best_disc.get("applied_policy_code"),
+                "applied_policy_name": best_disc.get("applied_policy_name"),
+            }, ensure_ascii=False),
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(db_order)
+        db.commit()
 
     order_record = {
         "id": order_id,
@@ -389,14 +465,15 @@ def create_order(
         "created_by": current_user.username,
         "assigned_sale_id": assigned_sale_id,
         "assigned_sale_name": assigned_user.full_name if assigned_user else None,
-        "total_amount": total_amount,
+        "total_amount": final_total_amount,
         "status": order_status,
         "requires_approval": requires_approval,
         "approval_reason": approval_reason,
         "items": processed_items,
         "created_at": now_str,
         "subtotal_amount": subtotal_amount,
-        "discount_percent": data.discount_percent,
+        "discount_percent": effective_pct,
+        "discount_rate": effective_pct,
         "discount_amount": discount_amount,
         "delivery_point": data.delivery_point,
         "desired_delivery_date": data.desired_delivery_date.isoformat() if data.desired_delivery_date else None,
@@ -512,8 +589,36 @@ def create_sales_entry_order(
 
     delivery_point = data.delivery_point.strip()
     subtotal_amount = sum(item["quantity"] * item["price"] for item in priced_items)
-    discount_amount = round(subtotal_amount * data.discount_percent / 100, 2)
-    total_amount = subtotal_amount - discount_amount
+    total_quantity = sum(item["quantity"] for item in priced_items)
+
+    best_disc = resolve_best_discount(
+        items=priced_items,
+        dealer=dealer,
+        total_quantity=total_quantity,
+        subtotal_amount=subtotal_amount,
+    )
+    best_pct = float(best_disc["discount_percent"])
+
+    req_discount = data.discount_rate if data.discount_rate is not None and data.discount_percent == 0 else data.discount_percent
+
+    requires_approval = False
+    approval_reasons = []
+
+    if req_discount == 0:
+        effective_pct = best_pct
+    else:
+        effective_pct = req_discount
+        if best_pct > 0 and effective_pct > best_pct:
+            requires_approval = True
+            approval_reasons.append(
+                f"Chiết khấu thủ công ({effective_pct}%) vượt mức chính sách {best_disc.get('applied_policy_code', '')} ({best_pct}%)"
+            )
+
+    discount_amount = round(subtotal_amount * effective_pct / 100, 2)
+    final_total_amount = subtotal_amount - discount_amount
+    order_status = "PENDING_APPROVAL" if requires_approval else "CONFIRMED"
+    approval_reason = " | ".join(approval_reasons) if approval_reasons else None
+
     created_at = datetime.now(timezone.utc)
     db_order = OrderEntity(
         order_code=f"PENDING-{uuid4().hex}",
@@ -522,16 +627,23 @@ def create_sales_entry_order(
         created_by=current_user.username,
         assigned_sale_id=assigned_sale_id,
         assigned_sale_name=assigned_user.full_name if assigned_user else None,
-        total_amount=total_amount,
-        status="CONFIRMED",
+        total_amount=final_total_amount,
+        discount_rate=effective_pct,
+        discount_amount=discount_amount,
+        status=order_status,
         note=data.note,
         items_json=json.dumps({
             "items": priced_items,
             "delivery_point": delivery_point,
             "desired_delivery_date": data.desired_delivery_date.isoformat(),
             "subtotal_amount": subtotal_amount,
-            "discount_percent": data.discount_percent,
+            "discount_percent": effective_pct,
+            "discount_rate": effective_pct,
             "discount_amount": discount_amount,
+            "applied_policy_code": best_disc.get("applied_policy_code"),
+            "applied_policy_name": best_disc.get("applied_policy_name"),
+            "requires_approval": requires_approval,
+            "approval_reason": approval_reason,
         }, ensure_ascii=False),
         created_at=created_at,
     )
@@ -556,17 +668,21 @@ def create_sales_entry_order(
         "created_by": current_user.username,
         "assigned_sale_id": assigned_sale_id,
         "assigned_sale_name": assigned_user.full_name if assigned_user else None,
-        "total_amount": total_amount,
-        "status": "CONFIRMED",
+        "total_amount": final_total_amount,
+        "status": order_status,
+        "requires_approval": requires_approval,
+        "approval_reason": approval_reason,
         "created_at": created_at.isoformat(),
         "subtotal_amount": subtotal_amount,
-        "discount_percent": data.discount_percent,
+        "discount_percent": effective_pct,
+        "discount_rate": effective_pct,
         "discount_amount": discount_amount,
         "delivery_point": delivery_point,
         "desired_delivery_date": data.desired_delivery_date.isoformat(),
         "note": data.note,
         "items": priced_items,
     }
+    ORDERS_DB[db_order.id] = order_record
     return SalesOrderResponse(**order_record)
 
 @router.get("/{order_code}", response_model=SalesOrderResponse)
@@ -627,12 +743,15 @@ def get_order_detail(
         for field in (
             "subtotal_amount",
             "discount_percent",
+            "discount_rate",
             "discount_amount",
             "delivery_point",
             "desired_delivery_date",
         ):
             if field in stored_details:
                 order_record[field] = stored_details[field]
+        if "discount_rate" not in order_record and "discount_percent" in order_record:
+            order_record["discount_rate"] = order_record["discount_percent"]
 
     items = order_record.get("items") or []
     from app.api.v1.endpoints.products import _find_product_in_raw
