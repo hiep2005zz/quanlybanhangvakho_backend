@@ -13,7 +13,7 @@ from app.core.rbac import (
     SPECIFIC_WAREHOUSES,
 )
 from app.core.security import get_password_hash
-from app.models.user import USERS_DB, UserInDB, get_next_user_id, save_users_db
+from app.models.user import USERS_DB, UserInDB, get_next_user_id, save_users_db, normalize_phone, is_phone_taken
 from app.models.dealer import sync_dealer_for_user
 from app.schemas.auth import UserResponse
 from app.schemas.user import UserCreate, UserUpdate, UserItemResponse, UserListResponse, CustomerCreate, CustomerCreateResponse
@@ -169,11 +169,19 @@ def create_user(
                 detail=f"Email '{clean_email}' đã được sử dụng bởi người dùng khác."
             )
 
+    clean_phone = normalize_phone(getattr(data, "phone", None))
+    if clean_phone and is_phone_taken(clean_phone):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Số điện thoại này đã có trên hệ thống vui lòng đổi số khác"
+        )
+
     new_user = UserInDB(
         id=get_next_user_id(),
         username=clean_username,
         full_name=data.full_name.strip(),
         email=clean_email,
+        phone=clean_phone if clean_phone else (data.phone.strip() if getattr(data, "phone", None) else None),
         role=primary_role,
         roles=chosen_roles,
         hashed_password=get_password_hash(data.password),
@@ -207,7 +215,12 @@ def create_customer(
     - Lưu số điện thoại liên hệ để quản lý thuận tiện.
     """
     clean_email = data.email.strip().lower()
-    clean_phone = data.phone.strip()
+    clean_phone = normalize_phone(data.phone)
+    if clean_phone and is_phone_taken(clean_phone):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Số điện thoại này đã có trên hệ thống vui lòng đổi số khác"
+        )
 
     # Kiểm tra trùng email
     for existing in USERS_DB.values():
@@ -401,7 +414,14 @@ def update_user(
         user.email = clean_email
 
     if data.phone is not None:
-        user.phone = data.phone.strip()
+        raw_phone = data.phone.strip()
+        clean_phone = normalize_phone(raw_phone)
+        if clean_phone and is_phone_taken(clean_phone, exclude_username=target_username):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Số điện thoại này đã có trên hệ thống vui lòng đổi số khác"
+            )
+        user.phone = clean_phone if clean_phone else (raw_phone if raw_phone else None)
 
     if data.branch is not None:
         user.branch = data.branch.strip()

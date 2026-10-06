@@ -10,6 +10,7 @@ class UserCreate(BaseModel):
     role: Optional[str] = None
     roles: Optional[List[str]] = None
     branch: Optional[str] = "Kho Tổng Hà Nội"
+    phone: Optional[str] = None
 
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None

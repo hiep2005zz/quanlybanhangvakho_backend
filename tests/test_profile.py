@@ -7,8 +7,16 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def restore_seed_users():
-    yield
     from app.models.user import USERS_DB, save_users_db
+    if "admin" in USERS_DB:
+        USERS_DB["admin"].phone = "0822516998"
+    if "sales_manager" in USERS_DB:
+        USERS_DB["sales_manager"].phone = "0998473998"
+    yield
+    if "admin" in USERS_DB:
+        USERS_DB["admin"].phone = "0822516998"
+    if "sales_manager" in USERS_DB:
+        USERS_DB["sales_manager"].phone = "0998473998"
     if "sales" in USERS_DB:
         USERS_DB["sales"].full_name = "Trần Bán Hàng"
         USERS_DB["sales"].phone = None
@@ -62,19 +70,19 @@ def test_update_profile_valid():
 
     payload = {
         "full_name": "Trần Bán Hàng Mới",
-        "phone_number": "0987654321",
+        "phone_number": "0971112233",
     }
     res = client.put("/api/v1/me", json=payload, headers=headers)
     assert res.status_code == 200
     data = res.json()
     assert data["full_name"] == "Trần Bán Hàng Mới"
-    assert data["phone_number"] == "0987654321"
+    assert data["phone_number"] == "0971112233"
 
     # GET lại để kiểm tra tính bền vững
     get_res = client.get("/api/v1/me", headers=headers)
     assert get_res.status_code == 200
     assert get_res.json()["full_name"] == "Trần Bán Hàng Mới"
-    assert get_res.json()["phone_number"] == "0987654321"
+    assert get_res.json()["phone_number"] == "0971112233"
 
 
 def test_update_profile_patch_alias():
@@ -117,8 +125,46 @@ def test_update_profile_empty_name():
     token = _login("sales", "123")
     headers = {"Authorization": f"Bearer {token}"}
 
-    res = client.put("/api/v1/me", json={"full_name": "   ", "phone_number": "0987654321"}, headers=headers)
+    res = client.put("/api/v1/me", json={"full_name": "   ", "phone_number": "0971112233"}, headers=headers)
     assert res.status_code in [400, 422]
+
+
+def test_update_profile_duplicate_phone_rejected():
+    """Kiểm tra số điện thoại bị trùng với tài khoản khác thì không cho lưu và trả về 409."""
+    token = _login("sales", "123")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Thử đổi sang số điện thoại của admin (0822516998)
+    res = client.put(
+        "/api/v1/me",
+        json={"full_name": "Trần Bán Hàng", "phone_number": "0822516998"},
+        headers=headers
+    )
+    assert res.status_code == 409
+    assert res.json()["detail"] == "Số điện thoại này đã có trên hệ thống vui lòng đổi số khác"
+
+    # Thử đổi sang số điện thoại của sales_manager (0998473998)
+    res2 = client.put(
+        "/api/v1/me",
+        json={"full_name": "Trần Bán Hàng", "phone_number": "0998473998"},
+        headers=headers
+    )
+    assert res2.status_code == 409
+    assert res2.json()["detail"] == "Số điện thoại này đã có trên hệ thống vui lòng đổi số khác"
+
+
+def test_update_profile_same_user_phone_allowed():
+    """Tài khoản tự cập nhật lại chính số điện thoại của mình thì được phép (không bị báo trùng)."""
+    token = _login("admin", "123")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    res = client.put(
+        "/api/v1/me",
+        json={"full_name": "Đào Ngọc Hiệp", "phone_number": "0822516998"},
+        headers=headers
+    )
+    assert res.status_code == 200
+    assert res.json()["phone_number"] == "0822516998"
 
 
 def test_update_profile_security_fields_ignored():
@@ -128,7 +174,7 @@ def test_update_profile_security_fields_ignored():
     # Cố tình gửi role admin, username khác, email khác
     malicious_payload = {
         "full_name": "Trần Bán Hàng An Toàn",
-        "phone_number": "0912345678",
+        "phone_number": "0972223344",
         "role": "admin",
         "roles": ["admin"],
         "username": "superadmin",
@@ -144,7 +190,7 @@ def test_update_profile_security_fields_ignored():
     assert data["role"] == "sales"
     assert data["username"] == "sales"
     assert data["full_name"] == "Trần Bán Hàng An Toàn"
-    assert data["phone_number"] == "0912345678"
+    assert data["phone_number"] == "0972223344"
 
 
 def test_all_seven_roles_can_access_profile():

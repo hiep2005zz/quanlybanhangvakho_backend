@@ -4,12 +4,12 @@
     "username": "admin",
     "full_name": "Đào Ngọc Hiệp",
     "email": "daongochiep645@gmail.com",
-    "phone": "0822516998",
+    "phone": "0998887766",
     "role": "admin",
     "roles": [
       "admin"
     ],
-    "hashed_password": "$2b$12$ndJxSqzU/4evFiIm0mk12eHu5d3dRyi6SGZi6oHsSjCFiEXnddgia",
+    "hashed_password": "$2b$12$9aIp7ONNe9ZpVqYxw/GR5uBEJRYSA.BlLgZCoK2nV1V88lX7XvFCK",
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
@@ -30,7 +30,7 @@
     "roles": [
       "sales_manager"
     ],
-    "hashed_password": "$2b$12$ndJxSqzU/4evFiIm0mk12eHu5d3dRyi6SGZi6oHsSjCFiEXnddgia",
+    "hashed_password": "$2b$12$9aIp7ONNe9ZpVqYxw/GR5uBEJRYSA.BlLgZCoK2nV1V88lX7XvFCK",
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
@@ -51,7 +51,7 @@
     "roles": [
       "sales"
     ],
-    "hashed_password": "$2b$12$ndJxSqzU/4evFiIm0mk12eHu5d3dRyi6SGZi6oHsSjCFiEXnddgia",
+    "hashed_password": "$2b$12$9aIp7ONNe9ZpVqYxw/GR5uBEJRYSA.BlLgZCoK2nV1V88lX7XvFCK",
     "branch": "Khu vực Miền Bắc",
     "is_active": true,
     "status": "ACTIVE",
@@ -60,7 +60,7 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
-    "avatar_url": "/uploads/avatars/sales_2c9053d0a6ff_square.png"
+    "avatar_url": "/uploads/avatars/sales_e89ab34a0192_square.png"
   },
   "kho": {
     "id": 4,
@@ -72,7 +72,7 @@
     "roles": [
       "warehouse"
     ],
-    "hashed_password": "$2b$12$ndJxSqzU/4evFiIm0mk12eHu5d3dRyi6SGZi6oHsSjCFiEXnddgia",
+    "hashed_password": "$2b$12$9aIp7ONNe9ZpVqYxw/GR5uBEJRYSA.BlLgZCoK2nV1V88lX7XvFCK",
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -93,7 +93,7 @@
     "roles": [
       "warehouse_manager"
     ],
-    "hashed_password": "$2b$12$ndJxSqzU/4evFiIm0mk12eHu5d3dRyi6SGZi6oHsSjCFiEXnddgia",
+    "hashed_password": "$2b$12$9aIp7ONNe9ZpVqYxw/GR5uBEJRYSA.BlLgZCoK2nV1V88lX7XvFCK",
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -114,7 +114,7 @@
     "roles": [
       "accountant"
     ],
-    "hashed_password": "$2b$12$ndJxSqzU/4evFiIm0mk12eHu5d3dRyi6SGZi6oHsSjCFiEXnddgia",
+    "hashed_password": "$2b$12$9aIp7ONNe9ZpVqYxw/GR5uBEJRYSA.BlLgZCoK2nV1V88lX7XvFCK",
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",
@@ -130,12 +130,12 @@
     "username": "muahang",
     "full_name": "Vu Mua Hang",
     "email": "muahang@congty.vn",
-    "phone": "0822516998",
+    "phone": "0833516998",
     "role": "purchasing",
     "roles": [
       "purchasing"
     ],
-    "hashed_password": "$2b$12$ndJxSqzU/4evFiIm0mk12eHu5d3dRyi6SGZi6oHsSjCFiEXnddgia",
+    "hashed_password": "$2b$12$9aIp7ONNe9ZpVqYxw/GR5uBEJRYSA.BlLgZCoK2nV1V88lX7XvFCK",
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",
@@ -197,9 +197,11 @@
     "full_name": "Lê Văn C",
     "email": "levanc@gmail.com",
     "phone": "0901234567",
-    "role": "customer",
+    "role": "sales_manager",
     "roles": [
-      "customer"
+      "sales_manager",
+      "sales",
+      "accountant"
     ],
     "hashed_password": "$2b$12$eUwduVF1jHfoSOhFoM1tMuQ1MTPYRk/aQ1hiMZUR2GkK63MZ5XOPO",
     "branch": "Khu vực Miền Nam",
