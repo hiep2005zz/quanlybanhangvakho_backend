@@ -116,6 +116,36 @@ def test_dealer_search_and_filters():
     assert verify_res.status_code == 200
     assert any(it["code"] == unique_code for it in verify_res.json()["items"])
 
+    # 10b. Chặn tạo trùng tên đại lý (case-insensitive) -> 400
+    dup_name_res = client.post(
+        "/api/v1/dealers",
+        json={
+            "code": f"DL-DNAME{int(time.time())}",
+            "name": "đại lý thử nghiệm hà đông",  # Trùng tên không phân biệt hoa thường
+            "phone": "0988001122",
+            "address": "45 Quang Trung, Hà Đông, Hà Nội",
+            "region": "Hà Nội",
+        },
+        headers=headers,
+    )
+    assert dup_name_res.status_code == 400
+    assert "đã tồn tại trên hệ thống" in dup_name_res.json()["detail"]
+
+    # 10c. Chặn tạo trùng mã đại lý -> 400
+    dup_code_res = client.post(
+        "/api/v1/dealers",
+        json={
+            "code": unique_code,
+            "name": "Đại Lý Khác Không Trùng Tên",
+            "phone": "0988001133",
+            "address": "45 Quang Trung, Hà Đông, Hà Nội",
+            "region": "Hà Nội",
+        },
+        headers=headers,
+    )
+    assert dup_code_res.status_code == 400
+    assert "đã tồn tại trên hệ thống" in dup_code_res.json()["detail"]
+
     # 11. Kiểm tra phân quyền truy cập: role 'kho' (thủ kho) không có quyền tra cứu
     kho_token = get_token("kho")
     kho_headers = {"Authorization": f"Bearer {kho_token}"}
