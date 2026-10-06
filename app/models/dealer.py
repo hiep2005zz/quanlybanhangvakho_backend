@@ -94,6 +94,19 @@ DEALERS_DB: dict[int, Dealer] = {
         customer_group="khach_le",
         status="Đang hoạt động",
     ),
+    7: Dealer(
+        id=7,
+        code="DL007",
+        name="Vũ Mua Hàng",
+        phone="0911223377",
+        email="muahang@congty.vn",
+        address="12 Hàng Buồm, Hà Nội",
+        region="Hà Nội",
+        assigned_sale_id=None,
+        credit_limit=50000000.0,
+        customer_group="Đại lý cấp 1",
+        status="Đang hoạt động",
+    ),
 }
 
 import os

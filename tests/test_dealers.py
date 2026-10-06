@@ -357,3 +357,100 @@ def test_accountant_lock_unlock_and_dealer_isolation():
         save_dealers_db()
     if cust_username in USERS_DB:
         del USERS_DB[cust_username]
+
+
+def test_customer_lock_unlock_order_creation_restrictions():
+    """Kiểm tra đại lý bị khóa không tạo được đơn, mở khóa hiển thị đúng Đang hoạt động và không tạo được đơn cho đại lý khác."""
+    from datetime import date, timedelta
+    from app.models.user import USERS_DB, UserInDB, save_users_db
+    from app.core.security import get_password_hash
+    from app.models.dealer import sync_dealer_for_user
+
+    ketoan_token = get_token("ketoan")
+    ketoan_headers = {"Authorization": f"Bearer {ketoan_token}"}
+
+    test_user = "test_cust_lock_flow"
+    USERS_DB[test_user] = UserInDB(
+        id=998,
+        username=test_user,
+        full_name="Đại Lý Test Khóa Mở Khóa",
+        email="lockflow@daily.vn",
+        role="customer",
+        roles=["customer"],
+        hashed_password=get_password_hash("123"),
+        is_active=True,
+        branch="Hà Nội",
+    )
+    save_users_db()
+    sync_dealer_for_user(998, "Đại Lý Test Khóa Mở Khóa", "lockflow@daily.vn", "0999888666", True)
+
+    cust_token = get_token(test_user)
+    cust_headers = {"Authorization": f"Bearer {cust_token}"}
+
+    # 1. Kế toán khóa đại lý
+    res_lock = client.patch(
+        "/api/v1/dealers/998/status",
+        json={"status": "Đã khóa", "reason": "Tạm dừng phục vụ do nợ xấu"},
+        headers=ketoan_headers,
+    )
+    assert res_lock.status_code == 200
+    assert res_lock.json()["status"] == "Đã khóa"
+
+    # 2. Đại lý bị khóa gọi /orders/dealers -> chỉ thấy chính mình và status là Đã khóa
+    res_dealers_locked = client.get("/api/v1/orders/dealers", headers=cust_headers)
+    assert res_dealers_locked.status_code == 200
+    dealers_data = res_dealers_locked.json()
+    assert len(dealers_data) == 1
+    assert dealers_data[0]["id"] == 998
+    assert dealers_data[0]["status"] == "Đã khóa"
+
+    # 3. Đại lý bị khóa cố tạo đơn qua /orders/sales-entry -> 400 Bad Request
+    res_create_se = client.post(
+        "/api/v1/orders/sales-entry",
+        headers=cust_headers,
+        json={
+            "dealer_id": 998,
+            "delivery_point": "123 Phố Huế, Hà Nội",
+            "desired_delivery_date": (date.today() + timedelta(days=5)).isoformat(),
+            "items": [{"product_id": 1, "quantity": 1, "price": 100000}],
+        },
+    )
+    assert res_create_se.status_code == 400
+    assert "khóa" in res_create_se.json()["detail"].lower()
+
+    # 4. Đại lý bị khóa cố tạo đơn chéo cho đại lý khác (ví dụ dealer 1) -> 400 Bad Request
+    res_cross = client.post(
+        "/api/v1/orders/sales-entry",
+        headers=cust_headers,
+        json={
+            "dealer_id": 1,
+            "delivery_point": "123 Phố Huế, Hà Nội",
+            "desired_delivery_date": (date.today() + timedelta(days=5)).isoformat(),
+            "items": [{"product_id": 1, "quantity": 1, "price": 100000}],
+        },
+    )
+    assert res_cross.status_code == 400
+
+    # 5. Kế toán mở khóa đại lý -> Trạng thái chuyển về Đang hoạt động
+    res_unlock = client.patch(
+        "/api/v1/dealers/998/status",
+        json={"status": "Đang hoạt động", "reason": "Đã xử lý xong"},
+        headers=ketoan_headers,
+    )
+    assert res_unlock.status_code == 200
+    assert res_unlock.json()["status"] == "Đang hoạt động"
+
+    # 6. Đại lý kiểm tra /orders/dealers -> Trả về Đang hoạt động (không còn báo khóa)
+    res_dealers_unlocked = client.get("/api/v1/orders/dealers", headers=cust_headers)
+    assert res_dealers_unlocked.status_code == 200
+    unlocked_data = res_dealers_unlocked.json()
+    assert len(unlocked_data) == 1
+    assert unlocked_data[0]["status"] == "Đang hoạt động"
+
+    # Dọn dẹp
+    if 998 in DEALERS_DB:
+        del DEALERS_DB[998]
+        save_dealers_db()
+    if test_user in USERS_DB:
+        del USERS_DB[test_user]
+
