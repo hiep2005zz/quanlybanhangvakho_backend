@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
-from typing import List, Optional, Any
+from typing import List, Optional
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.deps import get_current_user
 from app.schemas.auth import UserResponse
 
@@ -20,19 +20,6 @@ class DiscountPolicyCreate(BaseModel):
     description: Optional[str] = None
     is_active: Optional[bool] = True
     tiers: List[DiscountTierSchema] = []
-
-class DiscountPolicyResponse(BaseModel):
-    id: int
-    code: str
-    name: str
-    category: str
-    target_dealer_type: str
-    description: Optional[str] = None
-    is_active: bool
-    tiers: List[DiscountTierSchema]
-    created_by: str
-    created_at: str
-    updated_at: str
 
 class DiscountCalculateRequest(BaseModel):
     product_id: int
