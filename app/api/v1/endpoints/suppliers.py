@@ -86,6 +86,13 @@ def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
     return text_value or None
 
 
+def _normalize_required_contact_person(value: Optional[str]) -> str:
+    text_value = " ".join((value or "").split())
+    if not text_value:
+        raise _bad_request("Vui lòng nhập người liên hệ.")
+    return text_value
+
+
 def _normalize_tax_code(value: Optional[str]) -> Optional[str]:
     tax = (value or "").strip().replace(" ", "")
     if not tax:
@@ -263,6 +270,7 @@ def create_supplier(
     code = _normalize_code(data.code)
     name = _normalize_name(data.name)
     tax_code = _normalize_tax_code(data.tax_code)
+    contact_person = _normalize_required_contact_person(data.contact_person)
 
     if db.query(SupplierEntity).filter(SupplierEntity.code == code).first():
         raise HTTPException(
@@ -275,7 +283,7 @@ def create_supplier(
         code=code,
         name=name,
         tax_code=tax_code,
-        contact_person=_normalize_optional_text(data.contact_person),
+        contact_person=contact_person,
         payment_terms=_normalize_optional_text(data.payment_terms),
         is_active=True,
         created_by=current_user.username,

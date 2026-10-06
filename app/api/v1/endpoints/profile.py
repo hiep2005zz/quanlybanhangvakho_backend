@@ -16,7 +16,7 @@ from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.core.rbac import ROLE_DETAILS
 from app.models.entities import UserEntity
-from app.models.user import USERS_DB, save_users_db
+from app.models.user import USERS_DB, save_users_db, normalize_phone, is_phone_taken
 from app.schemas.auth import UserResponse
 from app.schemas.profile import UserProfileResponse, UpdateProfileRequest, ProfileAvatarResponse
 from app.services.audit_service import log_audit_event
@@ -105,12 +105,20 @@ def update_my_profile(
             detail="Không tìm thấy tài khoản người dùng."
         )
 
+    # 0. Kiểm tra số điện thoại không được trùng với tài khoản khác trong hệ thống
+    clean_phone = normalize_phone(data.phone_number)
+    if clean_phone and is_phone_taken(clean_phone, exclude_username=current_user.username, db=db):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Số điện thoại này đã có trên hệ thống vui lòng đổi số khác"
+        )
+
     old_full_name = user_in_mem.full_name
     old_phone = getattr(user_in_mem, "phone", None)
 
     # 1. Cập nhật trong bộ nhớ USERS_DB
     user_in_mem.full_name = data.full_name
-    user_in_mem.phone = data.phone_number
+    user_in_mem.phone = clean_phone
 
     # 2. Cập nhật trong cơ sở dữ liệu SQL Server (nếu kết nối được)
     if db is not None:

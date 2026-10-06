@@ -6,6 +6,10 @@ from app.models.entities import UserEntity
 from app.core.security import get_password_hash
 from app.models.user import load_users_db
 
+@pytest.fixture(scope="session", autouse=True)
+def setup_test_db():
+    init_db()
+
 @pytest.fixture(autouse=True)
 def reset_test_state():
     """Reset database and memory state before each test run."""
@@ -15,6 +19,10 @@ def reset_test_state():
         db.query(UserEntity).filter(
             UserEntity.username.in_(["sales_moi", "admin2", "multi_role_user", "kho_invalid_branch", "kho_valid_branch", "temp_user"])
         ).delete(synchronize_session=False)
+
+        # Xóa các đại lý test phát sinh (id > 4)
+        from app.models.entities import DealerEntity
+        db.query(DealerEntity).filter(DealerEntity.id > 4).delete(synchronize_session=False)
 
         # Xóa các sản phẩm test được tạo trong lúc test
         from app.models.entities import ProductEntity
@@ -73,13 +81,20 @@ def reset_test_state():
     load_users_db()
     from app.services.auth_service import FAILED_ATTEMPTS
     FAILED_ATTEMPTS.clear()
-    from app.models.dealer import DEALERS_DB, save_dealers_db
+    from app.models.dealer import DEALERS_DB, load_dealers_db
+    for k in list(DEALERS_DB.keys()):
+        if k > 4:
+            del DEALERS_DB[k]
+    if len(DEALERS_DB) < 3:
+        load_dealers_db()
     from app.models.user import USERS_DB
     sales_uid = USERS_DB["sales"].id if "sales" in USERS_DB else 3
+    mgr_uid = USERS_DB["sales_manager"].id if "sales_manager" in USERS_DB else 2
     if 1 in DEALERS_DB: DEALERS_DB[1].assigned_sale_id = sales_uid
     if 2 in DEALERS_DB: DEALERS_DB[2].assigned_sale_id = sales_uid
     if 3 in DEALERS_DB: DEALERS_DB[3].assigned_sale_id = sales_uid
-    if 4 in DEALERS_DB: DEALERS_DB[4].assigned_sale_id = None
+    if 4 in DEALERS_DB: DEALERS_DB[4].assigned_sale_id = mgr_uid
+    from app.models.dealer import save_dealers_db
     save_dealers_db()
     from app.models.entities import AuditLogEntity, InventoryTransactionEntity
     from sqlalchemy import func
@@ -139,16 +154,27 @@ def reset_test_state():
                     {"unit_name": "Kiện", "conversion_rate": 10.0},
                 ]
 
-        # Khôi phục người phụ trách chuẩn cho đại lý sau khi test
-        if 1 in DEALERS_DB: DEALERS_DB[1].assigned_sale_id = sales_uid
-        if 2 in DEALERS_DB: DEALERS_DB[2].assigned_sale_id = sales_uid
-        if 3 in DEALERS_DB: DEALERS_DB[3].assigned_sale_id = sales_uid
-        if 4 in DEALERS_DB: DEALERS_DB[4].assigned_sale_id = None
-        save_dealers_db()
+        from app.models.dealer import DEALERS_DB, Dealer
+        from app.models.entities import DealerEntity
+        DEALERS_DB.clear()
+        seed_dealers = {
+            1: Dealer(id=1, code="DL001", name="Đại Lý Phân Phối Miền Bắc - Sao Mai", phone="0912345678", email="saomai@daily.vn", address="120 Cầu Giấy, Hà Nội", region="Hà Nội", assigned_sale_id=3, credit_limit=100000000.0, customer_group="dai_ly_cap_1", status="Đang hoạt động"),
+            2: Dealer(id=2, code="DL002", name="Đại Lý Thời Trang Tân Bình", phone="0987654321", email="tanbinh@daily.vn", address="45 Lý Thường Kiệt, TP. HCM", region="TP. HCM", assigned_sale_id=3, credit_limit=50000000.0, customer_group="dai_ly_cap_2", status="Đang hoạt động"),
+            3: Dealer(id=3, code="DL003", name="Đại Lý Tổng Hợp Hải Phòng", phone="0934567890", email="haiphong@daily.vn", address="88 Lạch Tray, Hải Phòng", region="Hải Phòng", assigned_sale_id=3, credit_limit=50000000.0, customer_group="Khách sỉ", status="Đang hoạt động"),
+            4: Dealer(id=4, code="DL004", name="Công Ty TNHH Bán Lẻ An Phát", phone="0945678901", email="anphat@daily.vn", address="66 Nguyễn Huệ, Đà Nẵng", region="Đà Nẵng", assigned_sale_id=2, credit_limit=50000000.0, customer_group="khach_le", status="Tạm ngừng"),
+        }
+        for did, sd in seed_dealers.items():
+            DEALERS_DB[did] = sd
+            db_d = db.query(DealerEntity).filter(DealerEntity.id == did).first()
+            if db_d:
+                db_d.assigned_sale_id = sd.assigned_sale_id
+                db_d.status = sd.status
+                db_d.customer_group = sd.customer_group
+        db.commit()
 
     except Exception:
-        cleanup_db.rollback()
+        db.rollback()
     finally:
-        cleanup_db.close()
+        db.close()
 
 

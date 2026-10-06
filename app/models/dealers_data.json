@@ -8,13 +8,15 @@
     "address": "120 Cầu Giấy, Hà Nội",
     "region": "Hà Nội",
     "assigned_sale_id": 3,
-    "credit_limit": 100000000.0,
+    "credit_limit": 120000000.0,
     "max_debt_days": 30,
     "customer_group": "dai_ly_cap_1",
     "status": "Đang hoạt động",
     "lock_reason": null,
     "locked_at": null,
-    "locked_by": null
+    "locked_by": null,
+    "transaction_count": 0,
+    "tax_code": null
   },
   "2": {
     "id": 2,
@@ -31,7 +33,9 @@
     "status": "Đang hoạt động",
     "lock_reason": null,
     "locked_at": null,
-    "locked_by": null
+    "locked_by": null,
+    "transaction_count": 0,
+    "tax_code": null
   },
   "3": {
     "id": 3,
@@ -48,7 +52,9 @@
     "status": "Đang hoạt động",
     "lock_reason": null,
     "locked_at": null,
-    "locked_by": null
+    "locked_by": null,
+    "transaction_count": 0,
+    "tax_code": null
   },
   "4": {
     "id": 4,
@@ -65,7 +71,9 @@
     "status": "Tạm ngừng",
     "lock_reason": null,
     "locked_at": null,
-    "locked_by": null
+    "locked_by": null,
+    "transaction_count": 0,
+    "tax_code": null
   },
   "5": {
     "id": 5,
@@ -82,6 +90,8 @@
     "status": "Đang hoạt động",
     "lock_reason": null,
     "locked_at": null,
-    "locked_by": null
+    "locked_by": null,
+    "transaction_count": 0,
+    "tax_code": null
   }
 }

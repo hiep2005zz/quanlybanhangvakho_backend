@@ -11,6 +11,7 @@ class Dealer(BaseModel):
     id: int
     code: str
     name: str
+    tax_code: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
@@ -23,6 +24,7 @@ class Dealer(BaseModel):
     lock_reason: Optional[str] = None
     locked_at: Optional[str] = None
     locked_by: Optional[str] = None
+    transaction_count: Optional[int] = 0
 # Initial seed data for dealers
 # Sales user: id=3 (username: 'sales', full_name: 'Trần Bán Hàng')
 DEALERS_DB: dict[int, Dealer] = {
@@ -116,6 +118,7 @@ def save_dealers_db():
 
                 db_dealer.code = d.code
                 db_dealer.name = d.name
+                db_dealer.tax_code = getattr(d, "tax_code", None)
                 db_dealer.phone = d.phone
                 db_dealer.email = d.email
                 db_dealer.address = d.address
@@ -124,6 +127,8 @@ def save_dealers_db():
                 db_dealer.credit_limit = getattr(d, "credit_limit", getattr(db_dealer, "credit_limit", 0))
                 db_dealer.max_debt_days = getattr(d, "max_debt_days", getattr(db_dealer, "max_debt_days", 30))
                 db_dealer.customer_group = getattr(d, "customer_group", getattr(db_dealer, "customer_group", "Đại lý cấp 1"))
+                if hasattr(db_dealer, "transaction_count"):
+                    db_dealer.transaction_count = getattr(d, "transaction_count", 0) or 0
                 if hasattr(db_dealer, "status"):
                     db_dealer.status = getattr(d, "status", "ACTIVE")
                     db_dealer.lock_reason = getattr(d, "lock_reason", None)
@@ -164,6 +169,7 @@ def load_dealers_db():
                         id=entity.id,
                         code=entity.code,
                         name=entity.name,
+                        tax_code=getattr(entity, "tax_code", None),
                         phone=entity.phone,
                         email=entity.email,
                         address=entity.address,
@@ -176,6 +182,7 @@ def load_dealers_db():
                         lock_reason=getattr(entity, "lock_reason", None),
                         locked_at=getattr(entity, "locked_at", None),
                         locked_by=getattr(entity, "locked_by", None),
+                        transaction_count=int(getattr(entity, "transaction_count", 0) or 0),
                     )
                     DEALERS_DB[entity.id] = d
                 loaded_from_sql = True

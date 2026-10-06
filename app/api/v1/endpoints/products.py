@@ -182,27 +182,27 @@ def get_products(
             profit_unit = sell_price - cost_price
             margin = round((profit_unit / sell_price) * 100, 2) if sell_price > 0 else 0.0
             total_cost_val += cost_price * stock
-        sanitized_items.append(ProductItem(
-            id=p["id"],
-            code=p["code"],
-            name=p["name"],
-            category=cat_name,
-            category_id=cat_id,
-            stock=stock,
-            sell_price=sell_price,
-            base_unit=base_unit,
-            units=units_converted,
-            cost_price=cost_price,
-            profit_margin=margin,
-            profit_per_unit=profit_unit,
-            images=images,
-            packaging_specification=packaging_spec,
-            status=status_val,
-            transaction_count=_get_product_transaction_count(p["id"], db),
-        ))
-    else:
-        # AC 3: Filter/strip bỏ hoàn toàn trường nhạy cảm trước khi gửi JSON về client
-        sanitized_items.append(ProductItem(
+            sanitized_items.append(ProductItem(
+                id=p["id"],
+                code=p["code"],
+                name=p["name"],
+                category=cat_name,
+                category_id=cat_id,
+                stock=stock,
+                sell_price=sell_price,
+                base_unit=base_unit,
+                units=units_converted,
+                cost_price=cost_price,
+                profit_margin=margin,
+                profit_per_unit=profit_unit,
+                images=images,
+                packaging_specification=packaging_spec,
+                status=status_val,
+                transaction_count=_get_product_transaction_count(p["id"], db),
+            ))
+        else:
+            # AC 3: Filter/strip bỏ hoàn toàn trường nhạy cảm trước khi gửi JSON về client
+            sanitized_items.append(ProductItem(
                 id=p["id"],
                 code=p["code"],
                 name=p["name"],
@@ -218,9 +218,8 @@ def get_products(
                 images=images,
                 packaging_specification=packaging_spec,
                 status=status_val,
-            transaction_count=_get_product_transaction_count(p["id"], db),
-        ))
-
+                transaction_count=_get_product_transaction_count(p["id"], db),
+            ))
     if can_view_cost:
         gross_profit = total_sell_val - total_cost_val
         avg_margin = round((gross_profit / total_sell_val) * 100, 2) if total_sell_val > 0 else 0.0
