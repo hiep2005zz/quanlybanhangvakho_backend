@@ -1,4 +1,5 @@
 # backend/app/api/v1/endpoints/orders.py
+from __future__ import annotations
 """
 Order Management Endpoint:
 AC 3: Kiểm tra nhân viên phụ trách của Đại lý đó.
@@ -264,6 +265,14 @@ def create_order(
         raw_p = _find_product_in_raw(item.product_id)
         prod_entity = db.query(ProductEntity).filter(ProductEntity.id == item.product_id).first() if db else None
 
+        prod_status = raw_p.get("status") if raw_p else (prod_entity.status if prod_entity else "active")
+        prod_code = raw_p.get("code") if raw_p else (prod_entity.code if prod_entity else f"SP#{item.product_id}")
+        if prod_status == "inactive":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Sản phẩm '{prod_code}' đã ngừng kinh doanh, không thể tạo đơn hàng."
+            )
+
         base_unit = "Cái"
         units_list = []
         if raw_p:
@@ -475,6 +484,14 @@ def create_sales_entry_order(
                 detail=f"Không tìm thấy sản phẩm có ID {item.product_id}.",
             )
         entity = products_by_id.get(item.product_id)
+
+        prod_status = product.get("status") if product else (entity.status if entity else "active")
+        if prod_status == "inactive":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Sản phẩm '{product['code']}' đã ngừng kinh doanh, không thể tạo đơn hàng."
+            )
+
         base_unit = (entity.base_unit if entity and entity.base_unit else product.get("base_unit")) or "Cái"
         configured_units = entity.units if entity and entity.units else product.get("units", [])
         unit_rates = {unit: 1.0 for unit in SALES_ORDER_UNITS}

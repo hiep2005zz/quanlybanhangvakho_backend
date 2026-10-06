@@ -1,4 +1,5 @@
 # backend/app/models/dealer.py
+from __future__ import annotations
 """
 Data model and in-memory store for Dealers/Customers.
 Stores assigned_sale_id pointing to users.id.
