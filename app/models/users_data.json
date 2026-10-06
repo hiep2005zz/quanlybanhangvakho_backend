@@ -4,16 +4,12 @@
     "username": "admin",
     "full_name": "Đào Ngọc Hiệp",
     "email": "daongochiep645@gmail.com",
-    "phone": null,
+    "phone": "0822516998",
     "role": "admin",
     "roles": [
       "admin"
     ],
-<<<<<<< HEAD
-    "hashed_password": "$2b$12$.Fi1UA6S6u1MdwgzqT8ZWurS0QwE3nnfSU0HcRUN.A3JVrLWXl9oS",
-=======
-    "hashed_password": "$2b$12$j.2j68wsrI00ffN/XSFbNOn/kkL45ZuxiLg1IfqERsB0HjyWRPNKm",
->>>>>>> 609829ab2cfc31038895a5aa59c1543ddcf2120f
+    "hashed_password": "$2b$12$qzEPBWQ5pqBkIrQSAFAq.u.txx2ZQaRDM5jK5ybwiRAqsTlLnJG9u",
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
@@ -22,23 +18,19 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
-    "avatar_url": null
+    "avatar_url": "/uploads/avatars/admin_676bb86f843c_square.png"
   },
   "sales_manager": {
     "id": 2,
     "username": "sales_manager",
-    "full_name": "Phạm Trưởng Phòng Sales",
-    "email": "sales.manager@congty.vn",
-    "phone": "0822516998",
+    "full_name": "nguyễn thị ly",
+    "email": "hiep2005zz@gmail.com",
+    "phone": "0998473998",
     "role": "sales_manager",
     "roles": [
       "sales_manager"
     ],
-<<<<<<< HEAD
-    "hashed_password": "$2b$12$.Fi1UA6S6u1MdwgzqT8ZWurS0QwE3nnfSU0HcRUN.A3JVrLWXl9oS",
-=======
-    "hashed_password": "$2b$12$j.2j68wsrI00ffN/XSFbNOn/kkL45ZuxiLg1IfqERsB0HjyWRPNKm",
->>>>>>> 609829ab2cfc31038895a5aa59c1543ddcf2120f
+    "hashed_password": "$2b$12$qzEPBWQ5pqBkIrQSAFAq.u.txx2ZQaRDM5jK5ybwiRAqsTlLnJG9u",
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
@@ -59,11 +51,7 @@
     "roles": [
       "sales"
     ],
-<<<<<<< HEAD
-    "hashed_password": "$2b$12$.Fi1UA6S6u1MdwgzqT8ZWurS0QwE3nnfSU0HcRUN.A3JVrLWXl9oS",
-=======
-    "hashed_password": "$2b$12$j.2j68wsrI00ffN/XSFbNOn/kkL45ZuxiLg1IfqERsB0HjyWRPNKm",
->>>>>>> 609829ab2cfc31038895a5aa59c1543ddcf2120f
+    "hashed_password": "$2b$12$qzEPBWQ5pqBkIrQSAFAq.u.txx2ZQaRDM5jK5ybwiRAqsTlLnJG9u",
     "branch": "Khu vực Miền Bắc",
     "is_active": true,
     "status": "ACTIVE",
@@ -72,11 +60,7 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
-<<<<<<< HEAD
-    "avatar_url": "/uploads/avatars/sales_c81e5ee29abb_square.png"
-=======
-    "avatar_url": "/uploads/avatars/sales_ecf57d6c50bb_square.png"
->>>>>>> 609829ab2cfc31038895a5aa59c1543ddcf2120f
+    "avatar_url": "/uploads/avatars/sales_2c9053d0a6ff_square.png"
   },
   "kho": {
     "id": 4,
@@ -88,11 +72,7 @@
     "roles": [
       "warehouse"
     ],
-<<<<<<< HEAD
-    "hashed_password": "$2b$12$.Fi1UA6S6u1MdwgzqT8ZWurS0QwE3nnfSU0HcRUN.A3JVrLWXl9oS",
-=======
-    "hashed_password": "$2b$12$j.2j68wsrI00ffN/XSFbNOn/kkL45ZuxiLg1IfqERsB0HjyWRPNKm",
->>>>>>> 609829ab2cfc31038895a5aa59c1543ddcf2120f
+    "hashed_password": "$2b$12$qzEPBWQ5pqBkIrQSAFAq.u.txx2ZQaRDM5jK5ybwiRAqsTlLnJG9u",
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -101,23 +81,19 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
-    "avatar_url": null
+    "avatar_url": "/uploads/avatars/kho_cbb51c2f2b1c_square.png"
   },
   "warehouse_mgr": {
     "id": 5,
     "username": "warehouse_mgr",
-    "full_name": "Hoàng Quản Lý Kho",
+    "full_name": "Hoang Quan Ly Kho",
     "email": "warehouse.manager@congty.vn",
     "phone": null,
     "role": "warehouse_manager",
     "roles": [
       "warehouse_manager"
     ],
-<<<<<<< HEAD
-    "hashed_password": "$2b$12$.Fi1UA6S6u1MdwgzqT8ZWurS0QwE3nnfSU0HcRUN.A3JVrLWXl9oS",
-=======
-    "hashed_password": "$2b$12$j.2j68wsrI00ffN/XSFbNOn/kkL45ZuxiLg1IfqERsB0HjyWRPNKm",
->>>>>>> 609829ab2cfc31038895a5aa59c1543ddcf2120f
+    "hashed_password": "$2b$12$qzEPBWQ5pqBkIrQSAFAq.u.txx2ZQaRDM5jK5ybwiRAqsTlLnJG9u",
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -131,18 +107,14 @@
   "ketoan": {
     "id": 6,
     "username": "ketoan",
-    "full_name": "Đặng Kế Toán",
+    "full_name": "Dang Ke Toan",
     "email": "ketoan@congty.vn",
     "phone": null,
     "role": "accountant",
     "roles": [
       "accountant"
     ],
-<<<<<<< HEAD
-    "hashed_password": "$2b$12$.Fi1UA6S6u1MdwgzqT8ZWurS0QwE3nnfSU0HcRUN.A3JVrLWXl9oS",
-=======
-    "hashed_password": "$2b$12$j.2j68wsrI00ffN/XSFbNOn/kkL45ZuxiLg1IfqERsB0HjyWRPNKm",
->>>>>>> 609829ab2cfc31038895a5aa59c1543ddcf2120f
+    "hashed_password": "$2b$12$qzEPBWQ5pqBkIrQSAFAq.u.txx2ZQaRDM5jK5ybwiRAqsTlLnJG9u",
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",
@@ -156,17 +128,14 @@
   "muahang": {
     "id": 7,
     "username": "muahang",
-    "full_name": "Vũ Mua Hàng",
+    "full_name": "Vu Mua Hang",
     "email": "muahang@congty.vn",
-    "phone": null,
+    "phone": "0822516998",
     "role": "purchasing",
     "roles": [
       "purchasing"
     ],
-<<<<<<< HEAD
-    "hashed_password": "$2b$12$.Fi1UA6S6u1MdwgzqT8ZWurS0QwE3nnfSU0HcRUN.A3JVrLWXl9oS",
-=======
-    "hashed_password": "$2b$12$j.2j68wsrI00ffN/XSFbNOn/kkL45ZuxiLg1IfqERsB0HjyWRPNKm",
+    "hashed_password": "$2b$12$qzEPBWQ5pqBkIrQSAFAq.u.txx2ZQaRDM5jK5ybwiRAqsTlLnJG9u",
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",
@@ -254,7 +223,6 @@
       "accountant"
     ],
     "hashed_password": "$2b$12$iKe/YACPwVy3rZqMRG9eE.3i4rHTN0IRkhVG2AAmpJNzJ4IUxHpda",
->>>>>>> 609829ab2cfc31038895a5aa59c1543ddcf2120f
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",

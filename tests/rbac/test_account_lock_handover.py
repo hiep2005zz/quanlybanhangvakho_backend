@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from app.main import app
 from app.models.user import USERS_DB
-from app.models.dealer import DEALERS_DB
+from app.models.dealer import DEALERS_DB, save_dealers_db
 
 client = TestClient(app)
 
@@ -179,7 +179,8 @@ def test_ac3_dealers_marked_needing_handover_and_block_orders():
     DEALERS_DB[1].assigned_sale_id = 3
     DEALERS_DB[2].assigned_sale_id = 3
     DEALERS_DB[3].assigned_sale_id = 3
-    DEALERS_DB[4].assigned_sale_id = 2
+    DEALERS_DB[4].assigned_sale_id = None
+    save_dealers_db()
 
 
 def test_tc01_handover_role_and_region_restrictions():
@@ -224,5 +225,6 @@ def test_tc01_handover_role_and_region_restrictions():
     DEALERS_DB[1].assigned_sale_id = 3
     DEALERS_DB[2].assigned_sale_id = 3
     DEALERS_DB[3].assigned_sale_id = 3
-    DEALERS_DB[4].assigned_sale_id = 2
+    DEALERS_DB[4].assigned_sale_id = None
+    save_dealers_db()
 
