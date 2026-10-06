@@ -70,6 +70,8 @@ class OrderResponse(BaseModel):
     discount_percent: float = 0.0
     discount_rate: Optional[float] = 0.0
     discount_amount: float = 0.0
+    dealer_status: Optional[str] = "Đang hoạt động"
+    dealer_lock_reason: Optional[str] = None
 
 class SalesOrderResponse(OrderResponse):
     subtotal_amount: float = 0
@@ -129,6 +131,8 @@ def get_order_dealers(
             "name": dealer.name,
             "phone": dealer.phone,
             "address": dealer.address,
+            "status": getattr(dealer, "status", "Đang hoạt động"),
+            "lock_reason": getattr(dealer, "lock_reason", None),
         }
         for dealer in sorted(dealers, key=lambda item: item.name.lower())
     ]
@@ -247,6 +251,18 @@ def get_orders(
             if (not existing.items or len(existing.items) == 0) and items:
                 existing.items = items
 
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+
+    for resp in orders_by_code.values():
+        d = DEALERS_DB.get(resp.dealer_id)
+        if d:
+            resp.dealer_status = getattr(d, "status", "Đang hoạt động")
+            resp.dealer_lock_reason = None if is_customer else getattr(d, "lock_reason", None)
+        else:
+            resp.dealer_status = "Đang hoạt động"
+            resp.dealer_lock_reason = None
+
     return sorted(orders_by_code.values(), key=lambda order: order.id, reverse=True)
 
 @router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
@@ -305,13 +321,31 @@ def create_order(
             detail="Đại lý này thuộc nhân viên đã bị khóa tài khoản, vui lòng bàn giao trước khi lên đơn"
         )
 
-    # 2. Kiểm tra trạng thái khóa giao dịch của chính Đại lý
-    if getattr(dealer, "status", "ACTIVE") == "LOCKED":
-        lock_msg = f"Đại lý này đang bị KHÓA giao dịch (Lý do: {dealer.lock_reason or 'Không có lý do'}). Không thể tạo đơn hàng mới!"
+    # 2. Kiểm tra trạng thái khóa giao dịch của chính Đại lý (TRỤ CỘT 2)
+    dealer_status = getattr(dealer, "status", "Đang hoạt động") or "Đang hoạt động"
+    is_dealer_locked = (
+        dealer_status in ["Đã khóa", "LOCKED"]
+        or "khóa" in str(dealer_status).lower()
+        or "lock" in str(dealer_status).lower()
+    )
+    if is_dealer_locked:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=lock_msg
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đại lý '{dealer.name}' hiện đang bị KHÓA giao dịch. Không thể tạo đơn hàng mới."
         )
+
+    # Lỗi tạo đơn chéo: Đại lý chỉ được tạo đơn cho chính mình
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    if "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales"]):
+        is_own = (dealer.id == current_user.id) or \
+                 (dealer.email and dealer.email == current_user.email) or \
+                 (dealer.phone and dealer.phone == current_user.phone) or \
+                 (dealer.code and dealer.code.lower() == current_user.username.lower())
+        if not is_own:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tài khoản đại lý chỉ được phép tạo đơn hàng cho chính mình."
+            )
 
     # 3. Kiểm tra hạn mức công nợ và số ngày nợ tối đa
     current_debt = 0.0
@@ -574,6 +608,8 @@ def create_order(
         "delivery_point": delivery_point_str,
         "desired_delivery_date": data.desired_delivery_date.isoformat() if data.desired_delivery_date else None,
         "note": data.note,
+        "dealer_status": getattr(dealer, "status", "Đang hoạt động"),
+        "dealer_lock_reason": None if ("customer" in current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]) else getattr(dealer, "lock_reason", None),
     }
     ORDERS_DB[order_id] = order_record
 
@@ -628,6 +664,19 @@ def create_sales_entry_order(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Đại lý này thuộc nhân viên đã bị khóa tài khoản, vui lòng bàn giao trước khi lên đơn",
+        )
+
+    # Kiểm tra trạng thái khóa giao dịch của Đại lý (TRỤ CỘT 2)
+    dealer_status = getattr(dealer, "status", "Đang hoạt động") or "Đang hoạt động"
+    is_dealer_locked = (
+        dealer_status in ["Đã khóa", "LOCKED"]
+        or "khóa" in str(dealer_status).lower()
+        or "lock" in str(dealer_status).lower()
+    )
+    if is_dealer_locked:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đại lý '{dealer.name}' hiện đang bị KHÓA giao dịch. Không thể tạo đơn hàng mới."
         )
 
     product_by_id = {product["id"]: product for product in RAW_PRODUCTS}
@@ -796,6 +845,8 @@ def create_sales_entry_order(
         "desired_delivery_date": data.desired_delivery_date.isoformat(),
         "note": data.note,
         "items": priced_items,
+        "dealer_status": getattr(dealer, "status", "Đang hoạt động"),
+        "dealer_lock_reason": None if ("customer" in current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]) else getattr(dealer, "lock_reason", None),
     }
     ORDERS_DB[db_order.id] = order_record
     return SalesOrderResponse(**order_record)
@@ -902,12 +953,20 @@ def get_order_detail(
         "discount_amount",
         round(subtotal_amount * discount_percent / 100, 2),
     )
+    d = DEALERS_DB.get(order_record.get("dealer_id"))
+    d_status = getattr(d, "status", "Đang hoạt động") if d else "Đang hoạt động"
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+    d_lock_reason = None if is_customer else (getattr(d, "lock_reason", None) if d else None)
+
     detail_response = dict(order_record)
     detail_response.update({
         "items": items,
         "subtotal_amount": subtotal_amount,
         "discount_percent": discount_percent,
         "discount_amount": discount_amount,
+        "dealer_status": d_status,
+        "dealer_lock_reason": d_lock_reason,
     })
     return SalesOrderResponse(**detail_response)
 
