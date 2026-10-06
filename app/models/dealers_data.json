@@ -75,7 +75,7 @@
     "email": "khachle@gmail.com",
     "address": "Số 10 Tràng Thi, Hoàn Kiếm, Hà Nội",
     "region": "Hà Nội",
-    "assigned_sale_id": null,
+    "assigned_sale_id": 3,
     "credit_limit": 20000000.0,
     "max_debt_days": 30,
     "customer_group": "khach_le",

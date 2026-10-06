@@ -43,6 +43,9 @@ def _ensure_legacy_columns(bind=engine):
         "products": {
             "base_unit": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
             "units_json": ("TEXT", "NVARCHAR(MAX)"),
+            "packaging_specification": ("VARCHAR(255)", "NVARCHAR(255)"),
+            "images_json": ("TEXT", "NVARCHAR(MAX)"),
+            "status": ("VARCHAR(50) DEFAULT 'active'", "NVARCHAR(50) DEFAULT 'active'"),
         },
         "dealers": {
             "max_debt_days": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),

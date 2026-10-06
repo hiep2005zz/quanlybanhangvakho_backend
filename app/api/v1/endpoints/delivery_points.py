@@ -1,3 +1,5 @@
+from __future__ import annotations
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -177,7 +179,7 @@ def _clear_default(db: Session, dealer_id: int):
     db.flush()
 
 
-@router.get("", response_model=list[DeliveryPointOut])
+@router.get("", response_model=List[DeliveryPointOut])
 def list_points(dealer_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     _check_access(db, dealer_id, user)
     q = select(DealerDeliveryPointEntity).where(

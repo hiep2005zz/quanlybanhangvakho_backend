@@ -94,6 +94,36 @@ def _find_product_in_raw(product_id: int):
             return p
     return None
 
+def _get_product_transaction_count(product_id: int, db: Session) -> int:
+    from app.api.v1.endpoints.orders import ORDERS_DB
+    from app.api.v1.endpoints.inventory import INVENTORY_TRANSACTIONS
+    from app.models.entities import OrderEntity, InventoryTransactionEntity
+    import json
+
+    count = 0
+    for tx in INVENTORY_TRANSACTIONS:
+        if getattr(tx, "product_id", None) == product_id or (isinstance(tx, dict) and tx.get("product_id") == product_id):
+            count += 1
+    
+    for order in ORDERS_DB.values():
+        for item in order.get("items", []):
+            if item.get("product_id") == product_id:
+                count += 1
+                break
+
+    if db:
+        count += db.query(InventoryTransactionEntity).filter(InventoryTransactionEntity.product_id == product_id).count()
+        for o in db.query(OrderEntity).all():
+            if o.items_json:
+                try:
+                    data = json.loads(o.items_json)
+                    for item in data.get("items", []):
+                        if item.get("product_id") == product_id:
+                            count += 1
+                            break
+                except Exception:
+                    pass
+    return count
 
 
 @router.get("", response_model=ProductListResponse)
@@ -139,42 +169,40 @@ def get_products(
         total_stock += stock
         total_sell_val += sell_price * stock
 
-<<<<<<< HEAD
         images = p.get("images") or []
         base_unit = p.get("base_unit") or "Cái"
         packaging_spec = p.get("packaging_specification")
         status_val = p.get("status") or "active"
-=======
         cat_name = db_p.category if (db_p and db_p.category) else p.get("category", "Chưa phân loại")
         cat_id = db_p.category_id if (db_p and db_p.category_id is not None) else p.get("category_id")
         p["category"] = cat_name
         p["category_id"] = cat_id
->>>>>>> 8a76979879f6fb199800227acf16e6bca8f35a08
 
         if can_view_cost:
             profit_unit = sell_price - cost_price
             margin = round((profit_unit / sell_price) * 100, 2) if sell_price > 0 else 0.0
             total_cost_val += cost_price * stock
-            item = ProductItem(
-                id=p["id"],
-                code=p["code"],
-                name=p["name"],
-                category=cat_name,
-                category_id=cat_id,
-                stock=stock,
-                sell_price=sell_price,
-                base_unit=base_unit,
-                units=units_converted,
-                cost_price=cost_price,
-                profit_margin=margin,
-                profit_per_unit=profit_unit,
-                images=images,
-                packaging_specification=packaging_spec,
-                status=status_val,
-            )
-        else:
-            # AC 3: Filter/strip bỏ hoàn toàn trường nhạy cảm trước khi gửi JSON về client
-            item = ProductItem(
+        sanitized_items.append(ProductItem(
+            id=p["id"],
+            code=p["code"],
+            name=p["name"],
+            category=cat_name,
+            category_id=cat_id,
+            stock=stock,
+            sell_price=sell_price,
+            base_unit=base_unit,
+            units=units_converted,
+            cost_price=cost_price,
+            profit_margin=margin,
+            profit_per_unit=profit_unit,
+            images=images,
+            packaging_specification=packaging_spec,
+            status=status_val,
+            transaction_count=_get_product_transaction_count(p["id"], db),
+        ))
+    else:
+        # AC 3: Filter/strip bỏ hoàn toàn trường nhạy cảm trước khi gửi JSON về client
+        sanitized_items.append(ProductItem(
                 id=p["id"],
                 code=p["code"],
                 name=p["name"],
@@ -190,8 +218,8 @@ def get_products(
                 images=images,
                 packaging_specification=packaging_spec,
                 status=status_val,
-            )
-        sanitized_items.append(item)
+            transaction_count=_get_product_transaction_count(p["id"], db),
+        ))
 
     if can_view_cost:
         gross_profit = total_sell_val - total_cost_val
@@ -372,6 +400,7 @@ def update_product_details(
         cost_price=cost if can_view_cost else None,
         profit_margin=margin,
         profit_per_unit=profit_unit,
+        transaction_count=_get_product_transaction_count(target["id"], db)
     )
 
 from app.core.rbac import Role
@@ -614,6 +643,7 @@ def create_product(
         cost_price=cost if can_view_cost else None,
         profit_margin=margin,
         profit_per_unit=profit_unit,
+        transaction_count=0
     )
 
 
@@ -627,6 +657,13 @@ def delete_product(
     """
     Xóa sản phẩm (chỉ cho phép nếu sản phẩm chưa phát sinh giao dịch).
     """
+    transaction_count = _get_product_transaction_count(product_id, db)
+    if transaction_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Sản phẩm đã phát sinh giao dịch, không thể xóa. Vui lòng chuyển sang trạng thái Ngừng kinh doanh."
+        )
+
     target = None
     for idx, p in enumerate(RAW_PRODUCTS):
         if p["id"] == product_id:

@@ -87,9 +87,44 @@ class ProductEntity(Base):
     stock = Column(Integer, default=0)
     cost_price = Column(Float, default=0.0)
     sell_price = Column(Float, default=0.0)
+    base_unit = Column(Unicode(50), default="Cái")
+    units_json = Column(UnicodeText, nullable=True)
+    packaging_specification = Column(Unicode(255), nullable=True)
+    images_json = Column(UnicodeText, nullable=True)
+    status = Column(String(50), default="active")
     created_at = Column(DateTime, default=get_utc_now)
 
     category_rel = relationship("CategoryEntity", backref="products")
+
+    @property
+    def units(self):
+        if self.units_json:
+            try:
+                res = json.loads(self.units_json)
+                if isinstance(res, list):
+                    return res
+            except Exception:
+                pass
+        return []
+
+    @units.setter
+    def units(self, val):
+        self.units_json = json.dumps(val or [], ensure_ascii=False)
+
+    @property
+    def images(self):
+        if self.images_json:
+            try:
+                res = json.loads(self.images_json)
+                if isinstance(res, list):
+                    return res
+            except Exception:
+                pass
+        return []
+
+    @images.setter
+    def images(self, val):
+        self.images_json = json.dumps(val or [], ensure_ascii=False)
 
 
 class DealerEntity(Base):
@@ -127,6 +162,9 @@ class InventoryTransactionEntity(Base):
     performed_by = Column(Unicode(100), nullable=False)
     user_role = Column(String(50), nullable=False)
     reason = Column(UnicodeText, nullable=True)
+    unit_name = Column(Unicode(50), default="Cái")
+    conversion_rate = Column(Float, default=1.0)
+    base_quantity = Column(Float, default=0.0)
     created_at = Column(DateTime, default=get_utc_now)
 
 

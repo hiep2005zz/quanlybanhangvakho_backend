@@ -1,3 +1,4 @@
+from __future__ import annotations
 from datetime import date, timedelta
 
 import pytest
@@ -53,6 +54,8 @@ def test_sales_order_dealer_list_only_returns_assigned_dealers():
     DEALERS_DB[2].assigned_sale_id = 3
     DEALERS_DB[3].assigned_sale_id = 3
     DEALERS_DB[4].assigned_sale_id = 2
+    if 5 in DEALERS_DB:
+        DEALERS_DB[5].assigned_sale_id = 2
     headers = {"Authorization": f"Bearer {get_token('sales')}"}
 
     response = client.get("/api/v1/orders/dealers", headers=headers)
