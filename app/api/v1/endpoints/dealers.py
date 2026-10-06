@@ -439,6 +439,16 @@ def create_dealer(
             detail="Tên đại lý / khách hàng không được để trống",
         )
 
+    load_dealers_db()
+
+    # Kiểm tra trùng tên đại lý / khách hàng (không phân biệt hoa thường)
+    for d in DEALERS_DB.values():
+        if d.name and d.name.strip().lower() == name_clean.lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Tên đại lý / khách hàng '{name_clean}' đã tồn tại trên hệ thống. Vui lòng đặt tên khác.",
+            )
+
     # Sinh mã nếu chưa có
     new_id = max(DEALERS_DB.keys(), default=0) + 1
     code_clean = payload.code.strip().upper() if payload.code and payload.code.strip() else f"DL{new_id:03d}"
@@ -450,6 +460,27 @@ def create_dealer(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Mã đại lý '{code_clean}' đã tồn tại trên hệ thống. Mã đại lý phải là duy nhất.",
             )
+
+    # Kiểm tra trùng số điện thoại (nếu có cung cấp)
+    phone_clean = payload.phone.strip() if payload.phone else None
+    if phone_clean:
+        norm_phone = phone_clean.replace(" ", "").replace(".", "").replace("-", "")
+        if norm_phone.startswith("+84"):
+            norm_phone = "0" + norm_phone[3:]
+        elif norm_phone.startswith("84") and len(norm_phone) == 11:
+            norm_phone = "0" + norm_phone[2:]
+        for d in DEALERS_DB.values():
+            if d.phone:
+                dp = d.phone.strip().replace(" ", "").replace(".", "").replace("-", "")
+                if dp.startswith("+84"):
+                    dp = "0" + dp[3:]
+                elif dp.startswith("84") and len(dp) == 11:
+                    dp = "0" + dp[2:]
+                if dp == norm_phone:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Số điện thoại '{phone_clean}' đã được sử dụng cho một đại lý/khách hàng khác ({d.name}).",
+                    )
 
     assigned_sale = payload.assigned_sale_id
     if assigned_sale is None and current_user.role == "sales":

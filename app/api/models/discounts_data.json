@@ -1,0 +1,39 @@
+[
+  {
+    "id": 1,
+    "code": "CK-SL-001",
+    "name": "Chiết khấu sản lượng toàn hệ thống",
+    "title": "Tất cả sản phẩm",
+    "category": "ALL",
+    "target_dealer_type": "ALL",
+    "target_group": "all",
+    "description": "Giảm giá theo sản lượng đặt hàng áp dụng toàn hệ thống",
+    "is_active": true,
+    "status": "active",
+    "start_date": "2026-01-01",
+    "end_date": "2026-12-31",
+    "tiers": [
+      {
+        "id": 1,
+        "min_quantity": 100,
+        "max_quantity": 499,
+        "discount_percent": 5.0
+      },
+      {
+        "id": 2,
+        "min_quantity": 500,
+        "max_quantity": 999,
+        "discount_percent": 10.0
+      },
+      {
+        "id": 3,
+        "min_quantity": 1000,
+        "max_quantity": null,
+        "discount_percent": 15.0
+      }
+    ],
+    "created_by": "admin",
+    "created_at": "2026-10-06T18:06:09.322897+00:00",
+    "updated_at": "2026-10-06T18:06:09.322914+00:00"
+  }
+]

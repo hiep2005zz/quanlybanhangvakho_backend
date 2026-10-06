@@ -20,9 +20,9 @@ def reset_test_state():
             UserEntity.username.in_(["sales_moi", "admin2", "multi_role_user", "kho_invalid_branch", "kho_valid_branch", "temp_user"])
         ).delete(synchronize_session=False)
 
-        # Xóa các đại lý test phát sinh (id > 4)
+        # Xóa các đại lý test phát sinh (id > 5)
         from app.models.entities import DealerEntity
-        db.query(DealerEntity).filter(DealerEntity.id > 4).delete(synchronize_session=False)
+        db.query(DealerEntity).filter(DealerEntity.id > 5).delete(synchronize_session=False)
 
         # Xóa các sản phẩm test được tạo trong lúc test
         from app.models.entities import ProductEntity
@@ -73,6 +73,11 @@ def reset_test_state():
                     token_version=1
                 )
                 db.add(new_u)
+        
+        from app.models.entities import AuditLogEntity, InventoryTransactionEntity
+        from sqlalchemy import func
+        max_audit_id = db.query(func.max(AuditLogEntity.id)).scalar() or 0
+        max_inv_id = db.query(func.max(InventoryTransactionEntity.id)).scalar() or 0
         db.commit()
     finally:
         db.close()
@@ -83,7 +88,7 @@ def reset_test_state():
     FAILED_ATTEMPTS.clear()
     from app.models.dealer import DEALERS_DB, load_dealers_db
     for k in list(DEALERS_DB.keys()):
-        if k > 4:
+        if k > 5:
             del DEALERS_DB[k]
     if len(DEALERS_DB) < 3:
         load_dealers_db()
@@ -96,10 +101,8 @@ def reset_test_state():
     if 4 in DEALERS_DB: DEALERS_DB[4].assigned_sale_id = mgr_uid
     from app.models.dealer import save_dealers_db
     save_dealers_db()
-    from app.models.entities import AuditLogEntity, InventoryTransactionEntity
-    from sqlalchemy import func
-    max_audit_id = db.query(func.max(AuditLogEntity.id)).scalar() or 0
-    max_inv_id = db.query(func.max(InventoryTransactionEntity.id)).scalar() or 0
+    from app.api.v1.endpoints.orders import ORDERS_DB
+    ORDERS_DB.clear()
     yield
 
     # Dọn sạch audit logs và inventory transactions do các ca test sinh ra để không ảnh hưởng dữ liệu thật
@@ -129,6 +132,19 @@ def reset_test_state():
 
         # Dọn sạch bộ nhớ cache in-memory
         INVENTORY_TRANSACTIONS.clear()
+        test_cleanup_reasons = [
+            "Kiểm kê định kỳ phát hiện dư",
+            "Kiểm kê định kỳ phát hiện thừa 5 cái",
+            "Tăng giá theo bảng giá quý 4",
+            "Nâng hạn mức tín dụng khách hàng VIP",
+            "Khách hủy hợp đồng",
+            "Nhập kho từ NCC: Nhà Cung Cấp Sabeco. Nhập kho theo thùng từ nhà cung cấp (2 Thùng = 48 Lon)",
+            "Xuất kho tới: Đại lý Hà Nội. Xuất mẫu thử nghiệm cho khách (1 Lốc = 6 Lon)",
+            "Nhập kho từ NCC: Công ty TNHH Bia Nước Giải Khát. Nhập kho lịch sử mốc 1 (3 Thùng = 72 Lon)",
+            "Admin cân đối kho",
+            "Test",
+            "test",
+        ]
         MEMORY_AUDIT_LOGS[:] = [
             m for m in MEMORY_AUDIT_LOGS
             if m.get("reason") not in test_cleanup_reasons
@@ -162,19 +178,20 @@ def reset_test_state():
             2: Dealer(id=2, code="DL002", name="Đại Lý Thời Trang Tân Bình", phone="0987654321", email="tanbinh@daily.vn", address="45 Lý Thường Kiệt, TP. HCM", region="TP. HCM", assigned_sale_id=3, credit_limit=50000000.0, customer_group="dai_ly_cap_2", status="Đang hoạt động"),
             3: Dealer(id=3, code="DL003", name="Đại Lý Tổng Hợp Hải Phòng", phone="0934567890", email="haiphong@daily.vn", address="88 Lạch Tray, Hải Phòng", region="Hải Phòng", assigned_sale_id=3, credit_limit=50000000.0, customer_group="Khách sỉ", status="Đang hoạt động"),
             4: Dealer(id=4, code="DL004", name="Công Ty TNHH Bán Lẻ An Phát", phone="0945678901", email="anphat@daily.vn", address="66 Nguyễn Huệ, Đà Nẵng", region="Đà Nẵng", assigned_sale_id=2, credit_limit=50000000.0, customer_group="khach_le", status="Tạm ngừng"),
+            5: Dealer(id=5, code="DL005", name="Khách Mua Lẻ Trực Tiếp", phone="0911223344", email="khachle@gmail.com", address="Số 10 Tràng Thi, Hoàn Kiếm, Hà Nội", region="Hà Nội", assigned_sale_id=None, credit_limit=20000000.0, customer_group="khach_le", status="Đang hoạt động"),
         }
         for did, sd in seed_dealers.items():
             DEALERS_DB[did] = sd
-            db_d = db.query(DealerEntity).filter(DealerEntity.id == did).first()
+            db_d = cleanup_db.query(DealerEntity).filter(DealerEntity.id == did).first()
             if db_d:
                 db_d.assigned_sale_id = sd.assigned_sale_id
                 db_d.status = sd.status
                 db_d.customer_group = sd.customer_group
-        db.commit()
+        cleanup_db.commit()
 
     except Exception:
-        db.rollback()
+        cleanup_db.rollback()
     finally:
-        db.close()
+        cleanup_db.close()
 
 
