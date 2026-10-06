@@ -650,17 +650,18 @@ def create_product(
 def delete_product(
     product_id: int,
     request: Request,
+    force: bool = False,
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
 ):
     """
-    Xóa sản phẩm (chỉ cho phép nếu sản phẩm chưa phát sinh giao dịch).
+    Xóa sản phẩm (chỉ cho phép nếu sản phẩm chưa phát sinh giao dịch hoặc force=True).
     """
     transaction_count = _get_product_transaction_count(product_id, db)
-    if transaction_count > 0:
+    if transaction_count > 0 and not force:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Sản phẩm đã phát sinh giao dịch, không thể xóa. Vui lòng chuyển sang trạng thái Ngừng kinh doanh."
+            detail="Sản phẩm đã phát sinh giao dịch, không thể xóa. Vui lòng chuyển sang trạng thái Ngừng kinh doanh hoặc xác nhận xóa."
         )
 
     target = None
