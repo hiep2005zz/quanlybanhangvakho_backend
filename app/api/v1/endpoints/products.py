@@ -97,33 +97,70 @@ def _find_product_in_raw(product_id: int):
 def _get_product_transaction_count(product_id: int, db: Session) -> int:
     from app.api.v1.endpoints.orders import ORDERS_DB
     from app.api.v1.endpoints.inventory import INVENTORY_TRANSACTIONS
-    from app.models.entities import OrderEntity, InventoryTransactionEntity
+    from app.models.entities import OrderEntity, InventoryTransactionEntity, ProductEntity
     import json
 
-    count = 0
-    for tx in INVENTORY_TRANSACTIONS:
-        if getattr(tx, "product_id", None) == product_id or (isinstance(tx, dict) and tx.get("product_id") == product_id):
-            count += 1
-    
-    for order in ORDERS_DB.values():
-        for item in order.get("items", []):
-            if item.get("product_id") == product_id:
-                count += 1
+    prod_code = None
+    for p in RAW_PRODUCTS:
+        if p.get("id") == product_id:
+            prod_code = p.get("code")
+            break
+    if not prod_code and db:
+        try:
+            prod_obj = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
+            if prod_obj:
+                prod_code = prod_obj.code
+        except Exception:
+            pass
+
+    order_ids = set()
+
+    # 1. In-memory orders
+    for order_key, order in ORDERS_DB.items():
+        items = order.get("items", [])
+        for item in items:
+            item_pid = item.get("product_id")
+            item_code = item.get("product_code") or item.get("code")
+            if (item_pid is not None and str(item_pid) == str(product_id)) or (prod_code and item_code and item_code.upper() == prod_code.upper()):
+                order_ids.add(order.get("order_code") or f"mem_{order_key}")
                 break
 
+    # 2. Database orders (hỗ trợ cả JSON dạng list và JSON dạng dict có key 'items')
     if db:
-        count += db.query(InventoryTransactionEntity).filter(InventoryTransactionEntity.product_id == product_id).count()
-        for o in db.query(OrderEntity).all():
-            if o.items_json:
-                try:
-                    data = json.loads(o.items_json)
-                    for item in data.get("items", []):
-                        if item.get("product_id") == product_id:
-                            count += 1
-                            break
-                except Exception:
-                    pass
-    return count
+        try:
+            for o in db.query(OrderEntity).all():
+                if o.items_json:
+                    try:
+                        data = json.loads(o.items_json)
+                        items_list = data if isinstance(data, list) else (data.get("items", []) if isinstance(data, dict) else [])
+                        for item in items_list:
+                            item_pid = item.get("product_id")
+                            item_code = item.get("product_code") or item.get("code")
+                            if (item_pid is not None and str(item_pid) == str(product_id)) or (prod_code and item_code and item_code.upper() == prod_code.upper()):
+                                order_ids.add(o.order_code or f"db_{o.id}")
+                                break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # 3. Inventory transactions (nhập kho, xuất kho, điều chỉnh tồn kho)
+    mem_tx_count = 0
+    for tx in INVENTORY_TRANSACTIONS:
+        tx_pid = getattr(tx, "product_id", None) or (tx.get("product_id") if isinstance(tx, dict) else None)
+        if tx_pid is not None and str(tx_pid) == str(product_id):
+            mem_tx_count += 1
+
+    db_tx_count = 0
+    if db:
+        try:
+            db_tx_count = db.query(InventoryTransactionEntity).filter(InventoryTransactionEntity.product_id == product_id).count()
+        except Exception:
+            pass
+
+    inventory_count = max(mem_tx_count, db_tx_count)
+
+    return len(order_ids) + inventory_count
 
 
 @router.get("", response_model=ProductListResponse)
@@ -650,18 +687,17 @@ def create_product(
 def delete_product(
     product_id: int,
     request: Request,
-    force: bool = False,
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
 ):
     """
-    Xóa sản phẩm (chỉ cho phép nếu sản phẩm chưa phát sinh giao dịch hoặc force=True).
+    Xóa sản phẩm (chỉ cho phép nếu sản phẩm chưa phát sinh giao dịch).
     """
     transaction_count = _get_product_transaction_count(product_id, db)
-    if transaction_count > 0 and not force:
+    if transaction_count > 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Sản phẩm đã phát sinh giao dịch, không thể xóa. Vui lòng chuyển sang trạng thái Ngừng kinh doanh hoặc xác nhận xóa."
+            detail="Sản phẩm đã phát sinh giao dịch, không thể xóa. Vui lòng chuyển sang trạng thái Ngừng kinh doanh."
         )
 
     target = None
@@ -671,32 +707,47 @@ def delete_product(
             RAW_PRODUCTS.pop(idx)
             break
 
-    if not target:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy sản phẩm")
-
-    try:
+    db_prod = None
+    if db:
         from app.models.entities import ProductEntity
         db_prod = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
-        if db_prod:
+
+    if not target and not db_prod:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy sản phẩm")
+
+    prod_code = target["code"] if target else db_prod.code
+    prod_name = target["name"] if target else db_prod.name
+    deleted_val = target if target else {
+        "id": db_prod.id,
+        "code": db_prod.code,
+        "name": db_prod.name,
+        "category": db_prod.category,
+        "stock": db_prod.stock,
+        "cost_price": db_prod.cost_price,
+        "sell_price": db_prod.sell_price,
+    }
+
+    if db_prod:
+        try:
             db.delete(db_prod)
             db.commit()
-    except Exception as db_err:
-        db.rollback()
-        print(f"Warning: delete product from DB: {db_err}")
+        except Exception as db_err:
+            db.rollback()
+            print(f"Warning: delete product from DB: {db_err}")
 
     log_audit_event(
         db=db,
         user=current_user,
         action_type="PRODUCT_DELETE",
         entity_type="Product",
-        entity_id=target["code"],
-        old_val=target,
+        entity_id=prod_code,
+        old_val=deleted_val,
         new_val=None,
-        reason=f"Xóa vĩnh viễn sản phẩm {target['name']}",
+        reason=f"Xóa vĩnh viễn sản phẩm {prod_name}",
         request=request,
     )
 
-    return {"status": "success", "message": f"Đã xóa sản phẩm {target['code']} thành công"}
+    return {"status": "success", "message": f"Đã xóa sản phẩm {prod_code} thành công"}
 
 
 @router.put("/{product_id}/units")
