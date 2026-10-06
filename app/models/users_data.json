@@ -4,7 +4,7 @@
     "username": "admin",
     "full_name": "Đào Ngọc Hiệp",
     "email": "daongochiep645@gmail.com",
-    "phone": "0998887766",
+    "phone": "0822516998",
     "role": "admin",
     "roles": [
       "admin"
@@ -51,7 +51,7 @@
     "roles": [
       "sales"
     ],
-    "hashed_password": "$2b$12$9aIp7ONNe9ZpVqYxw/GR5uBEJRYSA.BlLgZCoK2nV1V88lX7XvFCK",
+    "hashed_password": "$2b$12$46enPSSFmWjqVkbPnCYZ2O.2KSvOvq8qh/RevbyqwXi.HiTakbDWK",
     "branch": "Khu vực Miền Bắc",
     "is_active": true,
     "status": "ACTIVE",
@@ -60,7 +60,7 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
-    "avatar_url": "/uploads/avatars/sales_e89ab34a0192_square.png"
+    "avatar_url": "/uploads/avatars/sales_d005baf8659f_square.png"
   },
   "kho": {
     "id": 4,
@@ -197,11 +197,9 @@
     "full_name": "Lê Văn C",
     "email": "levanc@gmail.com",
     "phone": "0901234567",
-    "role": "sales_manager",
+    "role": "customer",
     "roles": [
-      "sales_manager",
-      "sales",
-      "accountant"
+      "customer"
     ],
     "hashed_password": "$2b$12$eUwduVF1jHfoSOhFoM1tMuQ1MTPYRk/aQ1hiMZUR2GkK63MZ5XOPO",
     "branch": "Khu vực Miền Nam",
@@ -233,6 +231,70 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
+    "avatar_url": null
+  },
+  "tranngochuy2509066": {
+    "id": 12,
+    "username": "tranngochuy2509066",
+    "full_name": "huytran",
+    "email": "tranngochuy2509066@gmail.com",
+    "phone": "0998726252",
+    "role": "customer",
+    "roles": [
+      "customer"
+    ],
+    "hashed_password": "$2b$12$RLXU9TT8QHFArDBpzHB8/.JYVmxJFBJWyZbTMhujXgdvXspczQo2C",
+    "branch": "Chưa phân công",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  },
+  "dun": {
+    "id": 13,
+    "username": "dun",
+    "full_name": "ha thai duong",
+    "email": "thaidun6626@gmail.com",
+    "phone": "0355501054",
+    "role": "warehouse",
+    "roles": [
+      "warehouse",
+      "warehouse_manager"
+    ],
+    "hashed_password": "$2b$12$9HwQqPJA6rMUbXIQ2PphWe3wZ4vQ.btk/wgiF/fuWq4ogu/LbyblC",
+    "branch": "Kho Tổng Hà Nội",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 2,
+    "avatar_url": null
+  },
+  "hieuhieu": {
+    "id": 14,
+    "username": "hieuhieu",
+    "full_name": "Hieu nhan vien",
+    "email": "tokudatnvn@gmail.com",
+    "phone": "0966351620",
+    "role": "sales",
+    "roles": [
+      "sales"
+    ],
+    "hashed_password": "$2b$12$zNOrxo4LnmzTFPvu7v1zwOuVbKosebPeyFZQAZBn4mXTd0sGQJv1K",
+    "branch": "Kho Tổng Hà Nội",
+    "is_active": false,
+    "status": "LOCKED",
+    "lock_reason": "không lý do",
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 2,
     "avatar_url": null
   }
 }
