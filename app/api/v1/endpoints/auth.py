@@ -1,7 +1,7 @@
 # backend/app/api/v1/endpoints/auth.py
 import re
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.api.deps import get_current_user, get_current_token
+from app.api.deps import get_current_user, get_current_user_for_refresh, get_current_token
 from app.core.config import settings
 from app.core.security import create_access_token, revoke_token, verify_password, get_password_hash
 from app.models.user import USERS_DB, save_users_db, load_users_db
@@ -31,7 +31,7 @@ def login(login_data: LoginRequest):
     return token_resp
 
 @router.post("/refresh", response_model=TokenResponse)
-def refresh_session(current_user: UserResponse = Depends(get_current_user)):
+def refresh_session(current_user: UserResponse = Depends(get_current_user_for_refresh)):
     """
     Cơ chế tự động làm mới phiên (Silent Refresh / Sliding Expiration).
     Gia hạn thêm thời gian hiệu lực cho người dùng khi còn hoạt động hoặc thao tác.

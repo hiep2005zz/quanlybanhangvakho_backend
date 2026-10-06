@@ -73,14 +73,14 @@ def reset_test_state():
     load_users_db()
     from app.services.auth_service import FAILED_ATTEMPTS
     FAILED_ATTEMPTS.clear()
-    from app.models.dealer import DEALERS_DB
+    from app.models.dealer import DEALERS_DB, save_dealers_db
     from app.models.user import USERS_DB
     sales_uid = USERS_DB["sales"].id if "sales" in USERS_DB else 3
-    mgr_uid = USERS_DB["sales_manager"].id if "sales_manager" in USERS_DB else 2
     if 1 in DEALERS_DB: DEALERS_DB[1].assigned_sale_id = sales_uid
     if 2 in DEALERS_DB: DEALERS_DB[2].assigned_sale_id = sales_uid
     if 3 in DEALERS_DB: DEALERS_DB[3].assigned_sale_id = sales_uid
-    if 4 in DEALERS_DB: DEALERS_DB[4].assigned_sale_id = mgr_uid
+    if 4 in DEALERS_DB: DEALERS_DB[4].assigned_sale_id = None
+    save_dealers_db()
     from app.models.entities import AuditLogEntity, InventoryTransactionEntity
     from sqlalchemy import func
     max_audit_id = db.query(func.max(AuditLogEntity.id)).scalar() or 0
@@ -138,6 +138,13 @@ def reset_test_state():
                 p["units"] = [
                     {"unit_name": "Kiện", "conversion_rate": 10.0},
                 ]
+
+        # Khôi phục người phụ trách chuẩn cho đại lý sau khi test
+        if 1 in DEALERS_DB: DEALERS_DB[1].assigned_sale_id = sales_uid
+        if 2 in DEALERS_DB: DEALERS_DB[2].assigned_sale_id = sales_uid
+        if 3 in DEALERS_DB: DEALERS_DB[3].assigned_sale_id = sales_uid
+        if 4 in DEALERS_DB: DEALERS_DB[4].assigned_sale_id = None
+        save_dealers_db()
 
     except Exception:
         cleanup_db.rollback()
