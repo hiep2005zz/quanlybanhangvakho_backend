@@ -1,3 +1,4 @@
+import re
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -102,7 +103,12 @@ def list_all_delivery_points(db: Session = Depends(get_db), user=Depends(get_cur
 @dealers_router.post("/master-delivery-points", status_code=201)
 def create_master_point(body: DeliveryPointCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
     """Tạo điểm giao hàng mới vào danh mục điểm giao chung."""
-    _sync_to_master(db, body.label, body.address, body.receiver_name or "", body.receiver_phone or "", body.route_note or "")
+    phone_clean = (body.receiver_phone or "").strip()
+    if not phone_clean:
+        raise HTTPException(400, "Vui lòng nhập số điện thoại người nhận.")
+    if not re.fullmatch(r"^\d{10}$", phone_clean):
+        raise HTTPException(400, "Số điện thoại người nhận phải bao gồm đúng 10 chữ số.")
+    _sync_to_master(db, body.label, body.address, body.receiver_name or "", phone_clean, body.route_note or "")
     db.commit()
     item = db.scalars(select(MasterDeliveryPointEntity).where(
         MasterDeliveryPointEntity.label == body.label.strip(),
@@ -127,6 +133,10 @@ def update_master_point(point_id: int, body: DeliveryPointUpdate, db: Session = 
     item = db.get(MasterDeliveryPointEntity, point_id)
     if not item or not item.is_active:
         raise HTTPException(404, "Không tìm thấy điểm giao trong danh mục")
+    if body.receiver_phone is not None and body.receiver_phone.strip():
+        phone_clean = body.receiver_phone.strip()
+        if not re.fullmatch(r"^\d{10}$", phone_clean):
+            raise HTTPException(400, "Số điện thoại người nhận phải bao gồm đúng 10 chữ số.")
     data = body.model_dump(exclude_unset=True)
     for k, v in data.items():
         if hasattr(item, k):
@@ -191,10 +201,16 @@ def list_points(dealer_id: int, db: Session = Depends(get_db), user=Depends(get_
 def create_point(dealer_id: int, body: DeliveryPointCreate,
                  db: Session = Depends(get_db), user=Depends(get_current_user)):
     _check_access(db, dealer_id, user)
+    phone_clean = (body.receiver_phone or "").strip()
+    if not phone_clean:
+        raise HTTPException(400, "Vui lòng nhập số điện thoại người nhận.")
+    if not re.fullmatch(r"^\d{10}$", phone_clean):
+        raise HTTPException(400, "Số điện thoại người nhận phải bao gồm đúng 10 chữ số.")
     has_any = db.scalars(select(DealerDeliveryPointEntity.id).where(
         DealerDeliveryPointEntity.dealer_id == dealer_id,
         DealerDeliveryPointEntity.is_active == True)).first()  # noqa: E712
     data = body.model_dump()
+    data["receiver_phone"] = phone_clean
     if not has_any:
         data["is_default"] = True          # điểm đầu tiên tự là mặc định
     if data["is_default"]:
@@ -214,6 +230,10 @@ def update_point(dealer_id: int, point_id: int, body: DeliveryPointUpdate,
     point = db.get(DealerDeliveryPointEntity, point_id)
     if not point or point.dealer_id != dealer_id or not point.is_active:
         raise HTTPException(404, "Không tìm thấy điểm giao")
+    if body.receiver_phone is not None and body.receiver_phone.strip():
+        phone_clean = body.receiver_phone.strip()
+        if not re.fullmatch(r"^\d{10}$", phone_clean):
+            raise HTTPException(400, "Số điện thoại người nhận phải bao gồm đúng 10 chữ số.")
     data = body.model_dump()
     if data["is_default"] and not point.is_default:
         _clear_default(db, dealer_id)
