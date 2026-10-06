@@ -210,12 +210,32 @@ def _clear_default(db: Session, dealer_id: int):
 
 @router.get("", response_model=list[DeliveryPointOut])
 def list_points(dealer_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    _check_access(db, dealer_id, user)
+    dealer = _check_access(db, dealer_id, user)
     q = select(DealerDeliveryPointEntity).where(
         DealerDeliveryPointEntity.dealer_id == dealer_id,
         DealerDeliveryPointEntity.is_active == True,  # noqa: E712
     ).order_by(DealerDeliveryPointEntity.is_default.desc(), DealerDeliveryPointEntity.id)
-    return db.scalars(q).all()
+    pts = list(db.scalars(q).all())
+    if not pts and dealer and getattr(dealer, "address", None):
+        clean_phone = (getattr(dealer, "phone", None) or "0987654321").replace(" ", "").replace(".", "").replace("-", "")
+        if not re.fullmatch(r"^\d{10}$", clean_phone):
+            clean_phone = "0987654321"
+        default_pt = DealerDeliveryPointEntity(
+            dealer_id=dealer_id,
+            label="Địa chỉ đăng ký đại lý",
+            address=dealer.address,
+            receiver_name=dealer.name,
+            receiver_phone=clean_phone,
+            route_note="Địa chỉ chính thức của đại lý",
+            is_default=True,
+            is_active=True,
+        )
+        db.add(default_pt)
+        _sync_to_master(db, default_pt.label, default_pt.address, default_pt.receiver_name, default_pt.receiver_phone, default_pt.route_note)
+        db.commit()
+        db.refresh(default_pt)
+        pts.append(default_pt)
+    return pts
 
 
 @router.post("", response_model=DeliveryPointOut, status_code=201)
