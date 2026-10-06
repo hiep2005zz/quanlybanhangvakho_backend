@@ -1,4 +1,5 @@
 # backend/app/models/user.py - Seed Database Fresh v3 with 7 Roles
+from __future__ import annotations
 import os
 import json
 import re
