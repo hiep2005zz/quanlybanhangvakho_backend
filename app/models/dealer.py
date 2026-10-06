@@ -17,6 +17,7 @@ class Dealer(BaseModel):
     region: Optional[str] = None
     assigned_sale_id: Optional[int] = None  # user id of the sales staff responsible
     credit_limit: float = 50000000.0        # Hạn mức công nợ mặc định (VNĐ)
+    max_debt_days: int = 30                 # Số ngày nợ tối đa cho phép
     customer_group: Optional[str] = "Đại lý cấp 1"
     status: str = "ACTIVE"                  # ACTIVE | LOCKED
     lock_reason: Optional[str] = None
@@ -35,7 +36,7 @@ DEALERS_DB: dict[int, Dealer] = {
         region="Hà Nội",
         assigned_sale_id=3,
         credit_limit=100000000.0,
-        customer_group="Đại lý cấp 1",
+        customer_group="dai_ly_cap_1",
         status="Đang hoạt động",
     ),
     2: Dealer(
@@ -48,7 +49,7 @@ DEALERS_DB: dict[int, Dealer] = {
         region="TP. HCM",
         assigned_sale_id=3,
         credit_limit=50000000.0,
-        customer_group="Đại lý cấp 2",
+        customer_group="dai_ly_cap_2",
         status="Đang hoạt động",
     ),
     3: Dealer(
@@ -74,8 +75,21 @@ DEALERS_DB: dict[int, Dealer] = {
         region="Đà Nẵng",
         assigned_sale_id=None,  # Chưa chỉ định nhân viên kinh doanh phụ trách
         credit_limit=50000000.0,
-        customer_group="Khách lẻ",
+        customer_group="khach_le",
         status="Tạm ngừng",
+    ),
+    5: Dealer(
+        id=5,
+        code="DL005",
+        name="Khách Mua Lẻ Trực Tiếp",
+        phone="0911223344",
+        email="khachle@gmail.com",
+        address="Số 10 Tràng Thi, Hoàn Kiếm, Hà Nội",
+        region="Hà Nội",
+        assigned_sale_id=3,
+        credit_limit=20000000.0,
+        customer_group="khach_le",
+        status="Đang hoạt động",
     ),
 }
 
@@ -85,7 +99,7 @@ import json
 DEALERS_JSON_PATH = os.path.join(os.path.dirname(__file__), "dealers_data.json")
 
 def save_dealers_db():
-    """Lưu DEALERS_DB vào cơ sở dữ liệu SQL Server (và đồng bộ JSON dự phòng)."""
+    """Lưu DEALERS_DB vào cơ sở dữ liệu (và đồng bộ JSON dự phòng)."""
     try:
         from app.core.database import SessionLocal
         from app.models.entities import DealerEntity
@@ -108,6 +122,7 @@ def save_dealers_db():
                 db_dealer.region = d.region
                 db_dealer.assigned_sale_id = d.assigned_sale_id
                 db_dealer.credit_limit = getattr(d, "credit_limit", getattr(db_dealer, "credit_limit", 0))
+                db_dealer.max_debt_days = getattr(d, "max_debt_days", getattr(db_dealer, "max_debt_days", 30))
                 db_dealer.customer_group = getattr(d, "customer_group", getattr(db_dealer, "customer_group", "Đại lý cấp 1"))
                 if hasattr(db_dealer, "status"):
                     db_dealer.status = getattr(d, "status", "ACTIVE")
@@ -121,7 +136,7 @@ def save_dealers_db():
             db.commit()
         except Exception as sql_err:
             db.rollback()
-            print(f"SQL Server save dealers note: {sql_err}")
+            print(f"Database save dealers note: {sql_err}")
         finally:
             db.close()
 
@@ -133,7 +148,7 @@ def save_dealers_db():
         print(f"Error saving dealers db: {e}")
 
 def load_dealers_db():
-    """Nạp DEALERS_DB từ SQL Server Database (hoặc fallback sang JSON)."""
+    """Nạp DEALERS_DB từ cơ sở dữ liệu (hoặc fallback sang JSON)."""
     loaded_from_sql = False
     try:
         from app.core.database import SessionLocal
@@ -155,6 +170,7 @@ def load_dealers_db():
                         region=getattr(entity, "region", None),
                         assigned_sale_id=entity.assigned_sale_id,
                         credit_limit=float(entity.credit_limit) if getattr(entity, "credit_limit", None) is not None else 50000000.0,
+                        max_debt_days=int(entity.max_debt_days) if getattr(entity, "max_debt_days", None) is not None else 30,
                         customer_group=getattr(entity, "customer_group", None) or "Đại lý cấp 1",
                         status="Đang hoạt động" if ("ho?t" in str(getattr(entity, "status", "")) or "Ðang" in str(getattr(entity, "status", ""))) else (getattr(entity, "status", "Đang hoạt động") or "Đang hoạt động"),
                         lock_reason=getattr(entity, "lock_reason", None),
@@ -164,11 +180,11 @@ def load_dealers_db():
                     DEALERS_DB[entity.id] = d
                 loaded_from_sql = True
         except Exception as sql_err:
-            print(f"SQL Server load dealers note: {sql_err}")
+            print(f"Database load dealers note: {sql_err}")
         finally:
             db.close()
     except Exception as e:
-        print(f"Error connecting to SQL Server on dealer load: {e}")
+        print(f"Error connecting to database on dealer load: {e}")
 
     if not loaded_from_sql and os.path.exists(DEALERS_JSON_PATH):
         try:
@@ -179,9 +195,6 @@ def load_dealers_db():
         except Exception as e:
             print(f"Error loading dealers db from json: {e}")
 
-# Tự động nạp dữ liệu khi khởi động
-load_dealers_db()
-
 def count_dealers_by_sale_id(user_id: int) -> int:
     """Đếm số lượng đại lý/khách hàng do nhân viên phụ trách."""
     return sum(1 for d in DEALERS_DB.values() if d.assigned_sale_id == user_id)
@@ -189,7 +202,6 @@ def count_dealers_by_sale_id(user_id: int) -> int:
 def get_dealers_by_sale_id(user_id: int) -> List[Dealer]:
     """Lấy danh sách đại lý do nhân viên phụ trách."""
     return [d for d in DEALERS_DB.values() if d.assigned_sale_id == user_id]
-
 def sync_dealer_for_user(user_id: int, full_name: str, email: Optional[str], phone: Optional[str], is_customer: bool):
     """Đồng bộ tài khoản User với danh sách Dealer (nếu là customer)."""
     if is_customer:

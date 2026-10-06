@@ -113,7 +113,37 @@ def search_dealers(
 
     results = []
 
+    from app.api.v1.endpoints.orders import ORDERS_DB
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+
     for dealer in DEALERS_DB.values():
+        # Tính toán công nợ hiện tại và tuổi nợ
+        current_debt = 0.0
+        max_debt_age = 0
+        for o in ORDERS_DB.values():
+            if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
+                current_debt += o.get("total_amount", 0.0)
+                created_at_str = o.get("created_at")
+                if created_at_str:
+                    try:
+                        order_date = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                        days_old = (now - order_date).days
+                        if days_old > max_debt_age:
+                            max_debt_age = days_old
+                    except Exception:
+                        pass
+        
+        c_limit = getattr(dealer, "credit_limit", 50000000.0)
+        c_days = getattr(dealer, "max_debt_days", 30)
+        if current_debt > c_limit and max_debt_age > c_days:
+            debt_status = "Vượt hạn mức & Quá hạn"
+        elif current_debt > c_limit:
+            debt_status = "Vượt hạn mức"
+        elif max_debt_age > c_days:
+            debt_status = "Quá hạn thanh toán"
+        else:
+            debt_status = "Trong hạn mức" 
         # ==========================================
         # 1. TÌM KIẾM NHANH THEO MÃ / TÊN / SĐT
         # ==========================================
@@ -146,7 +176,19 @@ def search_dealers(
         # ==========================================
         dealer_group = getattr(dealer, "customer_group", "") or ""
         if group_clean:
-            if group_clean not in dealer_group.lower():
+            def _normalize_group(g: str) -> str:
+                g_low = g.lower().replace("_", " ").strip()
+                if "sỉ" in g_low or "si" in g_low:
+                    return "khách sỉ"
+                if "cấp 1" in g_low or "cap 1" in g_low:
+                    return "đại lý cấp 1"
+                if "cấp 2" in g_low or "cap 2" in g_low:
+                    return "đại lý cấp 2"
+                if "lẻ" in g_low or "le" in g_low:
+                    return "khách lẻ"
+                return g_low
+
+            if _normalize_group(group_clean) != _normalize_group(dealer_group) and group_clean not in dealer_group.lower():
                 continue
 
         # ==========================================
@@ -172,7 +214,10 @@ def search_dealers(
             "email": dealer.email,
             "address": dealer.address,
             "region": dealer_region,
-            "credit_limit": getattr(dealer, "credit_limit", 50000000.0),
+            "credit_limit": c_limit,
+            "max_debt_days": c_days,
+            "current_debt": current_debt,
+            "debt_status": debt_status,
             "assigned_sale_id": dealer.assigned_sale_id,
             "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
             "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
@@ -616,3 +661,92 @@ def bulk_assign_dealers(
         "message": f"Đã chuyển giao {assigned_count} đại lý cho {new_sale_user.full_name}.",
         "errors": errors if errors else None
     }
+
+
+@router.delete("/{dealer_id}")
+def delete_dealer(
+    dealer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager"])),
+):
+    """
+    Xóa đại lý/khách hàng khỏi hệ thống (Chỉ dành cho Quản trị viên và Quản lý kinh doanh).
+    """
+    load_dealers_db()
+    dealer = DEALERS_DB.get(dealer_id)
+    if not dealer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đại lý ID {dealer_id}."
+        )
+
+    # Kiểm tra xem có đơn hàng đang hoạt động không
+    from app.models.entities import OrderEntity, DealerEntity, DealerDeliveryPointEntity
+    active_orders = db.query(OrderEntity).filter(
+        OrderEntity.dealer_id == dealer_id,
+        OrderEntity.status.in_(["PENDING", "PROCESSING", "CONFIRMED"])
+    ).count()
+    if active_orders > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đại lý đang có {active_orders} đơn hàng chưa hoàn tất, không thể xóa."
+        )
+
+    # 1. Xóa các đơn hàng đã hủy hoặc đã thanh toán của đại lý nếu có
+    db.query(OrderEntity).filter(OrderEntity.dealer_id == dealer_id).delete(synchronize_session=False)
+    # 2. Xóa các điểm giao hàng của đại lý để tránh lỗi ràng buộc khóa ngoại
+    db.query(DealerDeliveryPointEntity).filter(DealerDeliveryPointEntity.dealer_id == dealer_id).delete(synchronize_session=False)
+    # 3. Xóa trong SQL
+    db.query(DealerEntity).filter(DealerEntity.id == dealer_id).delete(synchronize_session=False)
+    db.commit()
+
+    # Ghi log thao tác
+    try:
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action_type="DEALER_DELETE",
+            entity_type="Dealer",
+            entity_id=dealer.code,
+            old_val={"id": dealer.id, "code": dealer.code, "name": dealer.name},
+            new_val=None,
+            reason="Xóa đại lý khỏi hệ thống",
+            request=request,
+        )
+    except Exception as e:
+        print(f"Lỗi ghi log DEALER_DELETE: {e}")
+
+    # Xóa khỏi DEALERS_DB in-memory và sync file json
+    del DEALERS_DB[dealer_id]
+    save_dealers_db()
+
+    return {"status": "success", "message": f"Đã xóa đại lý {dealer.name} ({dealer.code}) thành công."}
+
+
+@router.get("")
+@router.get("/")
+def get_dealers(
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "accountant"]))
+):
+    """Lấy danh sách tất cả đại lý."""
+    load_dealers_db()
+    res = []
+    for d in DEALERS_DB.values():
+        res.append({
+            "id": d.id,
+            "code": d.code,
+            "name": d.name,
+            "phone": d.phone,
+            "email": d.email,
+            "address": d.address,
+            "region": getattr(d, "region", None) or get_region(d.address),
+            "assigned_sale_id": d.assigned_sale_id,
+            "assigned_sale_name": get_sale_name(d.assigned_sale_id),
+            "credit_limit": getattr(d, "credit_limit", 50000000.0),
+            "max_debt_days": getattr(d, "max_debt_days", 30),
+            "customer_group": getattr(d, "customer_group", "Đại lý cấp 1"),
+            "status": getattr(d, "status", "Đang hoạt động"),
+            "lock_reason": getattr(d, "lock_reason", None),
+        })
+    return res

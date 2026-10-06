@@ -87,10 +87,21 @@ def create_access_token(
     }
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
-def decode_access_token(token: str) -> Optional[dict[str, Any]]:
-    """Decode and validate JWT Access Token. Rejects blacklisted tokens."""
+def decode_access_token(
+    token: str,
+    allow_expired_grace: bool = False,
+    grace_seconds: int = 1800
+) -> Optional[dict[str, Any]]:
+    """Decode and validate JWT Access Token. Rejects blacklisted tokens.
+    Khi allow_expired_grace=True, cho phép ân hạn thời gian hết hạn (leeway) để làm mới phiên."""
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        leeway = grace_seconds if allow_expired_grace else 0
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM],
+            leeway=leeway
+        )
         if is_token_revoked(token, payload):
             return None
         return payload

@@ -1,0 +1,147 @@
+CREATE TABLE users (
+	id INTEGER NOT NULL, 
+	username VARCHAR(100) NOT NULL, 
+	full_name VARCHAR(255) NOT NULL, 
+	email VARCHAR(255), 
+	phone VARCHAR(50), 
+	role VARCHAR(50) NOT NULL, 
+	roles_json TEXT, 
+	hashed_password VARCHAR(255) NOT NULL, 
+	branch VARCHAR(100), 
+	is_active BOOLEAN, 
+	status VARCHAR(20), 
+	lock_reason VARCHAR(500), 
+	locked_at DATETIME, 
+	failed_attempts INTEGER, 
+	locked_until DATETIME, 
+	token_version INTEGER, 
+	created_at DATETIME, 
+	PRIMARY KEY (id)
+)
+CREATE TABLE categories (
+	id INTEGER NOT NULL, 
+	name VARCHAR(255) NOT NULL, 
+	parent_id INTEGER, 
+	description TEXT, 
+	created_at DATETIME, 
+	PRIMARY KEY (id), 
+	UNIQUE (name), 
+	FOREIGN KEY(parent_id) REFERENCES categories (id)
+)
+CREATE TABLE products (
+	id INTEGER NOT NULL, 
+	code VARCHAR(50) NOT NULL, 
+	name VARCHAR(255) NOT NULL, 
+	category VARCHAR(100), 
+	category_id INTEGER, 
+	stock INTEGER, 
+	cost_price FLOAT, 
+	sell_price FLOAT, 
+	created_at DATETIME, base_unit VARCHAR(50) DEFAULT 'Cái', units_json TEXT, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(category_id) REFERENCES categories (id)
+)
+CREATE TABLE dealers (
+	id INTEGER NOT NULL, 
+	code VARCHAR(50) NOT NULL, 
+	name VARCHAR(255) NOT NULL, 
+	phone VARCHAR(50), 
+	email VARCHAR(255), 
+	address VARCHAR(500), 
+	assigned_sale_id INTEGER, 
+	credit_limit FLOAT, 
+	created_at DATETIME, customer_group VARCHAR(50) DEFAULT 'CAP_1', 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(assigned_sale_id) REFERENCES users (id)
+)
+CREATE TABLE audit_logs (
+	id INTEGER NOT NULL, 
+	user_id INTEGER, 
+	user_name VARCHAR(100), 
+	action_type VARCHAR(50) NOT NULL, 
+	entity_type VARCHAR(50) NOT NULL, 
+	entity_id VARCHAR(100) NOT NULL, 
+	old_values TEXT, 
+	new_values TEXT, 
+	reason VARCHAR(255), 
+	ip_address VARCHAR(45), 
+	created_at DATETIME, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(user_id) REFERENCES users (id)
+)
+CREATE TABLE inventory_transactions (
+	id INTEGER NOT NULL, 
+	product_id INTEGER NOT NULL, 
+	product_name VARCHAR(255) NOT NULL, 
+	type VARCHAR(50) NOT NULL, 
+	quantity INTEGER NOT NULL, 
+	previous_stock INTEGER NOT NULL, 
+	new_stock INTEGER NOT NULL, 
+	performed_by VARCHAR(100) NOT NULL, 
+	user_role VARCHAR(50) NOT NULL, 
+	reason TEXT, 
+	created_at DATETIME, unit_name VARCHAR(50) DEFAULT 'Cái', conversion_rate FLOAT DEFAULT 1.0, base_quantity FLOAT DEFAULT 0.0, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(product_id) REFERENCES products (id)
+)
+CREATE TABLE orders (
+	id INTEGER NOT NULL, 
+	order_code VARCHAR(50) NOT NULL, 
+	dealer_id INTEGER NOT NULL, 
+	dealer_name VARCHAR(255) NOT NULL, 
+	created_by VARCHAR(100) NOT NULL, 
+	assigned_sale_id INTEGER, 
+	assigned_sale_name VARCHAR(255), 
+	total_amount FLOAT, 
+	status VARCHAR(50), 
+	note TEXT, 
+	items_json TEXT, 
+	created_at DATETIME, price_book_id INTEGER NULL, requires_approval BOOLEAN DEFAULT 0, approval_status VARCHAR(20) DEFAULT 'NORMAL', approval_reason NVARCHAR(500) NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(dealer_id) REFERENCES dealers (id)
+)
+CREATE TABLE suppliers (
+	id INTEGER NOT NULL, 
+	code VARCHAR(30) NOT NULL, 
+	name VARCHAR(255) NOT NULL, 
+	tax_code VARCHAR(14), 
+	contact_person VARCHAR(255), 
+	payment_terms VARCHAR(255), 
+	is_active BOOLEAN NOT NULL, 
+	inactive_reason VARCHAR(255), 
+	deactivated_at DATETIME, 
+	deactivated_by VARCHAR(100), 
+	created_by VARCHAR(100), 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	PRIMARY KEY (id)
+)
+CREATE TABLE price_books (
+	id INTEGER NOT NULL, 
+	code VARCHAR(50) NOT NULL, 
+	name VARCHAR(255) NOT NULL, 
+	customer_group VARCHAR(50) NOT NULL, 
+	valid_from DATETIME NOT NULL, 
+	valid_to DATETIME NOT NULL, 
+	status VARCHAR(20), 
+	version INTEGER, 
+	parent_id INTEGER, 
+	is_locked BOOLEAN, 
+	note TEXT, 
+	created_by VARCHAR(100) NOT NULL, 
+	created_at DATETIME, 
+	updated_at DATETIME, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(parent_id) REFERENCES price_books (id)
+)
+CREATE TABLE price_book_items (
+	id INTEGER NOT NULL, 
+	price_book_id INTEGER NOT NULL, 
+	product_id INTEGER NOT NULL, 
+	price FLOAT NOT NULL, 
+	min_price FLOAT NOT NULL, 
+	created_at DATETIME, sale_price FLOAT NULL, floor_price FLOAT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(price_book_id) REFERENCES price_books (id) ON DELETE CASCADE, 
+	FOREIGN KEY(product_id) REFERENCES products (id)
+)
