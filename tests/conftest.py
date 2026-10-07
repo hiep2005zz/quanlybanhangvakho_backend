@@ -62,6 +62,14 @@ def reset_test_state():
         ).delete(synchronize_session=False)
         from app.api.v1.endpoints.products import RAW_PRODUCTS
         RAW_PRODUCTS[:] = [p for p in RAW_PRODUCTS if p.get("code") not in ["SP_CONFIRM_NEW_99", "SP_TEST_NEW_01", "SP_TEST_02", "SP_TEST_03", "SP_TEST_04", "SP_TRUNG_01"]]
+
+        # Xóa các bảng giá test phát sinh (id > 3)
+        from app.models.price_book import PriceBookEntity, PriceBookItemEntity
+        test_pb_ids = [pb.id for pb in db.query(PriceBookEntity).filter(PriceBookEntity.id > 3).all()]
+        if test_pb_ids:
+            db.query(PriceBookItemEntity).filter(PriceBookItemEntity.price_book_id.in_(test_pb_ids)).delete(synchronize_session=False)
+            db.query(PriceBookEntity).filter(PriceBookEntity.id.in_(test_pb_ids)).delete(synchronize_session=False)
+
         db.commit()
 
         # Đặt lại trạng thái ACTIVE, vai trò gốc và mật khẩu chuẩn '123' cho các user hệ thống
@@ -124,9 +132,17 @@ def reset_test_state():
     for k in list(DEALERS_DB.keys()):
         if k > 5:
             del DEALERS_DB[k]
-    original_dealer_sales = {did: d.assigned_sale_id for did, d in DEALERS_DB.items()}
+    sales_uid = USERS_DB["sales"].id if "sales" in USERS_DB else 3
+    mgr_uid = USERS_DB["sales_manager"].id if "sales_manager" in USERS_DB else 2
+    if 1 in DEALERS_DB: DEALERS_DB[1].assigned_sale_id = sales_uid
+    if 2 in DEALERS_DB: DEALERS_DB[2].assigned_sale_id = sales_uid
+    if 3 in DEALERS_DB: DEALERS_DB[3].assigned_sale_id = sales_uid
+    if 4 in DEALERS_DB: DEALERS_DB[4].assigned_sale_id = mgr_uid
+    from app.models.dealer import save_dealers_db
+    save_dealers_db()
     from app.api.v1.endpoints.orders import ORDERS_DB
     ORDERS_DB.clear()
+    original_dealer_sales = {did: d.assigned_sale_id for did, d in DEALERS_DB.items()}
     yield
 
     # Dọn sạch audit logs và inventory transactions do các ca test sinh ra để không ảnh hưởng dữ liệu thật
