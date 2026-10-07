@@ -1,5 +1,36 @@
+import os
+import shutil
+from pathlib import Path
+
+# CÔ LẬP TOÀN DIỆN MÔI TRƯỜNG TEST:
+# Pytest chạy trên database test riêng biệt, TUYỆT ĐỐI KHÔNG can thiệp quanlybanhang.db của môi trường Web dev
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+TEST_DB_PATH = BACKEND_DIR / "test_quanlybanhang.db"
+DEV_DB_PATH = BACKEND_DIR / "quanlybanhang.db"
+
+if DEV_DB_PATH.exists():
+    shutil.copyfile(DEV_DB_PATH, TEST_DB_PATH)
+
+os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH.as_posix()}"
+
 import json
 import pytest
+
+import app.models.dealer
+import app.models.user
+
+TEST_DEALERS_JSON = BACKEND_DIR / "app" / "models" / "test_dealers_data.json"
+DEV_DEALERS_JSON = BACKEND_DIR / "app" / "models" / "dealers_data.json"
+if DEV_DEALERS_JSON.exists():
+    shutil.copyfile(DEV_DEALERS_JSON, TEST_DEALERS_JSON)
+app.models.dealer.DEALERS_JSON_PATH = str(TEST_DEALERS_JSON)
+
+TEST_USERS_JSON = BACKEND_DIR / "app" / "models" / "test_users_data.json"
+DEV_USERS_JSON = BACKEND_DIR / "app" / "models" / "users_data.json"
+if DEV_USERS_JSON.exists():
+    shutil.copyfile(DEV_USERS_JSON, TEST_USERS_JSON)
+app.models.user.DB_FILE_PATH = str(TEST_USERS_JSON)
+
 from app.db.init_db import init_db
 from app.core.database import SessionLocal
 from app.models.entities import UserEntity
@@ -31,6 +62,7 @@ def reset_test_state():
             "admin": ("admin", ["admin"], "Toàn quốc"),
             "sales_manager": ("sales_manager", ["sales_manager"], "Toàn quốc"),
             "sales": ("sales", ["sales"], "Khu vực Miền Bắc"),
+            "nguyenvana": ("sales", ["sales"], "Kho Tổng Hà Nội"),
             "kho": ("warehouse", ["warehouse"], "Kho Tổng Hà Nội"),
             "warehouse_mgr": ("warehouse_manager", ["warehouse_manager"], "Kho Tổng Hà Nội"),
             "ketoan": ("accountant", ["accountant"], "Trụ sở chính"),
@@ -73,14 +105,10 @@ def reset_test_state():
     load_users_db()
     from app.services.auth_service import FAILED_ATTEMPTS
     FAILED_ATTEMPTS.clear()
-    from app.models.dealer import DEALERS_DB, save_dealers_db
+    from app.models.dealer import DEALERS_DB, load_dealers_db
     from app.models.user import USERS_DB
-    sales_uid = USERS_DB["sales"].id if "sales" in USERS_DB else 3
-    if 1 in DEALERS_DB: DEALERS_DB[1].assigned_sale_id = sales_uid
-    if 2 in DEALERS_DB: DEALERS_DB[2].assigned_sale_id = sales_uid
-    if 3 in DEALERS_DB: DEALERS_DB[3].assigned_sale_id = sales_uid
-    if 4 in DEALERS_DB: DEALERS_DB[4].assigned_sale_id = None
-    save_dealers_db()
+    load_dealers_db()
+    original_dealer_sales = {did: d.assigned_sale_id for did, d in DEALERS_DB.items()}
     from app.models.entities import AuditLogEntity, InventoryTransactionEntity
     from sqlalchemy import func
     max_audit_id = db.query(func.max(AuditLogEntity.id)).scalar() or 0
@@ -100,14 +128,20 @@ def reset_test_state():
 
         # Khôi phục ĐVT chuẩn cho SP001 và SP002 trong DB nếu bị test đổi
         prod1 = cleanup_db.query(ProductEntity).filter(ProductEntity.id == 1).first()
-        if prod1 and prod1.base_unit == "Lon":
+        if prod1 and str(prod1.base_unit).lower() == "lon":
             prod1.base_unit = "Cái"
             prod1.units_json = json.dumps([{"unit_name": "Lốc", "conversion_rate": 6.0}, {"unit_name": "Thùng", "conversion_rate": 24.0}], ensure_ascii=False)
 
         prod2 = cleanup_db.query(ProductEntity).filter(ProductEntity.id == 2).first()
-        if prod2 and prod2.base_unit == "Lon":
+        if prod2 and str(prod2.base_unit).lower() == "lon":
             prod2.base_unit = "Chiếc"
             prod2.units_json = json.dumps([{"unit_name": "Kiện", "conversion_rate": 10.0}], ensure_ascii=False)
+
+        from app.models.entities import DealerEntity
+        for did, sid in original_dealer_sales.items():
+            dl_ent = cleanup_db.query(DealerEntity).filter(DealerEntity.id == did).first()
+            if dl_ent and dl_ent.assigned_sale_id != sid:
+                dl_ent.assigned_sale_id = sid
 
         cleanup_db.commit()
 
@@ -139,12 +173,10 @@ def reset_test_state():
                     {"unit_name": "Kiện", "conversion_rate": 10.0},
                 ]
 
-        # Khôi phục người phụ trách chuẩn cho đại lý sau khi test
-        if 1 in DEALERS_DB: DEALERS_DB[1].assigned_sale_id = sales_uid
-        if 2 in DEALERS_DB: DEALERS_DB[2].assigned_sale_id = sales_uid
-        if 3 in DEALERS_DB: DEALERS_DB[3].assigned_sale_id = sales_uid
-        if 4 in DEALERS_DB: DEALERS_DB[4].assigned_sale_id = None
-        save_dealers_db()
+        # Khôi phục người phụ trách cho đại lý theo snapshot ban đầu
+        for did, sid in original_dealer_sales.items():
+            if did in DEALERS_DB:
+                DEALERS_DB[did].assigned_sale_id = sid
 
     except Exception:
         cleanup_db.rollback()

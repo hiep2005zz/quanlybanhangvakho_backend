@@ -279,3 +279,65 @@ def test_audit_logs_immutable_cannot_delete():
         headers={"Authorization": f"Bearer {sales_mgr_token}"}
     )
     assert del_single_sm.status_code == 405
+
+
+def test_invoice_create_creates_audit_log():
+    """Khi tạo đơn hàng / hóa đơn mới, hệ thống tự động ghi nhật ký INVOICE_CREATE."""
+    admin_token = get_token("admin")
+
+    create_resp = client.post(
+        "/api/v1/orders",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "dealer_id": 1,
+            "items": [{"product_id": 1, "quantity": 2, "price": 199000, "unit": "Cái"}],
+        },
+    )
+    assert create_resp.status_code == 201
+    order_code = create_resp.json()["order_code"]
+
+    # Tra cứu lịch sử của Invoice vừa tạo
+    entity_resp = client.get(
+        f"/api/v1/audit-logs/entity/Invoice/{order_code}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert entity_resp.status_code == 200
+    items = entity_resp.json()
+    assert len(items) > 0
+    create_log = next((l for l in items if l["action_type"] == "INVOICE_CREATE"), None)
+    assert create_log is not None
+    assert create_log["entity_id"] == order_code
+    assert create_log["entity_type"] == "Invoice"
+
+
+def test_unrelated_actions_are_not_logged():
+    """
+    Theo yêu cầu người dùng: Chỉ ghi lại thao tác tác động lên:
+    tồn kho, giá bán, hạn mức công nợ và hoá đơn. Các thao tác khác KHÔNG ghi lại vào nhật ký.
+    """
+    admin_token = get_token("admin")
+
+    # Lấy tổng số log trước thao tác
+    init_resp = client.get("/api/v1/audit-logs", headers={"Authorization": f"Bearer {admin_token}"})
+    init_total = init_resp.json()["total"]
+
+    # Thực hiện thao tác đổi trạng thái đại lý (DEALER_STATUS_CHANGE)
+    dealer_status_resp = client.put(
+        "/api/v1/dealers/1/status",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"status": "Tạm ngừng", "reason": "Tạm ngừng bảo trì hợp đồng"}
+    )
+    assert dealer_status_resp.status_code == 200
+
+    # Khôi phục lại trạng thái cũ
+    client.put(
+        "/api/v1/dealers/1/status",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"status": "Đang hoạt động", "reason": "Mở lại hoạt động"}
+    )
+
+    # Tổng số audit log KHÔNG được tăng lên vì thao tác đại lý không nằm trong 4 nhóm nghiệp vụ
+    after_resp = client.get("/api/v1/audit-logs", headers={"Authorization": f"Bearer {admin_token}"})
+    after_total = after_resp.json()["total"]
+    assert after_total == init_total, f"Thao tác ngoài 4 nhóm nghiệp vụ không được ghi log: trước {init_total}, sau {after_total}"
+

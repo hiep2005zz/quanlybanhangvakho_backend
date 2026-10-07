@@ -52,9 +52,9 @@ def test_sales_order_dealer_list_only_returns_assigned_dealers():
     DEALERS_DB[1].assigned_sale_id = 3
     DEALERS_DB[2].assigned_sale_id = 3
     DEALERS_DB[3].assigned_sale_id = 3
-    DEALERS_DB[4].assigned_sale_id = 2
+    DEALERS_DB[4].assigned_sale_id = 8
     if 5 in DEALERS_DB:
-        DEALERS_DB[5].assigned_sale_id = None
+        DEALERS_DB[5].assigned_sale_id = 8
     headers = {"Authorization": f"Bearer {get_token('sales')}"}
 
     response = client.get("/api/v1/orders/dealers", headers=headers)
@@ -72,7 +72,7 @@ def test_order_write_is_required_for_order_dealer_list():
 
 
 def test_sales_cannot_create_order_for_unassigned_dealer():
-    DEALERS_DB[4].assigned_sale_id = 2
+    DEALERS_DB[4].assigned_sale_id = 8
     headers = {"Authorization": f"Bearer {get_token('sales')}"}
 
     response = client.post(
@@ -150,17 +150,23 @@ def test_order_creation_keeps_delivery_unit_and_discount_totals(monkeypatch):
         stored_order = session.query(OrderEntity).filter_by(order_code=result["order_code"]).first()
         assert stored_order is not None
         assert '"delivery_point": "120 Cầu Giấy, Hà Nội"' in stored_order.items_json
-        listed_orders = client.get("/api/v1/orders", headers=headers)
-        assert listed_orders.status_code == 200
-        assert any(order["order_code"] == result["order_code"] for order in listed_orders.json())
-        cancel_response = client.put(
-            f"/api/v1/orders/{result['order_code']}",
-            headers=headers,
-            json={"status": "CANCELLED", "reason": "Đại lý yêu cầu hủy đơn"},
-        )
-        assert cancel_response.status_code == 200
-        stored_order = session.query(OrderEntity).filter_by(order_code=result["order_code"]).first()
-        session.refresh(stored_order)
+    finally:
+        session.close()
+
+    listed_orders = client.get("/api/v1/orders", headers=headers)
+    assert listed_orders.status_code == 200
+    assert any(order["order_code"] == result["order_code"] for order in listed_orders.json())
+    cancel_response = client.put(
+        f"/api/v1/orders/{result['order_code']}",
+        headers=headers,
+        json={"status": "CANCELLED", "reason": "Đại lý yêu cầu hủy đơn"},
+    )
+    assert cancel_response.status_code == 200
+
+    session2 = SessionLocal()
+    try:
+        stored_order = session2.query(OrderEntity).filter_by(order_code=result["order_code"]).first()
+        assert stored_order is not None
         assert stored_order.status == "CANCELLED"
         listed_orders = client.get("/api/v1/orders", headers=headers)
         listed_order = next(
@@ -169,7 +175,7 @@ def test_order_creation_keeps_delivery_unit_and_discount_totals(monkeypatch):
         )
         assert listed_order["status"] == "CANCELLED"
     finally:
-        session.close()
+        session2.close()
 
 
 def test_sales_entry_rejects_forged_conversion_rate():

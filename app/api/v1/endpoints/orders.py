@@ -568,6 +568,24 @@ def create_order(
     }
     ORDERS_DB[order_id] = order_record
 
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action_type="INVOICE_CREATE",
+        entity_type="Invoice",
+        entity_id=order_code,
+        old_val=None,
+        new_val={
+            "order_code": order_code,
+            "total_amount": final_total_amount,
+            "dealer_name": dealer.name,
+            "items_count": len(processed_items),
+            "status": order_status,
+        },
+        reason=f"Tạo đơn hàng/hóa đơn cho đại lý {dealer.name}",
+        request=request,
+    )
+
     return OrderResponse(**order_record)
 
 @router.post("/sales-entry", response_model=SalesOrderResponse, status_code=status.HTTP_201_CREATED)
@@ -781,6 +799,25 @@ def create_sales_entry_order(
         "items": priced_items,
     }
     ORDERS_DB[db_order.id] = order_record
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action_type="INVOICE_CREATE",
+        entity_type="Invoice",
+        entity_id=order_code,
+        old_val=None,
+        new_val={
+            "order_code": order_code,
+            "total_amount": final_total_amount,
+            "dealer_name": dealer.name,
+            "items_count": len(priced_items),
+            "status": order_status,
+        },
+        reason=f"Tạo đơn bán hàng cho đại lý {dealer.name}",
+        request=request,
+    )
+
     return SalesOrderResponse(**order_record)
 
 @router.get("/{order_code}", response_model=SalesOrderResponse)
