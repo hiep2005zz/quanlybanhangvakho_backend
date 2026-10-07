@@ -379,6 +379,22 @@ def update_price_book(
     db.commit()
     db.refresh(pb)
 
+    if data.items is not None:
+        try:
+            from app.services.audit_service import log_audit_event
+            log_audit_event(
+                db=db,
+                user=current_user,
+                action_type="PRICE_CHANGE",
+                entity_type="PriceBook",
+                entity_id=pb.code,
+                old_val=None,
+                new_val={"items_count": len(data.items), "name": pb.name, "customer_group": pb.customer_group},
+                reason=f"Cập nhật bảng giá {pb.name} ({len(data.items)} sản phẩm)",
+            )
+        except Exception:
+            pass
+
     return _build_price_book_response(pb, db)
 
 
