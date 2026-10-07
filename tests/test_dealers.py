@@ -95,8 +95,8 @@ def test_dealer_search_and_filters():
     unique_code = f"DL-T{int(time.time())}"
     new_dealer_payload = {
         "code": unique_code,
-        "name": "Đại Lý Thử Nghiệm Hà Đông",
-        "phone": "0988998877",
+        "name": f"Đại Lý Thử Nghiệm Hà Đông {unique_code}",
+        "phone": f"0988{int(time.time() * 1000) % 1000000:06d}",
         "email": "hadong.test@daily.vn",
         "address": "45 Quang Trung, Hà Đông, Hà Nội",
         "region": "Hà Nội",
@@ -107,7 +107,7 @@ def test_dealer_search_and_filters():
     assert create_res.status_code == 201
     created = create_res.json()
     assert created["code"] == unique_code
-    assert created["name"] == "Đại Lý Thử Nghiệm Hà Đông"
+    assert created["name"] == f"Đại Lý Thử Nghiệm Hà Đông {unique_code}"
     assert created["customer_group"] == "dai_ly_cap_1"
     assert created["status"] == "Đang hoạt động"
 
@@ -115,6 +115,36 @@ def test_dealer_search_and_filters():
     verify_res = client.get(f"/api/v1/dealers/search?keyword={unique_code}", headers=headers)
     assert verify_res.status_code == 200
     assert any(it["code"] == unique_code for it in verify_res.json()["items"])
+
+    # 10b. Chặn tạo trùng tên đại lý (case-insensitive) -> 400
+    dup_name_res = client.post(
+        "/api/v1/dealers",
+        json={
+            "code": f"DL-DNAME{int(time.time())}",
+            "name": f"đại lý thử nghiệm hà đông {unique_code}",  # Trùng tên không phân biệt hoa thường
+            "phone": "0988001122",
+            "address": "45 Quang Trung, Hà Đông, Hà Nội",
+            "region": "Hà Nội",
+        },
+        headers=headers,
+    )
+    assert dup_name_res.status_code == 400
+    assert "đã tồn tại trên hệ thống" in dup_name_res.json()["detail"]
+
+    # 10c. Chặn tạo trùng mã đại lý -> 400
+    dup_code_res = client.post(
+        "/api/v1/dealers",
+        json={
+            "code": unique_code,
+            "name": "Đại Lý Khác Không Trùng Tên",
+            "phone": "0988001133",
+            "address": "45 Quang Trung, Hà Đông, Hà Nội",
+            "region": "Hà Nội",
+        },
+        headers=headers,
+    )
+    assert dup_code_res.status_code == 400
+    assert "đã tồn tại trên hệ thống" in dup_code_res.json()["detail"]
 
     # 11. Kiểm tra phân quyền truy cập: role 'kho' (thủ kho) không có quyền tra cứu
     kho_token = get_token("kho")
@@ -182,12 +212,12 @@ def test_dealer_profile_management_by_accountant():
     code_1 = f"DL-ACC-{int(time.time())}"
     create_payload = {
         "code": code_1,
-        "name": "Công ty TNHH Đại Lý An Phát",
+        "name": f"Công ty TNHH Đại Lý An Phát {code_1}",
         "tax_code": "0109887766",
         "customer_group": "Đại lý cấp 1",
         "region": "Hà Nội",
         "assigned_sale_id": 3,
-        "phone": "0987654321",
+        "phone": f"0987{int(time.time() * 1000) % 1000000:06d}",
         "email": "anphat@daily.com",
         "address": "Số 10 Nguyễn Trãi, Hà Nội",
         "status": "Đang hoạt động"
@@ -218,12 +248,12 @@ def test_dealer_profile_management_by_accountant():
     # 4. Cập nhật hồ sơ đại lý (PUT /dealers/{id})
     update_payload = {
         "code": code_1,
-        "name": "Công ty TNHH Đại Lý An Phát (Đã cập nhật)",
+        "name": f"Công ty TNHH Đại Lý An Phát (Đã cập nhật) {code_1}",
         "tax_code": "0109887799",
         "customer_group": "Đại lý cấp 1",
         "region": "Hà Nội",
         "assigned_sale_id": 3,
-        "phone": "0987654321",
+        "phone": f"0987{int(time.time() * 1000) % 1000000:06d}",
         "email": "anphat@daily.com",
         "address": "Số 12 Nguyễn Trãi, Hà Nội",
         "status": "Đang hoạt động"
@@ -231,7 +261,7 @@ def test_dealer_profile_management_by_accountant():
     res_update = client.put(f"/api/v1/dealers/{dealer_id}", json=update_payload, headers=headers)
     assert res_update.status_code == 200
     updated_dealer = res_update.json()
-    assert updated_dealer["name"] == "Công ty TNHH Đại Lý An Phát (Đã cập nhật)"
+    assert updated_dealer["name"] == f"Công ty TNHH Đại Lý An Phát (Đã cập nhật) {code_1}"
     assert updated_dealer["tax_code"] == "0109887799"
     assert updated_dealer["customer_group"] == "Đại lý cấp 1"
 
@@ -277,7 +307,7 @@ def test_dealer_profile_management_by_accountant():
 
     # Khi không còn đơn hàng nào -> Xóa thành công
     res_del_success = client.delete(f"/api/v1/dealers/{dealer_id}", headers=headers)
-    assert res_del_success.status_code == 200
+    assert res_del_success.status_code == 200, f"Delete failed: {res_del_success.status_code}" 
 
 
 def test_dealer_transaction_count_constraint():
@@ -291,7 +321,7 @@ def test_dealer_transaction_count_constraint():
         "/api/v1/dealers",
         json={
             "code": unique_code,
-            "name": "Đại Lý Kiểm Tra Giao Dịch",
+            "name": f"Đại Lý Kiểm Tra Giao Dịch {unique_code}",
             "customer_group": "dai_ly_cap_1",
             "region": "Hà Nội",
             "status": "Đang hoạt động",

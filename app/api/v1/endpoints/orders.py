@@ -26,6 +26,7 @@ from app.models.entities import OrderEntity
 
 from app.models.user import USERS_DB
 from app.services.audit_service import log_audit_event
+from app.api.v1.endpoints.discounts import resolve_best_discount
 
 router = APIRouter()
 
@@ -47,6 +48,7 @@ class OrderCreate(BaseModel):
     delivery_point: Optional[str] = Field(default=None, max_length=500)
     desired_delivery_date: Optional[date] = None
     discount_percent: float = Field(default=0, ge=0, le=100)
+    discount_rate: Optional[float] = Field(default=None, ge=0, le=100)
 
 class OrderResponse(BaseModel):
     id: int
@@ -64,12 +66,18 @@ class OrderResponse(BaseModel):
     created_at: str
     approved_by: Optional[str] = None
     approved_at: Optional[str] = None
+    subtotal_amount: Optional[float] = 0.0
+    discount_percent: float = 0.0
+    discount_rate: Optional[float] = 0.0
+    discount_amount: float = 0.0
 
 class SalesOrderResponse(OrderResponse):
     subtotal_amount: float = 0
     discount_percent: float = 0
+    discount_rate: Optional[float] = 0
     discount_amount: float = 0
     delivery_point: Optional[str] = None
+    delivery_point_id: Optional[int] = None
     desired_delivery_date: Optional[str] = None
     note: Optional[str] = None
     items: List[dict] = Field(default_factory=list)
@@ -131,13 +139,71 @@ def get_orders(
     current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value))
 ):
     """Lấy danh sách đơn hàng / hóa đơn."""
-    orders_by_code = {
-        order["order_code"]: OrderResponse(**order)
-        for order in ORDERS_DB.values()
-    }
+    orders_by_code: dict[str, OrderResponse] = {}
+    for order in ORDERS_DB.values():
+        try:
+            orders_by_code[order["order_code"]] = OrderResponse(**order)
+        except Exception:
+            pass
+
     for order in db.query(OrderEntity).order_by(OrderEntity.id.desc()).all():
+        items = []
+        delivery_point = None
+        desired_delivery_date = None
+        subtotal_amount = order.total_amount
+        discount_percent = 0.0
+        discount_amount = 0.0
+
+        if order.items_json:
+            try:
+                payload = json.loads(order.items_json)
+                if isinstance(payload, list):
+                    items = payload
+                elif isinstance(payload, dict):
+                    items = payload.get("items", [])
+                    delivery_point = payload.get("delivery_point")
+                    desired_delivery_date = payload.get("desired_delivery_date")
+                    subtotal_amount = payload.get("subtotal_amount", order.total_amount)
+                    discount_percent = payload.get("discount_percent", 0.0)
+                    discount_amount = payload.get("discount_amount", 0.0)
+            except Exception:
+                pass
+
+        from app.api.v1.endpoints.products import _find_product_in_raw
+        for item in items:
+            if isinstance(item, dict) and not item.get("product_name"):
+                p = _find_product_in_raw(item.get("product_id"))
+                if p:
+                    item["product_name"] = p.get("name")
+                    item.setdefault("product_code", p.get("code"))
+                else:
+                    item["product_name"] = f"SP #{item.get('product_id', '')}"
+
+        if not delivery_point and order.delivery_point_id:
+            dp_obj = db.get(DealerDeliveryPointEntity, order.delivery_point_id)
+            if dp_obj:
+                delivery_point = f"{dp_obj.label} — {dp_obj.address}"
+
+        if not delivery_point:
+            d_obj = DEALERS_DB.get(order.dealer_id)
+            if d_obj and getattr(d_obj, "address", None):
+                delivery_point = f"Địa chỉ đại lý — {d_obj.address}"
+
         if order.order_code not in orders_by_code:
-            orders_by_code[order.order_code] = OrderResponse(
+            disc_rate = getattr(order, "discount_rate", 0.0) or 0.0
+            disc_amt = getattr(order, "discount_amount", 0.0) or 0.0
+            sub_amt = (order.total_amount or 0.0) + disc_amt
+            items_parsed = None
+            if order.items_json:
+                try:
+                    ij = json.loads(order.items_json)
+                    items_parsed = ij.get("items", [])
+                    disc_rate = ij.get("discount_percent", ij.get("discount_rate", disc_rate))
+                    disc_amt = ij.get("discount_amount", disc_amt)
+                    sub_amt = ij.get("subtotal_amount", sub_amt)
+                except Exception:
+                    pass
+            resp_item = OrderResponse(
                 id=order.id,
                 order_code=order.order_code,
                 dealer_id=order.dealer_id,
@@ -146,9 +212,41 @@ def get_orders(
                 assigned_sale_id=order.assigned_sale_id,
                 assigned_sale_name=order.assigned_sale_name,
                 total_amount=order.total_amount,
+                subtotal_amount=sub_amt,
+                discount_percent=disc_rate,
+                discount_rate=disc_rate,
+                discount_amount=disc_amt,
                 status=order.status,
+                items=items_parsed or items,
                 created_at=order.created_at.isoformat() if order.created_at else "",
             )
+            orders_by_code[order.order_code] = resp_item
+
+            ORDERS_DB[order.id] = {
+                "id": order.id,
+                "order_code": order.order_code,
+                "dealer_id": order.dealer_id,
+                "dealer_name": order.dealer_name,
+                "created_by": order.created_by,
+                "assigned_sale_id": order.assigned_sale_id,
+                "assigned_sale_name": order.assigned_sale_name,
+                "total_amount": order.total_amount,
+                "status": order.status,
+                "created_at": order.created_at.isoformat() if order.created_at else "",
+                "items": items,
+                "delivery_point_id": order.delivery_point_id,
+                "delivery_point": delivery_point,
+                "desired_delivery_date": desired_delivery_date,
+                "note": order.note,
+                "subtotal_amount": subtotal_amount,
+                "discount_percent": discount_percent,
+                "discount_amount": discount_amount,
+            }
+        else:
+            existing = orders_by_code[order.order_code]
+            if (not existing.items or len(existing.items) == 0) and items:
+                existing.items = items
+
     return sorted(orders_by_code.values(), key=lambda order: order.id, reverse=True)
 
 @router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
@@ -380,14 +478,79 @@ def create_order(
         db.commit()
 
     subtotal_amount = total_amount
-    discount_amount = round(subtotal_amount * data.discount_percent / 100, 2)
-    total_amount = subtotal_amount - discount_amount
+    total_quantity = sum(item.get("quantity", 0) for item in processed_items)
+    best_disc = resolve_best_discount(
+        items=processed_items,
+        dealer=dealer,
+        total_quantity=total_quantity,
+        subtotal_amount=subtotal_amount,
+    )
+    best_pct = float(best_disc["discount_percent"])
+
+    req_discount = data.discount_rate if data.discount_rate is not None and data.discount_percent == 0 else data.discount_percent
+
+    if req_discount == 0:
+        effective_pct = best_pct
+    else:
+        effective_pct = req_discount
+        if best_pct > 0 and effective_pct > best_pct:
+            requires_approval = True
+            approval_reasons.append(
+                f"Chiết khấu thủ công ({effective_pct}%) vượt mức chính sách {best_disc.get('applied_policy_code', '')} ({best_pct}%)"
+            )
+
+    discount_amount = round(subtotal_amount * effective_pct / 100, 2)
+    final_total_amount = subtotal_amount - discount_amount
     order_id = _allocate_order_id(db)
 
     order_code = f"ORD{order_id:05d}"
     now_str = datetime.now(timezone.utc).isoformat()
     order_status = "PENDING_APPROVAL" if requires_approval else "CONFIRMED"
     approval_reason = " | ".join(approval_reasons) if approval_reasons else None
+
+    delivery_point_str = data.delivery_point
+    if selected_delivery_point_id and not delivery_point_str:
+        dp_obj = db.get(DealerDeliveryPointEntity, selected_delivery_point_id)
+        if dp_obj:
+            delivery_point_str = f"{dp_obj.label} — {dp_obj.address}"
+            if dp_obj.receiver_name:
+                delivery_point_str += f" ({dp_obj.receiver_name}{(' - ' + dp_obj.receiver_phone) if dp_obj.receiver_phone else ''})"
+
+    # Lưu bản ghi vào SQL Database
+    if db:
+        try:
+            db_order = OrderEntity(
+                id=order_id,
+                order_code=order_code,
+                dealer_id=dealer.id,
+                dealer_name=dealer.name,
+                created_by=current_user.username,
+                assigned_sale_id=assigned_sale_id,
+                assigned_sale_name=assigned_user.full_name if assigned_user else None,
+                total_amount=final_total_amount,
+                status=order_status,
+                note=data.note,
+                delivery_point_id=selected_delivery_point_id,
+                discount_rate=effective_pct,
+                discount_amount=discount_amount,
+                items_json=json.dumps({
+                    "items": processed_items,
+                    "delivery_point": delivery_point_str,
+                    "delivery_point_id": selected_delivery_point_id,
+                    "desired_delivery_date": data.desired_delivery_date.isoformat() if data.desired_delivery_date else None,
+                    "subtotal_amount": subtotal_amount,
+                    "discount_percent": effective_pct,
+                    "discount_rate": effective_pct,
+                    "discount_amount": discount_amount,
+                    "applied_policy_code": best_disc.get("applied_policy_code"),
+                    "applied_policy_name": best_disc.get("applied_policy_name"),
+                }, ensure_ascii=False),
+                created_at=datetime.fromisoformat(now_str),
+            )
+            db.add(db_order)
+            db.commit()
+        except Exception as db_err:
+            print(f"Lưu đơn hàng vào DB SQL thất bại (dự phòng in-memory): {db_err}")
 
     order_record = {
         "id": order_id,
@@ -398,16 +561,17 @@ def create_order(
         "created_by": current_user.username,
         "assigned_sale_id": assigned_sale_id,
         "assigned_sale_name": assigned_user.full_name if assigned_user else None,
-        "total_amount": total_amount,
+        "total_amount": final_total_amount,
         "status": order_status,
         "requires_approval": requires_approval,
         "approval_reason": approval_reason,
         "items": processed_items,
         "created_at": now_str,
         "subtotal_amount": subtotal_amount,
-        "discount_percent": data.discount_percent,
+        "discount_percent": effective_pct,
+        "discount_rate": effective_pct,
         "discount_amount": discount_amount,
-        "delivery_point": data.delivery_point,
+        "delivery_point": delivery_point_str,
         "desired_delivery_date": data.desired_delivery_date.isoformat() if data.desired_delivery_date else None,
         "note": data.note,
     }
@@ -528,9 +692,45 @@ def create_sales_entry_order(
         })
 
     delivery_point = data.delivery_point.strip()
+    selected_dp_id = data.delivery_point_id
+    if selected_dp_id and not delivery_point:
+        dp_obj = db.get(DealerDeliveryPointEntity, selected_dp_id)
+        if dp_obj:
+            delivery_point = f"{dp_obj.label} — {dp_obj.address}"
+            if dp_obj.receiver_name:
+                delivery_point += f" ({dp_obj.receiver_name}{(' - ' + dp_obj.receiver_phone) if dp_obj.receiver_phone else ''})"
+
     subtotal_amount = sum(item["quantity"] * item["price"] for item in priced_items)
-    discount_amount = round(subtotal_amount * data.discount_percent / 100, 2)
-    total_amount = subtotal_amount - discount_amount
+    total_quantity = sum(item["quantity"] for item in priced_items)
+
+    best_disc = resolve_best_discount(
+        items=priced_items,
+        dealer=dealer,
+        total_quantity=total_quantity,
+        subtotal_amount=subtotal_amount,
+    )
+    best_pct = float(best_disc["discount_percent"])
+
+    req_discount = data.discount_rate if data.discount_rate is not None and data.discount_percent == 0 else data.discount_percent
+
+    requires_approval = False
+    approval_reasons = []
+
+    if req_discount == 0:
+        effective_pct = best_pct
+    else:
+        effective_pct = req_discount
+        if best_pct > 0 and effective_pct > best_pct:
+            requires_approval = True
+            approval_reasons.append(
+                f"Chiết khấu thủ công ({effective_pct}%) vượt mức chính sách {best_disc.get('applied_policy_code', '')} ({best_pct}%)"
+            )
+
+    discount_amount = round(subtotal_amount * effective_pct / 100, 2)
+    final_total_amount = subtotal_amount - discount_amount
+    order_status = "PENDING_APPROVAL" if requires_approval else "CONFIRMED"
+    approval_reason = " | ".join(approval_reasons) if approval_reasons else None
+
     created_at = datetime.now(timezone.utc)
     db_order = OrderEntity(
         order_code=f"PENDING-{uuid4().hex}",
@@ -539,16 +739,25 @@ def create_sales_entry_order(
         created_by=current_user.username,
         assigned_sale_id=assigned_sale_id,
         assigned_sale_name=assigned_user.full_name if assigned_user else None,
-        total_amount=total_amount,
-        status="CONFIRMED",
+        total_amount=final_total_amount,
+        discount_rate=effective_pct,
+        discount_amount=discount_amount,
+        status=order_status,
         note=data.note,
+        delivery_point_id=selected_dp_id,
         items_json=json.dumps({
             "items": priced_items,
             "delivery_point": delivery_point,
+            "delivery_point_id": selected_dp_id,
             "desired_delivery_date": data.desired_delivery_date.isoformat(),
             "subtotal_amount": subtotal_amount,
-            "discount_percent": data.discount_percent,
+            "discount_percent": effective_pct,
+            "discount_rate": effective_pct,
             "discount_amount": discount_amount,
+            "applied_policy_code": best_disc.get("applied_policy_code"),
+            "applied_policy_name": best_disc.get("applied_policy_name"),
+            "requires_approval": requires_approval,
+            "approval_reason": approval_reason,
         }, ensure_ascii=False),
         created_at=created_at,
     )
@@ -573,17 +782,22 @@ def create_sales_entry_order(
         "created_by": current_user.username,
         "assigned_sale_id": assigned_sale_id,
         "assigned_sale_name": assigned_user.full_name if assigned_user else None,
-        "total_amount": total_amount,
-        "status": "CONFIRMED",
+        "total_amount": final_total_amount,
+        "status": order_status,
+        "requires_approval": requires_approval,
+        "approval_reason": approval_reason,
         "created_at": created_at.isoformat(),
         "subtotal_amount": subtotal_amount,
-        "discount_percent": data.discount_percent,
+        "discount_percent": effective_pct,
+        "discount_rate": effective_pct,
         "discount_amount": discount_amount,
+        "delivery_point_id": selected_dp_id,
         "delivery_point": delivery_point,
         "desired_delivery_date": data.desired_delivery_date.isoformat(),
         "note": data.note,
         "items": priced_items,
     }
+    ORDERS_DB[db_order.id] = order_record
     return SalesOrderResponse(**order_record)
 
 @router.get("/{order_code}", response_model=SalesOrderResponse)
@@ -601,55 +815,66 @@ def get_order_detail(
         ),
         None,
     )
-    if order_record is None:
+    if order_record is None or not order_record.get("items"):
         entity = db.query(OrderEntity).filter(
             func.upper(OrderEntity.order_code) == order_code.upper()
         ).first()
-        if entity is None:
+        if entity is None and order_record is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Không tìm thấy đơn hàng có mã {order_code}.",
             )
 
-        order_record = {
-            "id": entity.id,
-            "order_code": entity.order_code,
-            "dealer_id": entity.dealer_id,
-            "dealer_name": entity.dealer_name,
-            "created_by": entity.created_by,
-            "assigned_sale_id": entity.assigned_sale_id,
-            "assigned_sale_name": entity.assigned_sale_name,
-            "total_amount": entity.total_amount,
-            "status": entity.status,
-            "created_at": entity.created_at.isoformat() if entity.created_at else "",
-            "note": entity.note,
-        }
-        try:
-            stored_details = json.loads(entity.items_json) if entity.items_json else {}
-        except json.JSONDecodeError as error:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Dữ liệu chi tiết đơn hàng {order_code} không hợp lệ.",
-            ) from error
-        if isinstance(stored_details, list):
-            order_record["items"] = stored_details
-            stored_details = {}
-        elif isinstance(stored_details, dict):
-            order_record["items"] = stored_details.get("items", [])
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Dữ liệu chi tiết đơn hàng {order_code} không hợp lệ.",
-            )
-        for field in (
-            "subtotal_amount",
-            "discount_percent",
-            "discount_amount",
-            "delivery_point",
-            "desired_delivery_date",
-        ):
-            if field in stored_details:
-                order_record[field] = stored_details[field]
+        if entity is not None:
+            if order_record is None:
+                order_record = {
+                    "id": entity.id,
+                    "order_code": entity.order_code,
+                    "dealer_id": entity.dealer_id,
+                    "dealer_name": entity.dealer_name,
+                    "created_by": entity.created_by,
+                    "assigned_sale_id": entity.assigned_sale_id,
+                    "assigned_sale_name": entity.assigned_sale_name,
+                    "total_amount": entity.total_amount,
+                    "status": entity.status,
+                    "created_at": entity.created_at.isoformat() if entity.created_at else "",
+                    "note": entity.note,
+                    "delivery_point_id": entity.delivery_point_id,
+                }
+            if entity.items_json and not order_record.get("items"):
+                try:
+                    stored_details = json.loads(entity.items_json)
+                    if isinstance(stored_details, list):
+                        order_record["items"] = stored_details
+                    elif isinstance(stored_details, dict):
+                        order_record["items"] = stored_details.get("items", [])
+                        for field in (
+                            "subtotal_amount",
+                            "discount_percent",
+                            "discount_rate",
+                            "discount_amount",
+                            "delivery_point",
+                            "desired_delivery_date",
+                        ):
+                            if field in stored_details and not order_record.get(field):
+                                order_record[field] = stored_details[field]
+                        if "discount_rate" not in order_record and "discount_percent" in order_record:
+                            order_record["discount_rate"] = order_record["discount_percent"]
+                        if "note" in stored_details and not order_record.get("note"):
+                            order_record["note"] = stored_details["note"]
+                except Exception:
+                    pass
+
+    # Đảm bảo delivery_point có giá trị hiển thị rõ ràng
+    if not order_record.get("delivery_point"):
+        if order_record.get("delivery_point_id"):
+            dp_obj = db.get(DealerDeliveryPointEntity, order_record["delivery_point_id"])
+            if dp_obj:
+                order_record["delivery_point"] = f"{dp_obj.label} — {dp_obj.address}"
+        if not order_record.get("delivery_point"):
+            d = DEALERS_DB.get(order_record.get("dealer_id"))
+            if d and getattr(d, "address", None):
+                order_record["delivery_point"] = f"Địa chỉ đại lý — {d.address}"
 
     items = order_record.get("items") or []
     from app.api.v1.endpoints.products import _find_product_in_raw
@@ -817,16 +1042,15 @@ def edit_or_cancel_invoice(
             target = o
             break
 
-    persisted_order = None
-    if not target:
-        persisted_order = db.query(OrderEntity).filter(
-            func.upper(OrderEntity.order_code) == order_code.upper()
-        ).first()
-        if persisted_order is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Không tìm thấy hóa đơn/đơn hàng có mã {order_code}."
-            )
+    persisted_order = db.query(OrderEntity).filter(
+        func.upper(OrderEntity.order_code) == order_code.upper()
+    ).first()
+    if not target and persisted_order is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy hóa đơn/đơn hàng có mã {order_code}."
+        )
+    if not target and persisted_order is not None:
         target = {
             "order_code": persisted_order.order_code,
             "status": persisted_order.status,
@@ -851,8 +1075,10 @@ def edit_or_cancel_invoice(
 
     target.update(new_val)
     if persisted_order is not None:
-        persisted_order.status = new_status
-        persisted_order.note = new_note
+        if "status" in new_val:
+            persisted_order.status = new_val["status"]
+        if "note" in new_val:
+            persisted_order.note = new_val["note"]
         db.commit()
 
     log_audit_event(

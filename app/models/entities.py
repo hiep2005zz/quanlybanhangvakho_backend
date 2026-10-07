@@ -186,6 +186,8 @@ class OrderEntity(Base):
     items_json = Column(UnicodeText, nullable=True)  # JSON order items
     created_at = Column(DateTime, default=get_utc_now)
     delivery_point_id = Column(Integer, ForeignKey("dealer_delivery_points.id"), nullable=True)
+    discount_rate = Column(Float, default=0.0)
+    discount_amount = Column(Float, default=0.0)
 
 class AuditLogEntity(Base):
     __tablename__ = "audit_logs"

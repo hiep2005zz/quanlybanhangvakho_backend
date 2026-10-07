@@ -1,4 +1,3 @@
-from __future__ import annotations
 from datetime import date, timedelta
 
 import pytest
@@ -55,7 +54,7 @@ def test_sales_order_dealer_list_only_returns_assigned_dealers():
     DEALERS_DB[3].assigned_sale_id = 3
     DEALERS_DB[4].assigned_sale_id = 2
     if 5 in DEALERS_DB:
-        DEALERS_DB[5].assigned_sale_id = 2
+        DEALERS_DB[5].assigned_sale_id = None
     headers = {"Authorization": f"Bearer {get_token('sales')}"}
 
     response = client.get("/api/v1/orders/dealers", headers=headers)
@@ -209,22 +208,27 @@ def test_sales_entry_rejects_delivery_date_in_the_past():
 
 def test_existing_order_payload_still_works_without_new_fields():
     DEALERS_DB[1].assigned_sale_id = 3
+    original_limit = getattr(DEALERS_DB[1], "credit_limit", 100000000.0)
+    DEALERS_DB[1].credit_limit = 500000000.0
     headers = {"Authorization": f"Bearer {get_token('sales')}"}
 
-    response = client.post(
-        "/api/v1/orders",
-        headers=headers,
-        json={
-            "dealer_id": 1,
-            "items": [{"product_id": 1, "quantity": 2, "price": 199000}],
-        },
-    )
+    try:
+        response = client.post(
+            "/api/v1/orders",
+            headers=headers,
+            json={
+                "dealer_id": 1,
+                "items": [{"product_id": 1, "quantity": 2, "price": 199000}],
+            },
+        )
 
-    assert response.status_code == 201
-    order_code = response.json()["order_code"]
-    created_order_codes.add(order_code)
-    assert response.json()["total_amount"] == 398000
-    assert "delivery_point" not in response.json()
-    detail_response = client.get(f"/api/v1/orders/{order_code}", headers=headers)
-    assert detail_response.status_code == 200
-    assert detail_response.json()["items"][0]["product_name"] == "Áo thun Polo Nam Cao Cấp"
+        assert response.status_code == 201
+        order_code = response.json()["order_code"]
+        created_order_codes.add(order_code)
+        assert response.json()["total_amount"] == 398000
+        assert "delivery_point" not in response.json()
+        detail_response = client.get(f"/api/v1/orders/{order_code}", headers=headers)
+        assert detail_response.status_code == 200
+        assert detail_response.json()["items"][0]["product_name"] == "Áo thun Polo Nam Cao Cấp"
+    finally:
+        DEALERS_DB[1].credit_limit = original_limit
