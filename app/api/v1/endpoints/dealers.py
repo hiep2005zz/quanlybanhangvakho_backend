@@ -1136,8 +1136,12 @@ def get_dealers(
             "lock_reason": None,
             "locked_at": None,
             "locked_by": None,
+            "transaction_count": 0,
+            "has_transactions": False,
+            "applied_price_book": get_applied_price_book_info(getattr(customer_dealer, "customer_group", "Đại lý cấp 1")),
         }]
 
+    from app.api.v1.endpoints.orders import ORDERS_DB
     res = []
     for d in DEALERS_DB.values():
         tx_count = sum(1 for o in ORDERS_DB.values() if o.get("dealer_id") == d.id)
