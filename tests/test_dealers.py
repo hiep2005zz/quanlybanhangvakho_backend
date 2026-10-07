@@ -202,6 +202,192 @@ def test_dealer_search_and_filters():
         cleanup_db.close()
 
 
+def test_dealer_profile_management_by_accountant():
+    import time
+
+    token = get_token("ketoan")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 1. Tra cứu bảng giá áp dụng theo nhóm khách hàng (/dealers/price-book-preview)
+    res_preview = client.get("/api/v1/dealers/price-book-preview?customer_group=Đại+lý+cấp+1", headers=headers)
+    assert res_preview.status_code == 200
+    preview_data = res_preview.json()
+    assert preview_data["customer_group"] == "Đại lý cấp 1"
+    assert preview_data["applied_price_book"] is not None
+    assert preview_data["applied_price_book"]["name"] is not None
+    assert preview_data["applied_price_book"]["code"] is not None
+
+    # 2. Khai báo hồ sơ đại lý mới đầy đủ các trường (Mã, Tên, MST, Nhóm KH, Khu vực, Người phụ trách, Trạng thái)
+    code_1 = f"DL-ACC-{int(time.time())}"
+    create_payload = {
+        "code": code_1,
+        "name": f"Công ty TNHH Đại Lý An Phát {int(time.time()) % 10000}",
+        "tax_code": "0109887766",
+        "customer_group": "Đại lý cấp 1",
+        "region": "Hà Nội",
+        "assigned_sale_id": 3,
+        "phone": f"098{int(time.time()) % 10000000:07d}",
+        "email": "anphat@daily.com",
+        "address": "Số 10 Nguyễn Trãi, Hà Nội",
+        "status": "Đang hoạt động"
+    }
+    res_create = client.post("/api/v1/dealers", json=create_payload, headers=headers)
+    assert res_create.status_code == 201
+    created_dealer = res_create.json()
+    assert created_dealer["code"] == code_1
+    assert created_dealer["tax_code"] == "0109887766"
+    assert created_dealer["customer_group"] == "Đại lý cấp 1"
+    assert created_dealer["applied_price_book"] is not None
+    assert created_dealer["applied_price_book"]["code"] is not None
+    dealer_id = created_dealer["id"]
+
+    # 3. Ràng buộc: Mã đại lý là duy nhất (Trùng mã đại lý phải bị từ chối 400)
+    dup_payload = {
+        "code": code_1,
+        "name": "Đại Lý Trùng Mã",
+        "tax_code": "0311223344",
+        "customer_group": "Đại lý cấp 1",
+        "region": "Đà Nẵng",
+        "status": "Đang hoạt động"
+    }
+    res_dup = client.post("/api/v1/dealers", json=dup_payload, headers=headers)
+    assert res_dup.status_code == 400
+    assert "đã tồn tại" in res_dup.json()["detail"]
+
+    # 4. Cập nhật hồ sơ đại lý (PUT /dealers/{id})
+    update_payload = {
+        "code": code_1,
+        "name": "Công ty TNHH Đại Lý An Phát (Đã cập nhật)",
+        "tax_code": "0109887799",
+        "customer_group": "Đại lý cấp 1",
+        "region": "Hà Nội",
+        "assigned_sale_id": 3,
+        "phone": "0987654321",
+        "email": "anphat@daily.com",
+        "address": "Số 12 Nguyễn Trãi, Hà Nội",
+        "status": "Đang hoạt động"
+    }
+    res_update = client.put(f"/api/v1/dealers/{dealer_id}", json=update_payload, headers=headers)
+    assert res_update.status_code == 200
+    updated_dealer = res_update.json()
+    assert updated_dealer["name"] == "Công ty TNHH Đại Lý An Phát (Đã cập nhật)"
+    assert updated_dealer["tax_code"] == "0109887799"
+    assert updated_dealer["customer_group"] == "Đại lý cấp 1"
+
+    # 5. Ràng buộc: Đại lý đã phát sinh giao dịch thì không xoá được, chỉ ngừng giao dịch
+    # Giả lập phát sinh 1 đơn hàng cho đại lý này
+    from app.api.v1.endpoints.orders import ORDERS_DB
+    dummy_order_id = f"ORD-TEST-{int(time.time())}"
+    ORDERS_DB[dummy_order_id] = {
+        "id": dummy_order_id,
+        "order_number": dummy_order_id,
+        "created_at": "2026-10-06T12:00:00",
+        "customer_name": updated_dealer["name"],
+        "dealer_id": dealer_id,
+        "customer_phone": "0987654321",
+        "customer_address": "Hà Nội",
+        "warehouse_id": "WH01",
+        "items": [],
+        "total_amount": 1000000,
+        "discount_amount": 0,
+        "final_amount": 1000000,
+        "status": "completed",
+        "creator_id": 1,
+        "creator_name": "Kế toán"
+    }
+
+    # Thử xóa khi đã phát sinh giao dịch -> Bị chặn 400
+    res_del_blocked = client.delete(f"/api/v1/dealers/{dealer_id}", headers=headers)
+    assert res_del_blocked.status_code == 400
+    assert "không thể xóa" in res_del_blocked.json()["detail"] or "không thể xoá" in res_del_blocked.json()["detail"]
+    assert "Ngừng giao dịch" in res_del_blocked.json()["detail"]
+
+    # Chuyển trạng thái sang "Ngừng giao dịch" -> Thành công
+    res_stop = client.patch(
+        f"/api/v1/dealers/{dealer_id}/status",
+        json={"status": "Ngừng giao dịch", "reason": "Dừng kinh doanh theo quyết định kế toán"},
+        headers=headers
+    )
+    assert res_stop.status_code == 200
+    assert res_stop.json()["status"] == "Ngừng giao dịch"
+
+    # Dọn dẹp đơn hàng test và xóa đại lý sau khi xóa đơn
+    del ORDERS_DB[dummy_order_id]
+
+    # Khi không còn đơn hàng nào -> Xóa thành công
+    res_del_success = client.delete(f"/api/v1/dealers/{dealer_id}", headers=headers)
+    assert res_del_success.status_code == 200, res_del_success.json()
+
+
+def test_dealer_transaction_count_constraint():
+    token = get_token("sales")
+    headers = {"Authorization": f"Bearer {token}"}
+    import time
+    unique_code = f"TX{int(time.time()) % 100000:05d}"
+
+    # 1. Tạo đại lý mới chưa có giao dịch
+    res_create = client.post(
+        "/api/v1/dealers",
+        json={
+            "code": unique_code,
+            "name": "Đại Lý Kiểm Tra Giao Dịch",
+            "customer_group": "dai_ly_cap_1",
+            "region": "Hà Nội",
+            "status": "Đang hoạt động",
+        },
+        headers=headers,
+    )
+    assert res_create.status_code == 201
+    dealer_id = res_create.json()["id"]
+
+    # 2. Cập nhật số lượng giao dịch âm -> Bị chặn với lỗi ràng buộc
+    res_invalid_neg = client.put(
+        f"/api/v1/dealers/{dealer_id}",
+        json={"transaction_count": -2},
+        headers=headers,
+    )
+    assert res_invalid_neg.status_code == 400
+    assert "Số lượng giao dịch phải lớn hơn hoặc bằng 0" in res_invalid_neg.json()["detail"]
+
+    # Cập nhật số lượng giao dịch = 0 (hợp lệ >= 0) -> Thành công
+    res_valid_0 = client.put(
+        f"/api/v1/dealers/{dealer_id}",
+        json={"transaction_count": 0},
+        headers=headers,
+    )
+    assert res_valid_0.status_code == 200
+    assert res_valid_0.json()["transaction_count"] == 0
+
+    # 3. Cập nhật số lượng giao dịch hợp lệ (> 0) -> Thành công
+    res_valid = client.put(
+        f"/api/v1/dealers/{dealer_id}",
+        json={"transaction_count": 5},
+        headers=headers,
+    )
+    assert res_valid.status_code == 200
+    data_valid = res_valid.json()
+    assert data_valid["transaction_count"] == 5
+    assert data_valid["has_transactions"] is True
+
+    # 4. Kiểm tra ràng buộc kiểm toán: đã phát sinh giao dịch (> 0) thì không xóa được
+    admin_token = get_token("admin")
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+    res_del_blocked = client.delete(f"/api/v1/dealers/{dealer_id}", headers=admin_headers)
+    assert res_del_blocked.status_code == 400
+    assert "không thể xóa" in res_del_blocked.json()["detail"] or "không thể xoá" in res_del_blocked.json()["detail"]
+    assert "Ngừng giao dịch" in res_del_blocked.json()["detail"]
+
+    # 5. Có thể chuyển trạng thái sang "Ngừng giao dịch"
+    res_stop = client.patch(
+        f"/api/v1/dealers/{dealer_id}/status",
+        json={"status": "Ngừng giao dịch"},
+        headers=headers,
+    )
+    assert res_stop.status_code == 200
+    assert res_stop.json()["status"] == "Ngừng giao dịch"
+>>>>>>> origin/lambai
+
+
 def test_accountant_lock_unlock_and_dealer_isolation():
     """
     Kiểm thử 6 tiêu chí nghiệm thu:
