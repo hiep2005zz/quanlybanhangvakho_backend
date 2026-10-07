@@ -1,8 +1,9 @@
 # backend/app/models/user.py - Seed Database Fresh v3 with 7 Roles
 import os
 import json
+import re
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Any
 from pydantic import BaseModel, Field
 from app.core.security import get_password_hash
 from app.core.rbac import Role
@@ -26,6 +27,7 @@ class UserInDB(BaseModel):
     failed_attempts: int = 0
     locked_until: Optional[datetime] = None
     token_version: int = 1
+    avatar_url: Optional[str] = None
 
     def get_roles(self) -> List[str]:
         """Lấy danh sách các vai trò chuẩn hóa."""
@@ -150,6 +152,7 @@ def save_users_db():
                 db_user.failed_attempts = getattr(u, "failed_attempts", 0)
                 db_user.locked_until = getattr(u, "locked_until", None)
                 db_user.token_version = getattr(u, "token_version", 1)
+                db_user.avatar_url = getattr(u, "avatar_url", None)
 
             # Xóa các user trong DB nếu đã bị xóa khỏi USERS_DB
             existing_ids = [u.id for u in USERS_DB.values()]
@@ -201,6 +204,7 @@ def load_users_db():
                         failed_attempts=entity.failed_attempts or 0,
                         locked_until=entity.locked_until,
                         token_version=entity.token_version or 1,
+                        avatar_url=getattr(entity, "avatar_url", None),
                     )
                     USERS_DB[entity.username.lower()] = u
                 loaded_from_sql = True
@@ -226,6 +230,66 @@ def get_next_user_id() -> int:
         return 1
     return max(u.id for u in USERS_DB.values()) + 1
 
+def normalize_phone(phone: Optional[str]) -> str:
+    """Chuẩn hóa số điện thoại Việt Nam để kiểm tra chống trùng lặp."""
+    if not phone:
+        return ""
+    cleaned = re.sub(r'[\s\.\-\(\)]', '', str(phone).strip())
+    if cleaned.startswith('+84'):
+        cleaned = '0' + cleaned[3:]
+    elif cleaned.startswith('84') and len(cleaned) == 11:
+        cleaned = '0' + cleaned[2:]
+    return cleaned
+
+def is_phone_taken(phone: str, exclude_username: Optional[str] = None, db: Optional[Any] = None) -> bool:
+    """
+    Kiểm tra số điện thoại đã tồn tại trên bất kỳ tài khoản người dùng nào khác hay chưa.
+    - So sánh trên bộ nhớ USERS_DB (đã chuẩn hóa).
+    - So sánh trên SQL Server UserEntity nếu kết nối db khả dụng.
+    """
+    norm = normalize_phone(phone)
+    if not norm:
+        return False
+    exclude_clean = exclude_username.strip().lower() if exclude_username else None
+    for uname, u in USERS_DB.items():
+        if exclude_clean and uname.strip().lower() == exclude_clean:
+            continue
+        u_phone = normalize_phone(getattr(u, "phone", None))
+        if u_phone and u_phone == norm:
+            return True
+
+    temp_session = None
+    target_db = db
+    if target_db is None:
+        try:
+            from app.core.database import SessionLocal
+            if SessionLocal:
+                temp_session = SessionLocal()
+                target_db = temp_session
+        except Exception:
+            pass
+
+    if target_db is not None:
+        try:
+            from app.models.entities import UserEntity
+            query = target_db.query(UserEntity).filter(UserEntity.phone.isnot(None))
+            if exclude_clean:
+                query = query.filter(UserEntity.username != exclude_clean)
+            for db_u in query.all():
+                if normalize_phone(db_u.phone) == norm:
+                    return True
+        except Exception:
+            pass
+        finally:
+            if temp_session is not None:
+                try:
+                    temp_session.close()
+                except Exception:
+                    pass
+
+    return False
+
 # Tự động nạp dữ liệu từ SQL Server khi khởi động
 load_users_db()
+
 

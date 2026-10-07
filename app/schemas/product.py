@@ -1,14 +1,30 @@
 # backend/app/schemas/product.py
 from typing import Optional, List, Dict
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+class PriceUpdateRequest(BaseModel):
+    sell_price: Optional[float] = Field(None, ge=0)
+    cost_price: Optional[float] = Field(None, ge=0)
+    reason: Optional[str] = "Điều chỉnh giá niêm yết/giá vốn"
+
+class UnitConversionItem(BaseModel):
+    unit_name: str = Field(..., min_length=1, max_length=50)
+    conversion_rate: float = Field(..., gt=0)  # Hệ số quy đổi bắt buộc > 0
+
+class UnitUpdateRequest(BaseModel):
+    base_unit: Optional[str] = Field(None, min_length=1, max_length=50)
+    units: Optional[List[UnitConversionItem]] = None
 
 class ProductItem(BaseModel):
     id: int
     code: str
     name: str
     category: str
+    category_id: Optional[int] = None
     stock: int
     sell_price: float
+    base_unit: str = "Cái"
+    units: List[UnitConversionItem] = []
     # Dữ liệu nhạy cảm (AC 3: Bị lọc bỏ hoàn toàn nếu không phải Admin hoặc Sales Manager)
     cost_price: Optional[float] = None
     profit_margin: Optional[float] = None

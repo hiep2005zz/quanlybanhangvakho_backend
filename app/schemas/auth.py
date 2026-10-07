@@ -7,16 +7,23 @@ class LoginRequest(BaseModel):
     password: str
 
 class UserResponse(BaseModel):
+    id: Optional[int] = None
     username: str
     full_name: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    phone_number: Optional[str] = None
     role: str
     roles: List[str] = []
     role_titles: List[str] = []
     permissions: List[str] = []
     role_title: Optional[str] = None
     branch: Optional[str] = None
+    warehouse_name: Optional[str] = None
+    territory_name: Optional[str] = None
     can_view_cost: bool = False
     can_write_inventory: bool = False
+    avatar_url: Optional[str] = None
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -43,7 +50,7 @@ class ChangePasswordResponse(BaseModel):
     user: UserResponse
 
 class ForgotPasswordRequest(BaseModel):
-    email: str = Field(..., min_length=5, max_length=255)
+    email: str = Field(..., min_length=1, max_length=255)
 
 class ResetPasswordRequest(BaseModel):
     token: str = Field(min_length=32)

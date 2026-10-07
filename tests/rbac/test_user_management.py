@@ -252,3 +252,57 @@ def test_admin_cannot_revoke_own_admin_role_in_multi_roles():
     )
     assert res_restore.status_code == 200
     assert res_restore.json()["roles"] == ["admin"]
+
+
+def test_unique_phone_number_in_user_management():
+    """Kiểm tra không thể tạo hoặc cập nhật tài khoản với số điện thoại đã tồn tại trên tài khoản khác."""
+    admin_token = get_token("admin", "123")
+    # 1. Đặt phone cụ thể cho admin
+    client.put(
+        "/api/v1/users/admin",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"phone": "0998887766"}
+    )
+
+    # 2. Cập nhật phone cho sales bằng chính số 0998887766 của admin -> 409
+    res_dup = client.put(
+        "/api/v1/users/sales",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"phone": "0998887766"}
+    )
+    assert res_dup.status_code == 409
+    assert "Số điện thoại này đã có trên hệ thống vui lòng đổi số khác" in res_dup.json()["detail"]
+
+    # 3. Cập nhật phone cho sales bằng số điện thoại mới không trùng -> 200
+    res_ok = client.put(
+        "/api/v1/users/sales",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"phone": "0975556677"}
+    )
+    assert res_ok.status_code == 200
+    assert res_ok.json()["phone"] == "0975556677"
+
+    # 4. Cập nhật lại chính số 0975556677 cho sales -> 200 (không xung đột chính mình)
+    res_self = client.put(
+        "/api/v1/users/sales",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"phone": "0975556677"}
+    )
+    assert res_self.status_code == 200
+
+    # 5. Thử cập nhật cho kho bằng số 0975556677 của sales -> 409
+    res_dup2 = client.put(
+        "/api/v1/users/kho",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"phone": "0975556677"}
+    )
+    assert res_dup2.status_code == 409
+    assert "Số điện thoại này đã có trên hệ thống vui lòng đổi số khác" in res_dup2.json()["detail"]
+
+    # Dọn dẹp lại phone của sales
+    client.put(
+        "/api/v1/users/sales",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"phone": ""}
+    )
+

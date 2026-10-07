@@ -1,0 +1,311 @@
+import pytest
+from fastapi.testclient import TestClient
+from app.main import app
+from app.models.dealer import DEALERS_DB
+
+client = TestClient(app)
+
+def get_token(username: str, password: str = "123") -> str:
+    res = client.post("/api/v1/auth/login", json={"username": username, "password": password})
+    assert res.status_code == 200, f"Login failed for {username}: {res.text}"
+    return res.json()["access_token"]
+
+
+def test_dealer_search_and_filters():
+    token = get_token("sales")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 1. Tra cứu danh sách không điều kiện
+    res = client.get("/api/v1/dealers/search", headers=headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert "items" in data
+    assert "total" in data
+    assert data["total"] >= 1
+
+    # Kiểm tra mỗi đại lý trả về đầy đủ các trường
+    sample = data["items"][0]
+    for key in ["id", "code", "name", "phone", "region", "assigned_sale_name", "customer_group", "status"]:
+        assert key in sample
+
+    # 2. Tìm kiếm nhanh theo TÊN
+    res = client.get("/api/v1/dealers/search?keyword=Sao+Mai", headers=headers)
+    assert res.status_code == 200
+    items = res.json()["items"]
+    assert len(items) >= 1
+    assert any("Sao Mai" in it["name"] for it in items)
+
+    # 3. Tìm kiếm nhanh theo MÃ
+    res = client.get("/api/v1/dealers/search?keyword=DL002", headers=headers)
+    assert res.status_code == 200
+    items = res.json()["items"]
+    assert len(items) == 1
+    assert items[0]["code"] == "DL002"
+
+    # 4. Tìm kiếm nhanh theo SỐ ĐIỆN THOẠI (cả dạng thường và dạng có dấu cách)
+    res = client.get("/api/v1/dealers/search?keyword=0912345678", headers=headers)
+    assert res.status_code == 200
+    items = res.json()["items"]
+    assert any("0912345678" in it["phone"] for it in items)
+
+    res_spaced = client.get("/api/v1/dealers/search?keyword=0912+345", headers=headers)
+    assert res_spaced.status_code == 200
+    items_spaced = res_spaced.json()["items"]
+    assert any("0912345678" in it["phone"] for it in items_spaced)
+
+    # 5. Lọc theo KHU VỰC
+    res = client.get("/api/v1/dealers/search?region=Hà+Nội", headers=headers)
+    assert res.status_code == 200
+    for it in res.json()["items"]:
+        assert "Hà Nội" in it["region"]
+
+    # 6. Lọc theo NHÓM KHÁCH HÀNG
+    res = client.get("/api/v1/dealers/search?customer_group=Khách+sỉ", headers=headers)
+    assert res.status_code == 200
+    items = res.json()["items"]
+    assert len(items) >= 1
+    for it in items:
+        assert it["customer_group"] == "Khách sỉ"
+
+    # 7. Lọc theo NGƯỜI PHỤ TRÁCH (assigned_sale_id)
+    res = client.get("/api/v1/dealers/search?assigned_sale_id=3", headers=headers)
+    assert res.status_code == 200
+    for it in res.json()["items"]:
+        assert it["assigned_sale_id"] == 3
+
+    # 8. Lọc theo TRẠNG THÁI
+    res = client.get("/api/v1/dealers/search?status=Đang+hoạt+động", headers=headers)
+    assert res.status_code == 200
+    items = res.json()["items"]
+    assert len(items) >= 1
+    for it in items:
+        assert it["status"] == "Đang hoạt động"
+
+    # 9. Lấy dữ liệu cấu hình bộ lọc (/filters)
+    res = client.get("/api/v1/dealers/filters", headers=headers)
+    assert res.status_code == 200
+    filters = res.json()
+    assert "regions" in filters and len(filters["regions"]) >= 1
+    assert "sales" in filters and len(filters["sales"]) >= 1
+    assert "customer_groups" in filters and "dai_ly_cap_1" in filters["customer_groups"]
+    assert "statuses" in filters and "Đang hoạt động" in filters["statuses"]
+
+    # 10. Tạo mới đại lý qua API POST
+    import time
+    unique_code = f"DL-T{int(time.time())}"
+    new_dealer_payload = {
+        "code": unique_code,
+        "name": "Đại Lý Thử Nghiệm Hà Đông",
+        "phone": "0988998877",
+        "email": "hadong.test@daily.vn",
+        "address": "45 Quang Trung, Hà Đông, Hà Nội",
+        "region": "Hà Nội",
+        "customer_group": "dai_ly_cap_1",
+        "status": "Đang hoạt động"
+    }
+    create_res = client.post("/api/v1/dealers", json=new_dealer_payload, headers=headers)
+    assert create_res.status_code == 201
+    created = create_res.json()
+    assert created["code"] == unique_code
+    assert created["name"] == "Đại Lý Thử Nghiệm Hà Đông"
+    assert created["customer_group"] == "dai_ly_cap_1"
+    assert created["status"] == "Đang hoạt động"
+
+    # Tìm lại đại lý vừa tạo bằng keyword
+    verify_res = client.get(f"/api/v1/dealers/search?keyword={unique_code}", headers=headers)
+    assert verify_res.status_code == 200
+    assert any(it["code"] == unique_code for it in verify_res.json()["items"])
+
+    # 10b. Chặn tạo trùng tên đại lý (case-insensitive) -> 400
+    dup_name_res = client.post(
+        "/api/v1/dealers",
+        json={
+            "code": f"DL-DNAME{int(time.time())}",
+            "name": "đại lý thử nghiệm hà đông",  # Trùng tên không phân biệt hoa thường
+            "phone": "0988001122",
+            "address": "45 Quang Trung, Hà Đông, Hà Nội",
+            "region": "Hà Nội",
+        },
+        headers=headers,
+    )
+    assert dup_name_res.status_code == 400
+    assert "đã tồn tại trên hệ thống" in dup_name_res.json()["detail"]
+
+    # 10c. Chặn tạo trùng mã đại lý -> 400
+    dup_code_res = client.post(
+        "/api/v1/dealers",
+        json={
+            "code": unique_code,
+            "name": "Đại Lý Khác Không Trùng Tên",
+            "phone": "0988001133",
+            "address": "45 Quang Trung, Hà Đông, Hà Nội",
+            "region": "Hà Nội",
+        },
+        headers=headers,
+    )
+    assert dup_code_res.status_code == 400
+    assert "đã tồn tại trên hệ thống" in dup_code_res.json()["detail"]
+
+    # 11. Kiểm tra phân quyền truy cập: role 'kho' (thủ kho) không có quyền tra cứu
+    kho_token = get_token("kho")
+    kho_headers = {"Authorization": f"Bearer {kho_token}"}
+    res_kho = client.get("/api/v1/dealers/search", headers=kho_headers)
+    assert res_kho.status_code == 403
+
+    # 12. Kiểm thử cập nhật trạng thái đại lý (PATCH /dealers/{id}/status)
+    # Tạm ngừng
+    patch_pause = client.patch(
+        f"/api/v1/dealers/{created['id']}/status",
+        json={"status": "Tạm ngừng", "reason": "Kiểm tra tính năng tạm ngừng"},
+        headers=headers,
+    )
+    assert patch_pause.status_code == 200
+    assert patch_pause.json()["status"] == "Tạm ngừng"
+
+    # Kích hoạt lại
+    patch_active = client.patch(
+        f"/api/v1/dealers/{created['id']}/status",
+        json={"status": "Đang hoạt động", "reason": "Kích hoạt lại"},
+        headers=headers,
+    )
+    assert patch_active.status_code == 200
+    assert patch_active.json()["status"] == "Đang hoạt động"
+
+    # Trạng thái không hợp lệ -> 400
+    patch_invalid = client.patch(
+        f"/api/v1/dealers/{created['id']}/status",
+        json={"status": "Trạng thái lạ"},
+        headers=headers,
+    )
+    assert patch_invalid.status_code == 400
+
+    # Thủ kho đổi trạng thái -> 403
+    patch_kho = client.patch(
+        f"/api/v1/dealers/{created['id']}/status",
+        json={"status": "Tạm ngừng"},
+        headers=kho_headers,
+    )
+    assert patch_kho.status_code == 403
+
+    # Dọn dẹp đại lý test
+    if created["id"] in DEALERS_DB:
+        del DEALERS_DB[created["id"]]
+    from app.core.database import SessionLocal
+    from app.models.entities import DealerEntity
+    cleanup_db = SessionLocal()
+    try:
+        cleanup_db.query(DealerEntity).filter(DealerEntity.id == created["id"]).delete(synchronize_session=False)
+        cleanup_db.commit()
+    finally:
+        cleanup_db.close()
+
+
+def test_bulk_assign_dealers_and_audit_history():
+    """
+    Kiểm thử chuyển giao hàng loạt đại lý (POST /api/v1/dealers/bulk-assign)
+    và kiểm tra lịch sử chuyển giao (GET /api/v1/audit-logs/entity/Dealer/{code}).
+    Đảm bảo:
+    1. Ghi nhận đúng action_type='DEALER_ASSIGNMENT'.
+    2. Chi tiết old_val và new_val phản ánh đúng nhân viên cũ và mới.
+    3. Endpoint lấy lịch sử đối tượng Dealer trả về đúng bản ghi chuyển giao.
+    """
+    admin_token = get_token("admin")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    import time
+    from app.models.user import USERS_DB, load_users_db
+    load_users_db()
+
+    sales_users = [u for u in USERS_DB.values() if "sales" in (u.get_roles() if hasattr(u, "get_roles") else [u.role])]
+    assert len(sales_users) >= 2, "Cần ít nhất 2 sales users để kiểm thử điều chuyển"
+    sales1, sales2 = sales_users[0], sales_users[1]
+
+    ts = int(time.time())
+    code1 = f"DL-BLK1-{ts}"
+    code2 = f"DL-BLK2-{ts}"
+
+    # Tạo 2 đại lý thử nghiệm do sales1 phụ trách
+    dealer1_resp = client.post(
+        "/api/v1/dealers",
+        headers=headers,
+        json={
+            "code": code1,
+            "name": f"Đại lý Test Bulk 1 {ts}",
+            "phone": f"098{ts % 10000000:07d}",
+            "address": "Hà Nội",
+            "region": "Hà Nội",
+            "customer_group": "Đại lý cấp 1",
+            "assigned_sale_id": sales1.id,
+        }
+    )
+    assert dealer1_resp.status_code == 201, f"Tạo d1 thất bại: {dealer1_resp.text}"
+    d1 = dealer1_resp.json()
+
+    dealer2_resp = client.post(
+        "/api/v1/dealers",
+        headers=headers,
+        json={
+            "code": code2,
+            "name": f"Đại lý Test Bulk 2 {ts}",
+            "phone": f"097{ts % 10000000:07d}",
+            "address": "Hải Phòng",
+            "region": "Hải Phòng",
+            "customer_group": "Đại lý cấp 1",
+            "assigned_sale_id": sales1.id,
+        }
+    )
+    assert dealer2_resp.status_code == 201, f"Tạo d2 thất bại: {dealer2_resp.text}"
+    d2 = dealer2_resp.json()
+
+    try:
+        # Thực hiện chuyển giao hàng loạt từ sales1 sang sales2
+        bulk_resp = client.post(
+            "/api/v1/dealers/bulk-assign",
+            headers=headers,
+            json={
+                "dealer_ids": [d1["id"], d2["id"]],
+                "new_sale_id": sales2.id,
+                "reason": "Điều chuyển hàng loạt khu vực miền Bắc",
+            }
+        )
+        assert bulk_resp.status_code == 200, f"Bulk assign thất bại: {bulk_resp.text}"
+        res_data = bulk_resp.json()
+        assert res_data["assigned_count"] == 2
+        assert "thành công" in res_data["message"].lower()
+
+        # Kiểm tra lịch sử của đại lý 1
+        history_resp = client.get(
+            f"/api/v1/audit-logs/entity/Dealer/{d1['code']}",
+            headers=headers,
+        )
+        assert history_resp.status_code == 200, f"Lấy lịch sử thất bại: {history_resp.text}"
+        logs = history_resp.json()
+        assert len(logs) > 0, "Lịch sử không được rỗng sau khi chuyển giao hàng loạt"
+
+        # Bản ghi mới nhất phải là DEALER_ASSIGNMENT
+        assign_log = next((l for l in logs if l["action_type"] == "DEALER_ASSIGNMENT"), None)
+        assert assign_log is not None, "Không tìm thấy log DEALER_ASSIGNMENT trong lịch sử đại lý"
+        assert assign_log["reason"] == "Điều chuyển hàng loạt khu vực miền Bắc"
+        assert assign_log["entity_id"] == d1["code"]
+
+        import json
+        old_val = json.loads(assign_log["old_values"]) if isinstance(assign_log["old_values"], str) else assign_log["old_values"]
+        new_val = json.loads(assign_log["new_values"]) if isinstance(assign_log["new_values"], str) else assign_log["new_values"]
+        assert old_val["assigned_sale_id"] == sales1.id
+        assert new_val["assigned_sale_id"] == sales2.id
+        assert new_val["assigned_sale_name"] == sales2.full_name
+
+    finally:
+        # Dọn dẹp đại lý test
+        for did in [d1["id"], d2["id"]]:
+            if did in DEALERS_DB:
+                del DEALERS_DB[did]
+        from app.core.database import SessionLocal
+        from app.models.entities import DealerEntity
+        cleanup_db = SessionLocal()
+        try:
+            cleanup_db.query(DealerEntity).filter(DealerEntity.id.in_([d1["id"], d2["id"]])).delete(synchronize_session=False)
+            cleanup_db.commit()
+        finally:
+            cleanup_db.close()
+

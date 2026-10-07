@@ -47,12 +47,13 @@ def authenticate_user(username: str, password: str) -> Tuple[Optional[TokenRespo
                 user = u
                 break
 
-    # AC 1 & AC 2: Nếu tài khoản bị Quản trị viên khóa -> Trả về 403 Forbidden không kèm lý do
+    # Nếu tài khoản bị Quản trị viên khóa -> Trả về 403 Forbidden: luôn hiển thị thông báo chung bảo mật
     if user and (getattr(user, "status", "ACTIVE") == "LOCKED" or not user.is_active):
         return None, HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Tài khoản đã bị khóa. Vui lòng liên hệ với quản lý."
         )
+
 
     # Verify password if user exists
     is_valid = False
@@ -104,21 +105,35 @@ def authenticate_user(username: str, password: str) -> Tuple[Optional[TokenRespo
     can_view_cost = any(ROLE_DETAILS.get(r, {}).get("can_view_cost", False) for r in roles)
     can_write_inventory = any(ROLE_DETAILS.get(r, {}).get("can_write_inventory", False) for r in roles)
 
+    branch = getattr(user, "branch", "Kho Tổng Hà Nội")
+    warehouse_name = branch if ("kho" in branch.lower() or "toàn quốc" in branch.lower()) else branch
+    territory_name = branch if ("khu vực" in branch.lower() or "toàn quốc" in branch.lower() or "miền" in branch.lower()) else branch
+    phone_val = getattr(user, "phone", None)
+    email_val = getattr(user, "email", None)
+    user_id = getattr(user, "id", None)
+
     token_resp = TokenResponse(
         access_token=access_token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=UserResponse(
+            id=user_id,
             username=user.username,
             full_name=user.full_name,
+            email=email_val,
+            phone=phone_val,
+            phone_number=phone_val,
             role=primary_role,
             roles=roles,
             role_titles=role_titles,
             permissions=get_roles_permissions(roles),
             role_title=role_info.get("title", primary_role),
-            branch=getattr(user, "branch", "Kho Tổng Hà Nội"),
+            branch=branch,
+            warehouse_name=warehouse_name,
+            territory_name=territory_name,
             can_view_cost=can_view_cost,
             can_write_inventory=can_write_inventory,
+            avatar_url=getattr(user, "avatar_url", None),
         )
     )
     return token_resp, None

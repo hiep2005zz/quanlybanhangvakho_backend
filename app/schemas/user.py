@@ -10,6 +10,7 @@ class UserCreate(BaseModel):
     role: Optional[str] = None
     roles: Optional[List[str]] = None
     branch: Optional[str] = "Kho Tổng Hà Nội"
+    phone: Optional[str] = None
 
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
@@ -92,6 +93,7 @@ class UserItemResponse(BaseModel):
     can_view_cost: bool = False
     can_write_inventory: bool = False
     badge_color: str = "#64748b"
+    avatar_url: Optional[str] = None
 
 class UserListResponse(BaseModel):
     users: List[UserItemResponse]

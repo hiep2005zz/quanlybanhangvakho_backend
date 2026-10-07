@@ -13,7 +13,8 @@ from app.core.rbac import (
     SPECIFIC_WAREHOUSES,
 )
 from app.core.security import get_password_hash
-from app.models.user import USERS_DB, UserInDB, get_next_user_id, save_users_db
+from app.models.user import USERS_DB, UserInDB, get_next_user_id, save_users_db, normalize_phone, is_phone_taken
+from app.models.dealer import sync_dealer_for_user
 from app.schemas.auth import UserResponse
 from app.schemas.user import UserCreate, UserUpdate, UserItemResponse, UserListResponse, CustomerCreate, CustomerCreateResponse
 from app.services.customer_account import generate_temporary_password, send_customer_credentials
@@ -87,6 +88,7 @@ def _build_user_item(u: UserInDB) -> UserItemResponse:
         can_view_cost=can_view_cost,
         can_write_inventory=can_write_inventory,
         badge_color=role_info.get("badge_color", "#64748b"),
+        avatar_url=getattr(u, "avatar_url", None),
     )
 
 @router.get("", response_model=UserListResponse)
@@ -167,11 +169,19 @@ def create_user(
                 detail=f"Email '{clean_email}' đã được sử dụng bởi người dùng khác."
             )
 
+    clean_phone = normalize_phone(getattr(data, "phone", None))
+    if clean_phone and is_phone_taken(clean_phone):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Số điện thoại này đã có trên hệ thống vui lòng đổi số khác"
+        )
+
     new_user = UserInDB(
         id=get_next_user_id(),
         username=clean_username,
         full_name=data.full_name.strip(),
         email=clean_email,
+        phone=clean_phone if clean_phone else (data.phone.strip() if getattr(data, "phone", None) else None),
         role=primary_role,
         roles=chosen_roles,
         hashed_password=get_password_hash(data.password),
@@ -180,6 +190,17 @@ def create_user(
     )
     USERS_DB[clean_username] = new_user
     save_users_db()
+    
+    # Sync dealer if role is customer
+    is_customer = Role.CUSTOMER.value in chosen_roles
+    sync_dealer_for_user(
+        user_id=new_user.id,
+        full_name=new_user.full_name,
+        email=new_user.email,
+        phone=getattr(data, "phone", None) or getattr(new_user, "phone", None),
+        is_customer=is_customer
+    )
+
     return _build_user_item(new_user)
 
 @router.post("/customers", response_model=CustomerCreateResponse, status_code=status.HTTP_201_CREATED)
@@ -194,7 +215,12 @@ def create_customer(
     - Lưu số điện thoại liên hệ để quản lý thuận tiện.
     """
     clean_email = data.email.strip().lower()
-    clean_phone = data.phone.strip()
+    clean_phone = normalize_phone(data.phone)
+    if clean_phone and is_phone_taken(clean_phone):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Số điện thoại này đã có trên hệ thống vui lòng đổi số khác"
+        )
 
     # Kiểm tra trùng email
     for existing in USERS_DB.values():
@@ -243,6 +269,15 @@ def create_customer(
     )
     USERS_DB[clean_username] = new_user
     save_users_db()
+
+    # Sync dealer since role is always customer here
+    sync_dealer_for_user(
+        user_id=new_user.id,
+        full_name=new_user.full_name,
+        email=new_user.email,
+        phone=new_user.phone,
+        is_customer=True
+    )
 
     email_sent = send_customer_credentials(
         email=clean_email,
@@ -379,7 +414,14 @@ def update_user(
         user.email = clean_email
 
     if data.phone is not None:
-        user.phone = data.phone.strip()
+        raw_phone = data.phone.strip()
+        clean_phone = normalize_phone(raw_phone)
+        if clean_phone and is_phone_taken(clean_phone, exclude_username=target_username):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Số điện thoại này đã có trên hệ thống vui lòng đổi số khác"
+            )
+        user.phone = clean_phone if clean_phone else (raw_phone if raw_phone else None)
 
     if data.branch is not None:
         user.branch = data.branch.strip()
@@ -389,6 +431,46 @@ def update_user(
         user.token_version = getattr(user, "token_version", 1) + 1
 
     save_users_db()
+
+    # Đồng bộ sang SQL Server Database nếu có
+    try:
+        from app.core.database import SessionLocal
+        from app.models.entities import UserEntity
+        import json as _json
+        if SessionLocal:
+            db_session = SessionLocal()
+            try:
+                db_u = db_session.query(UserEntity).filter(UserEntity.username == target_username).first()
+                if db_u:
+                    if new_roles is not None:
+                        db_u.role = user.role
+                        db_u.roles = _json.dumps(user.roles)
+                    if data.full_name is not None and data.full_name.strip():
+                        db_u.full_name = user.full_name
+                    if data.email is not None and data.email.strip():
+                        db_u.email = user.email
+                    if data.phone is not None:
+                        db_u.phone = user.phone
+                    if data.branch is not None:
+                        db_u.branch = user.branch
+                    if data.is_active is not None:
+                        db_u.is_active = user.is_active
+                    db_session.commit()
+            finally:
+                db_session.close()
+    except Exception as e:
+        print(f"Warning: could not sync user to DB: {e}")
+
+    # Sync dealer if role is customer
+    is_customer = Role.CUSTOMER.value in user.get_roles()
+    sync_dealer_for_user(
+        user_id=user.id,
+        full_name=user.full_name,
+        email=user.email,
+        phone=user.phone,
+        is_customer=is_customer
+    )
+
     return _build_user_item(user)
 
 @router.delete("/{username}")

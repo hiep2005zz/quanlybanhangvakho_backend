@@ -15,7 +15,7 @@ from app.core.security import get_password_hash
 logger = logging.getLogger(__name__)
 
 RESET_TOKEN_TTL_MINUTES = 30
-RESET_MESSAGE = 'Nếu email tồn tại, hướng dẫn đặt lại mật khẩu đã được gửi.'
+RESET_MESSAGE = 'Thông tin lấy lại quyền truy cập đã được gửi về email của bạn.'
 
 
 class PasswordResetService:
@@ -27,18 +27,40 @@ class PasswordResetService:
         # Nạp lại dữ liệu mới nhất từ file JSON để đảm bảo email vừa sửa/tạo được nhận ngay
         load_users_db()
         normalized_email = email.strip().lower()
+
+        # Kiểm tra định dạng nếu người dùng nhập email (có chứa @)
+        import re
+        if '@' in normalized_email:
+            email_regex = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$"
+            if not re.match(email_regex, normalized_email):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Vui lòng xem lại thông tin tài khoản!"
+                )
+        else:
+            # Kiểm tra định dạng cơ bản nếu là username (chỉ chữ, số, _, -)
+            username_regex = r"^[a-zA-Z0-9_-]+$"
+            if not re.match(username_regex, normalized_email):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Vui lòng xem lại thông tin tài khoản!"
+                )
+
         
         # Tìm người dùng tương ứng trong USERS_DB (hỗ trợ nhập email hoặc username)
         matched_user = None
         for u in USERS_DB.values():
-            if (u.email and u.email.lower() == normalized_email) or (u.username.lower() == normalized_email) or (u.username.lower() == normalized_email.split('@')[0]):
+            if (u.email and u.email.lower() == normalized_email) or (u.username.lower() == normalized_email):
                 matched_user = u
                 break
 
-        # Anti-enumeration: Nếu email không tồn tại hoặc tài khoản bị khóa, vẫn trả về cùng 1 thông báo
         if not matched_user or not matched_user.is_active:
             print(f"[FORGOT PASSWORD] Không tìm thấy user hoặc tài khoản bị khóa cho input: '{normalized_email}'", flush=True)
-            return RESET_MESSAGE
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Vui lòng xem lại thông tin tài khoản!")
+            
+        if not matched_user.email:
+            print(f"[FORGOT PASSWORD] Tài khoản không có email: '{normalized_email}'", flush=True)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Vui lòng xem lại thông tin tài khoản!")
 
         token = secrets.token_urlsafe(32)
         token_hash = self._hash_token(token)
@@ -52,7 +74,7 @@ class PasswordResetService:
         print(f"[RESET PASSWORD LINK]: {link_str}", flush=True)
         print("==========================================\n", flush=True)
 
-        recipient_email = matched_user.email if matched_user.email else normalized_email
+        recipient_email = matched_user.email
 
         # Gửi email qua Gmail SMTP bằng thư viện smtplib và email.mime
         try:

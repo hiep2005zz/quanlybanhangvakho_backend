@@ -110,9 +110,12 @@ ROLE_PERMISSIONS: Dict[str, Set[str]] = {
         Permission.INVENTORY_READ.value,
     },
 
-    # 8. Nhân viên kinh doanh mới (Chờ quản trị viên cấp quyền) - Zero-Trust Default Deny
-    # Tuyệt đối KHÔNG có quyền truy cập sản phẩm, kho hay đơn hàng khi chưa được admin phân quyền
-    Role.CUSTOMER.value: set(),
+    # 8. Đại lý (Customer / Dealer): Xem danh mục sản phẩm, xem tồn kho để đặt hàng sỉ, tự tạo đơn hàng
+    Role.CUSTOMER.value: {
+        Permission.PRODUCT_READ.value,
+        Permission.ORDER_READ.value,
+        Permission.ORDER_WRITE.value,
+    },
 }
 
 # Thông tin mô tả 7 vai trò nghiệp vụ
@@ -167,9 +170,9 @@ ROLE_DETAILS: Dict[str, dict] = {
         "can_write_inventory": False,
     },
     Role.CUSTOMER.value: {
-        "title": "Chờ cấp quyền",
-        "badge_color": "#94a3b8",
-        "description": "Tài khoản nhân viên kinh doanh mới tạo, đang chờ Quản trị viên phân quyền chính thức.",
+        "title": "Đại lý",
+        "badge_color": "#0284c7",
+        "description": "Cửa hàng hoặc đại lý mua sỉ, tự đặt hàng, theo dõi đơn và công nợ của mình.",
         "can_view_cost": False,
         "can_write_inventory": False,
     },
