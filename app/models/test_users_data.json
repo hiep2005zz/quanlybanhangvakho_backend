@@ -1,0 +1,191 @@
+{
+  "admin": {
+    "id": 1,
+    "username": "admin",
+    "full_name": "Đào Ngọc Hiệp",
+    "email": "daongochiep645@gmail.com",
+    "phone": "0998887766",
+    "role": "admin",
+    "roles": [
+      "admin"
+    ],
+    "hashed_password": "$2b$12$Kp8vXbO6yahyNk5dOvF1Huxco9.Ux3v.SvRQkJMTOqACXuAXtYt8S",
+    "branch": "Toàn quốc",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  },
+  "sales_manager": {
+    "id": 2,
+    "username": "sales_manager",
+    "full_name": "Phạm Trưởng Phòng Sales",
+    "email": "sales.manager@congty.vn",
+    "phone": "0998473998",
+    "role": "sales_manager",
+    "roles": [
+      "sales_manager"
+    ],
+    "hashed_password": "$2b$12$Kp8vXbO6yahyNk5dOvF1Huxco9.Ux3v.SvRQkJMTOqACXuAXtYt8S",
+    "branch": "Toàn quốc",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": "/uploads/avatars/sales_manager_23bee469a45e_square.png"
+  },
+  "sales": {
+    "id": 3,
+    "username": "sales",
+    "full_name": "Trần Bán Hàng",
+    "email": "sales@congty.vn",
+    "phone": null,
+    "role": "sales",
+    "roles": [
+      "sales"
+    ],
+    "hashed_password": "$2b$12$Kp8vXbO6yahyNk5dOvF1Huxco9.Ux3v.SvRQkJMTOqACXuAXtYt8S",
+    "branch": "Khu vực Miền Bắc",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": "/uploads/avatars/sales_aed5c6c4b390_square.png"
+  },
+  "kho": {
+    "id": 4,
+    "username": "kho",
+    "full_name": "Lê Thủ Kho",
+    "email": "kho@congty.vn",
+    "phone": null,
+    "role": "warehouse",
+    "roles": [
+      "warehouse"
+    ],
+    "hashed_password": "$2b$12$Kp8vXbO6yahyNk5dOvF1Huxco9.Ux3v.SvRQkJMTOqACXuAXtYt8S",
+    "branch": "Kho Tổng Hà Nội",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  },
+  "warehouse_mgr": {
+    "id": 5,
+    "username": "warehouse_mgr",
+    "full_name": "Hoàng Quản Lý Kho",
+    "email": "warehouse.manager@congty.vn",
+    "phone": null,
+    "role": "warehouse_manager",
+    "roles": [
+      "warehouse_manager"
+    ],
+    "hashed_password": "$2b$12$Kp8vXbO6yahyNk5dOvF1Huxco9.Ux3v.SvRQkJMTOqACXuAXtYt8S",
+    "branch": "Kho Tổng Hà Nội",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  },
+  "ketoan": {
+    "id": 6,
+    "username": "ketoan",
+    "full_name": "Đặng Kế Toán",
+    "email": "ketoan@congty.vn",
+    "phone": null,
+    "role": "accountant",
+    "roles": [
+      "accountant"
+    ],
+    "hashed_password": "$2b$12$Kp8vXbO6yahyNk5dOvF1Huxco9.Ux3v.SvRQkJMTOqACXuAXtYt8S",
+    "branch": "Trụ sở chính",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  },
+  "muahang": {
+    "id": 7,
+    "username": "muahang",
+    "full_name": "Vũ Mua Hàng",
+    "email": "muahang@congty.vn",
+    "phone": null,
+    "role": "purchasing",
+    "roles": [
+      "purchasing"
+    ],
+    "hashed_password": "$2b$12$Kp8vXbO6yahyNk5dOvF1Huxco9.Ux3v.SvRQkJMTOqACXuAXtYt8S",
+    "branch": "Trụ sở chính",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  },
+  "tranngochuy2509066": {
+    "id": 8,
+    "username": "tranngochuy2509066",
+    "full_name": "trahhuy",
+    "email": "tranngochuy2509066@gmail.com",
+    "phone": "0936716131",
+    "role": "sales_manager",
+    "roles": [
+      "sales_manager"
+    ],
+    "hashed_password": "$2b$12$RoDAZOGYCExiRfeD735pZesoI.gVOshCTm4W93qBEmW5jMBaver/m",
+    "branch": "Kho Tổng Hà Nội",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  },
+  "nguyenvana": {
+    "id": 9,
+    "username": "nguyenvana",
+    "full_name": "Nguyenvana",
+    "email": "nguyenvana@congty.vn",
+    "phone": null,
+    "role": "sales",
+    "roles": [
+      "sales"
+    ],
+    "hashed_password": "$2b$12$Kp8vXbO6yahyNk5dOvF1Huxco9.Ux3v.SvRQkJMTOqACXuAXtYt8S",
+    "branch": "Kho Tổng Hà Nội",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  }
+}

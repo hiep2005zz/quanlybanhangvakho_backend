@@ -1,5 +1,36 @@
+import os
+import shutil
+from pathlib import Path
+
+# CÔ LẬP TOÀN DIỆN MÔI TRƯỜNG TEST:
+# Pytest chạy trên database test riêng biệt, TUYỆT ĐỐI KHÔNG can thiệp quanlybanhang.db của môi trường Web dev
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+TEST_DB_PATH = BACKEND_DIR / "test_quanlybanhang.db"
+DEV_DB_PATH = BACKEND_DIR / "quanlybanhang.db"
+
+if DEV_DB_PATH.exists():
+    shutil.copyfile(DEV_DB_PATH, TEST_DB_PATH)
+
+os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH.as_posix()}"
+
 import json
 import pytest
+
+import app.models.dealer
+import app.models.user
+
+TEST_DEALERS_JSON = BACKEND_DIR / "app" / "models" / "test_dealers_data.json"
+DEV_DEALERS_JSON = BACKEND_DIR / "app" / "models" / "dealers_data.json"
+if DEV_DEALERS_JSON.exists():
+    shutil.copyfile(DEV_DEALERS_JSON, TEST_DEALERS_JSON)
+app.models.dealer.DEALERS_JSON_PATH = str(TEST_DEALERS_JSON)
+
+TEST_USERS_JSON = BACKEND_DIR / "app" / "models" / "test_users_data.json"
+DEV_USERS_JSON = BACKEND_DIR / "app" / "models" / "users_data.json"
+if DEV_USERS_JSON.exists():
+    shutil.copyfile(DEV_USERS_JSON, TEST_USERS_JSON)
+app.models.user.DB_FILE_PATH = str(TEST_USERS_JSON)
+
 from app.db.init_db import init_db
 from app.core.database import SessionLocal
 from app.models.entities import UserEntity
@@ -39,6 +70,7 @@ def reset_test_state():
             "admin": ("admin", ["admin"], "Toàn quốc"),
             "sales_manager": ("sales_manager", ["sales_manager"], "Toàn quốc"),
             "sales": ("sales", ["sales"], "Khu vực Miền Bắc"),
+            "nguyenvana": ("sales", ["sales"], "Kho Tổng Hà Nội"),
             "kho": ("warehouse", ["warehouse"], "Kho Tổng Hà Nội"),
             "warehouse_mgr": ("warehouse_manager", ["warehouse_manager"], "Kho Tổng Hà Nội"),
             "ketoan": ("accountant", ["accountant"], "Trụ sở chính"),
@@ -82,20 +114,11 @@ def reset_test_state():
     from app.services.auth_service import FAILED_ATTEMPTS
     FAILED_ATTEMPTS.clear()
     from app.models.dealer import DEALERS_DB, load_dealers_db
-    for k in list(DEALERS_DB.keys()):
-        if k > 4:
-            del DEALERS_DB[k]
-    if len(DEALERS_DB) < 3:
-        load_dealers_db()
+
     from app.models.user import USERS_DB
-    sales_uid = USERS_DB["sales"].id if "sales" in USERS_DB else 3
-    mgr_uid = USERS_DB["sales_manager"].id if "sales_manager" in USERS_DB else 2
-    if 1 in DEALERS_DB: DEALERS_DB[1].assigned_sale_id = sales_uid
-    if 2 in DEALERS_DB: DEALERS_DB[2].assigned_sale_id = sales_uid
-    if 3 in DEALERS_DB: DEALERS_DB[3].assigned_sale_id = sales_uid
-    if 4 in DEALERS_DB: DEALERS_DB[4].assigned_sale_id = mgr_uid
-    from app.models.dealer import save_dealers_db
-    save_dealers_db()
+    load_dealers_db()
+    original_dealer_sales = {did: d.assigned_sale_id for did, d in DEALERS_DB.items()}
+
     from app.models.entities import AuditLogEntity, InventoryTransactionEntity
     from sqlalchemy import func
     max_audit_id = db.query(func.max(AuditLogEntity.id)).scalar() or 0
@@ -115,14 +138,20 @@ def reset_test_state():
 
         # Khôi phục ĐVT chuẩn cho SP001 và SP002 trong DB nếu bị test đổi
         prod1 = cleanup_db.query(ProductEntity).filter(ProductEntity.id == 1).first()
-        if prod1 and prod1.base_unit == "Lon":
+        if prod1 and str(prod1.base_unit).lower() == "lon":
             prod1.base_unit = "Cái"
             prod1.units_json = json.dumps([{"unit_name": "Lốc", "conversion_rate": 6.0}, {"unit_name": "Thùng", "conversion_rate": 24.0}], ensure_ascii=False)
 
         prod2 = cleanup_db.query(ProductEntity).filter(ProductEntity.id == 2).first()
-        if prod2 and prod2.base_unit == "Lon":
+        if prod2 and str(prod2.base_unit).lower() == "lon":
             prod2.base_unit = "Chiếc"
             prod2.units_json = json.dumps([{"unit_name": "Kiện", "conversion_rate": 10.0}], ensure_ascii=False)
+
+        from app.models.entities import DealerEntity
+        for did, sid in original_dealer_sales.items():
+            dl_ent = cleanup_db.query(DealerEntity).filter(DealerEntity.id == did).first()
+            if dl_ent and dl_ent.assigned_sale_id != sid:
+                dl_ent.assigned_sale_id = sid
 
         cleanup_db.commit()
 
@@ -154,23 +183,12 @@ def reset_test_state():
                     {"unit_name": "Kiện", "conversion_rate": 10.0},
                 ]
 
-        from app.models.dealer import DEALERS_DB, Dealer
-        from app.models.entities import DealerEntity
-        DEALERS_DB.clear()
-        seed_dealers = {
-            1: Dealer(id=1, code="DL001", name="Đại Lý Phân Phối Miền Bắc - Sao Mai", phone="0912345678", email="saomai@daily.vn", address="120 Cầu Giấy, Hà Nội", region="Hà Nội", assigned_sale_id=3, credit_limit=100000000.0, customer_group="dai_ly_cap_1", status="Đang hoạt động"),
-            2: Dealer(id=2, code="DL002", name="Đại Lý Thời Trang Tân Bình", phone="0987654321", email="tanbinh@daily.vn", address="45 Lý Thường Kiệt, TP. HCM", region="TP. HCM", assigned_sale_id=3, credit_limit=50000000.0, customer_group="dai_ly_cap_2", status="Đang hoạt động"),
-            3: Dealer(id=3, code="DL003", name="Đại Lý Tổng Hợp Hải Phòng", phone="0934567890", email="haiphong@daily.vn", address="88 Lạch Tray, Hải Phòng", region="Hải Phòng", assigned_sale_id=3, credit_limit=50000000.0, customer_group="Khách sỉ", status="Đang hoạt động"),
-            4: Dealer(id=4, code="DL004", name="Công Ty TNHH Bán Lẻ An Phát", phone="0945678901", email="anphat@daily.vn", address="66 Nguyễn Huệ, Đà Nẵng", region="Đà Nẵng", assigned_sale_id=2, credit_limit=50000000.0, customer_group="khach_le", status="Tạm ngừng"),
-        }
-        for did, sd in seed_dealers.items():
-            DEALERS_DB[did] = sd
-            db_d = db.query(DealerEntity).filter(DealerEntity.id == did).first()
-            if db_d:
-                db_d.assigned_sale_id = sd.assigned_sale_id
-                db_d.status = sd.status
-                db_d.customer_group = sd.customer_group
-        db.commit()
+
+        # Khôi phục người phụ trách cho đại lý theo snapshot ban đầu
+        for did, sid in original_dealer_sales.items():
+            if did in DEALERS_DB:
+                DEALERS_DB[did].assigned_sale_id = sid
+
 
     except Exception:
         db.rollback()

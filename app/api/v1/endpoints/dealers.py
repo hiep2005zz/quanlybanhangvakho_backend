@@ -843,7 +843,7 @@ def assign_dealer(
     if old_sale_id == new_sale_id:
         return {"message": "Nhân viên này đang phụ trách đại lý, không có sự thay đổi."}
 
-    old_sale_name = get_sale_name(old_sale_id)
+    old_sale_name = get_sale_name(old_sale_id) or "Chưa phân công"
     dealer.assigned_sale_id = new_sale_id
     save_dealers_db()
 
@@ -857,7 +857,7 @@ def assign_dealer(
             entity_id=dealer.code,
             old_val={"assigned_sale_id": old_sale_id, "assigned_sale_name": old_sale_name},
             new_val={"assigned_sale_id": new_sale_id, "assigned_sale_name": new_sale_user.full_name},
-            reason=payload.reason or "Chuyển giao đại lý",
+            reason=(payload.reason or "").strip() or "Chuyển giao đại lý",
             request=request,
         )
     except Exception as e:
@@ -925,7 +925,7 @@ def bulk_assign_dealers(
             if old_sale_id == new_sale_id:
                 continue
                 
-            old_sale_name = get_sale_name(old_sale_id)
+            old_sale_name = get_sale_name(old_sale_id) or "Chưa phân công"
             dealer.assigned_sale_id = new_sale_id
             
             # Ghi log lịch sử cho từng đại lý
@@ -938,7 +938,7 @@ def bulk_assign_dealers(
                     entity_id=dealer.code,
                     old_val={"assigned_sale_id": old_sale_id, "assigned_sale_name": old_sale_name},
                     new_val={"assigned_sale_id": new_sale_id, "assigned_sale_name": new_sale_user.full_name},
-                    reason=payload.reason or "Chuyển giao hàng loạt",
+                    reason=(payload.reason or "").strip() or "Chuyển giao hàng loạt",
                     request=request,
                 )
             except Exception as e:
@@ -959,7 +959,8 @@ def bulk_assign_dealers(
         )
 
     return {
-        "message": f"Đã chuyển giao {assigned_count} đại lý cho {new_sale_user.full_name}.",
+        "message": f"Đã chuyển giao thành công {assigned_count} đại lý cho nhân viên {new_sale_user.full_name}." if assigned_count > 0 else "Các đại lý đã chọn đều đã do nhân viên này phụ trách.",
+        "assigned_count": assigned_count,
         "errors": errors if errors else None
     }
 
