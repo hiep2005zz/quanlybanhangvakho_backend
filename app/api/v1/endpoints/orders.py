@@ -246,7 +246,11 @@ def get_orders(
             if (not existing.items or len(existing.items) == 0) and items:
                 existing.items = items
 
-    return sorted(orders_by_code.values(), key=lambda order: order.id, reverse=True)
+    def _order_sort_key(order: OrderResponse):
+        is_pending = 1 if getattr(order, "status", "") in ("PENDING_APPROVAL", "PENDING") else 0
+        return (is_pending, getattr(order, "id", 0))
+
+    return sorted(orders_by_code.values(), key=_order_sort_key, reverse=True)
 
 @router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 def create_order(
