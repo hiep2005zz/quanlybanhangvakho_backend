@@ -19,7 +19,7 @@ from app.schemas.auth import UserResponse
 from app.schemas.audit import AuditLogItem, AuditLogListResponse
 from app.models.entities import AuditLogEntity, UserEntity
 from app.models.user import USERS_DB, load_users_db
-from app.services.audit_service import MEMORY_AUDIT_LOGS
+from app.services.audit_service import MEMORY_AUDIT_LOGS, ALLOWED_ACTION_TYPES, SYSTEM_AUDIT_ACTION_TYPES
 
 router = APIRouter()
 
@@ -67,7 +67,7 @@ def _get_user_avatar(user_id: Optional[int], user_name: Optional[str], db: Optio
 @router.get("", response_model=AuditLogListResponse)
 def get_audit_logs(
     user_id: Optional[int] = Query(None, description="Lọc theo ID người thực hiện"),
-    entity_type: Optional[str] = Query(None, description="Lọc theo loại đối tượng (Product, CustomerDebt, Invoice, v.v.)"),
+    entity_type: Optional[str] = Query(None, description="Lọc theo loại đối tượng (Inventory, ProductPrice, CustomerDebt, Invoice)"),
     entity_id: Optional[str] = Query(None, description="Lọc theo mã/ID đối tượng"),
     action_type: Optional[str] = Query(None, description="Lọc theo hành động"),
     from_date: Optional[str] = Query(None, description="Từ ngày (YYYY-MM-DD hoặc ISO string)"),
@@ -80,12 +80,14 @@ def get_audit_logs(
     """
     Xem danh sách nhật ký thao tác:
     - Phân quyền: Chỉ cho phép role 'Quản trị hệ thống' (Admin).
+    - Giới hạn: CHỈ hiển thị các thao tác trên Tồn kho, Giá bán, Hạn mức công nợ và Hoá đơn.
     - Hỗ trợ lọc theo: user_id, entity_type, entity_id, action_type, from_date, to_date.
     - Phân trang: page, page_size, sắp xếp created_at DESC.
     """
     # 1. Truy vấn từ Database
     try:
-        query = db.query(AuditLogEntity)
+        # Luôn lọc chặt chẽ chỉ lấy các action_type thuộc 4 nhóm nghiệp vụ
+        query = db.query(AuditLogEntity).filter(AuditLogEntity.action_type.in_(SYSTEM_AUDIT_ACTION_TYPES))
 
         if user_id is not None:
             query = query.filter(AuditLogEntity.user_id == user_id)
@@ -96,18 +98,23 @@ def get_audit_logs(
                 # Tồn kho: lọc theo entity_type='Inventory' hoặc entity_type='Product' có hành động liên quan kho
                 query = query.filter(
                     (AuditLogEntity.entity_type == "Inventory") |
-                    ((AuditLogEntity.entity_type == "Product") & (AuditLogEntity.action_type == "INVENTORY_ADJUST"))
+                    ((AuditLogEntity.entity_type == "Product") & (AuditLogEntity.action_type.in_(["INVENTORY_ADJUST", "STOCK_RECEIPT", "STOCK_ISSUE"])))
                 )
             elif clean_type == "ProductPrice":
-                # Giá sản phẩm: lọc theo entity_type='ProductPrice' hoặc entity_type='Product' có hành động đổi giá
+                # Giá sản phẩm: lọc theo entity_type in ['ProductPrice', 'PriceBook'] hoặc 'Product' có action_type='PRICE_CHANGE'
                 query = query.filter(
-                    (AuditLogEntity.entity_type == "ProductPrice") |
+                    (AuditLogEntity.entity_type.in_(["ProductPrice", "PriceBook"])) |
                     ((AuditLogEntity.entity_type == "Product") & (AuditLogEntity.action_type == "PRICE_CHANGE"))
                 )
-            elif clean_type == "Invoice":
+            elif clean_type in ["CustomerDebt", "Debt"]:
+                # Hạn mức công nợ: lọc theo CustomerDebt hoặc Dealer có action_type='DEBT_LIMIT_CHANGE'
+                query = query.filter(
+                    (AuditLogEntity.entity_type.in_(["CustomerDebt", "DealerDebtLimit"])) |
+                    ((AuditLogEntity.entity_type == "Dealer") & (AuditLogEntity.action_type == "DEBT_LIMIT_CHANGE"))
+                )
+            elif clean_type in ["Invoice", "Order"]:
+                # Hóa đơn / đơn hàng
                 query = query.filter(AuditLogEntity.entity_type.in_(["Invoice", "Order"]))
-            elif clean_type == "Order":
-                query = query.filter(AuditLogEntity.entity_type.in_(["Order", "Invoice"]))
             else:
                 query = query.filter(AuditLogEntity.entity_type == clean_type)
 
@@ -168,8 +175,8 @@ def get_audit_logs(
 
     except Exception as e:
         print(f"Audit log DB query fallback to memory: {e}")
-        # Fallback query từ MEMORY_AUDIT_LOGS
-        filtered = list(MEMORY_AUDIT_LOGS)
+        # Fallback query từ MEMORY_AUDIT_LOGS: chỉ lấy các bản ghi thuộc 4 nhóm nghiệp vụ
+        filtered = [m for m in MEMORY_AUDIT_LOGS if m.get("action_type") in SYSTEM_AUDIT_ACTION_TYPES]
 
         if user_id is not None:
             filtered = [m for m in filtered if m.get("user_id") == user_id]
@@ -177,9 +184,23 @@ def get_audit_logs(
         if entity_type and entity_type.strip() and entity_type.strip().lower() != "all":
             clean_type = entity_type.strip()
             if clean_type == "Inventory":
-                filtered = [m for m in filtered if m.get("entity_type") == "Inventory" or (m.get("entity_type") == "Product" and m.get("action_type") == "INVENTORY_ADJUST")]
+                filtered = [
+                    m for m in filtered
+                    if m.get("entity_type") == "Inventory"
+                    or (m.get("entity_type") == "Product" and m.get("action_type") in ["INVENTORY_ADJUST", "STOCK_RECEIPT", "STOCK_ISSUE"])
+                ]
             elif clean_type == "ProductPrice":
-                filtered = [m for m in filtered if m.get("entity_type") == "ProductPrice" or (m.get("entity_type") == "Product" and m.get("action_type") == "PRICE_CHANGE")]
+                filtered = [
+                    m for m in filtered
+                    if m.get("entity_type") in ["ProductPrice", "PriceBook"]
+                    or (m.get("entity_type") == "Product" and m.get("action_type") == "PRICE_CHANGE")
+                ]
+            elif clean_type in ["CustomerDebt", "Debt"]:
+                filtered = [
+                    m for m in filtered
+                    if m.get("entity_type") in ["CustomerDebt", "DealerDebtLimit"]
+                    or (m.get("entity_type") == "Dealer" and m.get("action_type") == "DEBT_LIMIT_CHANGE")
+                ]
             elif clean_type in ["Invoice", "Order"]:
                 filtered = [m for m in filtered if m.get("entity_type") in ["Invoice", "Order"]]
             else:
@@ -232,18 +253,25 @@ def get_entity_audit_logs(
     current_user: UserResponse = Depends(get_current_user),
 ):
     """
-    Xem nhanh lịch sử thay đổi riêng của 1 mặt hàng hoặc 1 khách hàng.
+    Xem nhanh lịch sử thay đổi riêng của 1 mặt hàng, hóa đơn hoặc hạn mức khách hàng.
     Mọi nhân viên có quyền xem nghiệp vụ tương ứng (hoặc Admin/Manager) đều có thể xem lịch sử đối tượng này.
     """
     try:
+        matched_entity_types = [entity_type]
+        if entity_type.lower() in ("dealer", "customerdebt", "dealerdebtlimit"):
+            matched_entity_types = ["Dealer", "CustomerDebt", "DealerDebtLimit"]
+        elif entity_type.lower() in ("product", "productprice", "pricebook"):
+            matched_entity_types = ["Product", "ProductPrice", "PriceBook"]
+
         records = (
             db.query(AuditLogEntity)
             .filter(
-                AuditLogEntity.entity_type == entity_type,
+                AuditLogEntity.entity_type.in_(matched_entity_types),
                 AuditLogEntity.entity_id == str(entity_id),
+                AuditLogEntity.action_type.in_(ALLOWED_ACTION_TYPES),
             )
             .order_by(desc(AuditLogEntity.created_at))
-            .limit(50)
+            .limit(100)
             .all()
         )
 
@@ -268,7 +296,9 @@ def get_entity_audit_logs(
         print(f"Entity audit log DB error fallback: {e}")
         matched = [
             m for m in MEMORY_AUDIT_LOGS
-            if m.get("entity_type") == entity_type and str(m.get("entity_id")) == str(entity_id)
+            if m.get("action_type") in ALLOWED_ACTION_TYPES
+            and m.get("entity_type") in matched_entity_types
+            and str(m.get("entity_id")) == str(entity_id)
         ]
         return [
             AuditLogItem(

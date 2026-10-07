@@ -298,8 +298,9 @@ def init_db():
             initial_dealers = [
                 DealerEntity(id=1, code="DL001", name="Đại Lý Phân Phối Miền Bắc - Sao Mai", phone="0912345678", email="saomai@daily.vn", address="120 Cầu Giấy, Hà Nội", region="Hà Nội", assigned_sale_id=3, customer_group="dai_ly_cap_1", status="Đang hoạt động"),
                 DealerEntity(id=2, code="DL002", name="Đại Lý Thời Trang Tân Bình", phone="0987654321", email="tanbinh@daily.vn", address="45 Lý Thường Kiệt, TP. HCM", region="TP. HCM", assigned_sale_id=3, customer_group="dai_ly_cap_2", status="Đang hoạt động"),
-                DealerEntity(id=3, code="DL003", name="Đại Lý Tổng Hợp Hải Phòng", phone="0934567890", email="haiphong@daily.vn", address="88 Lạch Tray, Hải Phòng", region="Hải Phòng", assigned_sale_id=3, customer_group="Khách sỉ", status="Đang hoạt động"),
-                DealerEntity(id=4, code="DL004", name="Công Ty TNHH Bán Lẻ An Phát", phone="0945678901", email="anphat@daily.vn", address="66 Nguyễn Huệ, Đà Nẵng", region="Đà Nẵng", assigned_sale_id=None, customer_group="khach_le", status="Tạm ngừng"),
+                DealerEntity(id=3, code="DL003", name="Đại Lý Tổng Hợp Hải Phòng", phone="0934567890", email="haiphong@daily.vn", address="88 Lạch Tray, Hải Phòng", region="Hải Phòng", assigned_sale_id=3, customer_group="dai_ly_cap_2", status="Đang hoạt động"),
+                DealerEntity(id=4, code="DL004", name="Công Ty TNHH Bán Lẻ An Phát", phone="0945678901", email="anphat@daily.vn", address="66 Nguyễn Huệ, Đà Nẵng", region="Đà Nẵng", assigned_sale_id=8, customer_group="khach_le", status="Tạm ngừng"),
+                DealerEntity(id=5, code="DL005", name="Khách Mua Lẻ Trực Tiếp", phone="0911223344", email="khachle@gmail.com", address="Số 10 Tràng Thi, Hoàn Kiếm, Hà Nội", region="Hà Nội", assigned_sale_id=8, customer_group="khach_le", status="Đang hoạt động"),
             ]
             db.add_all(initial_dealers)
             db.commit()
