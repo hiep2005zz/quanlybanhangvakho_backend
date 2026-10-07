@@ -146,8 +146,8 @@
     "max_debt_days": 30,
     "customer_group": "Đại lý cấp 1",
     "status": "Đã khóa",
-    "lock_reason": "hh",
-    "locked_at": "2026-10-07T08:29:41.639584+00:00",
+    "lock_reason": "jj",
+    "locked_at": "2026-10-07T08:35:56.162164+00:00",
     "locked_by": "admin",
     "transaction_count": 0
   }

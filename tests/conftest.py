@@ -127,8 +127,7 @@ def reset_test_state():
     from app.services.auth_service import FAILED_ATTEMPTS
     FAILED_ATTEMPTS.clear()
     from app.models.user import USERS_DB
-    from app.models.dealer import DEALERS_DB, load_dealers_db
-    load_dealers_db()
+    from app.models.dealer import DEALERS_DB
     for k in list(DEALERS_DB.keys()):
         if k > 5:
             del DEALERS_DB[k]
