@@ -193,6 +193,10 @@ def get_orders(
             disc_amt = getattr(order, "discount_amount", 0.0) or 0.0
             sub_amt = (order.total_amount or 0.0) + disc_amt
             items_parsed = None
+            appr_reason = None
+            req_appr = False
+            appr_by = None
+            appr_at = None
             if order.items_json:
                 try:
                     ij = json.loads(order.items_json)
@@ -200,8 +204,28 @@ def get_orders(
                     disc_rate = ij.get("discount_percent", ij.get("discount_rate", disc_rate))
                     disc_amt = ij.get("discount_amount", disc_amt)
                     sub_amt = ij.get("subtotal_amount", sub_amt)
+                    appr_reason = ij.get("approval_reason")
+                    req_appr = ij.get("requires_approval", False)
+                    appr_by = ij.get("approved_by")
+                    appr_at = ij.get("approved_at")
                 except Exception:
                     pass
+
+            in_mem = ORDERS_DB.get(order.id, {})
+            if not appr_reason and in_mem:
+                appr_reason = in_mem.get("approval_reason")
+                req_appr = in_mem.get("requires_approval", req_appr)
+                appr_by = in_mem.get("approved_by", appr_by)
+                appr_at = in_mem.get("approved_at", appr_at)
+
+            if order.status in ("PENDING_APPROVAL", "PENDING"):
+                req_appr = True
+                if not appr_reason:
+                    if disc_rate > 0:
+                        appr_reason = f"Chiết khấu ({disc_rate}%) vượt hạn mức chính sách cần duyệt"
+                    else:
+                        appr_reason = "Bán dưới giá sàn cần quản lý duyệt"
+
             resp_item = OrderResponse(
                 id=order.id,
                 order_code=order.order_code,
@@ -216,6 +240,10 @@ def get_orders(
                 discount_rate=disc_rate,
                 discount_amount=disc_amt,
                 status=order.status,
+                requires_approval=req_appr,
+                approval_reason=appr_reason,
+                approved_by=appr_by,
+                approved_at=appr_at,
                 items=items_parsed or items,
                 created_at=order.created_at.isoformat() if order.created_at else "",
             )
@@ -231,6 +259,10 @@ def get_orders(
                 "assigned_sale_name": order.assigned_sale_name,
                 "total_amount": order.total_amount,
                 "status": order.status,
+                "requires_approval": req_appr,
+                "approval_reason": appr_reason,
+                "approved_by": appr_by,
+                "approved_at": appr_at,
                 "created_at": order.created_at.isoformat() if order.created_at else "",
                 "items": items,
                 "delivery_point_id": order.delivery_point_id,
@@ -539,6 +571,8 @@ def create_order(
                     "discount_amount": discount_amount,
                     "applied_policy_code": best_disc.get("applied_policy_code"),
                     "applied_policy_name": best_disc.get("applied_policy_name"),
+                    "requires_approval": requires_approval,
+                    "approval_reason": approval_reason,
                 }, ensure_ascii=False),
                 created_at=datetime.fromisoformat(now_str),
             )
@@ -966,6 +1000,21 @@ def approve_order(
     target["approved_by"] = current_user.username
     target["approved_at"] = datetime.now(timezone.utc).isoformat()
 
+    db_order = db.query(OrderEntity).filter(
+        (OrderEntity.order_code == target["order_code"]) | (OrderEntity.id == target.get("id"))
+    ).first()
+    if db_order:
+        db_order.status = "CONFIRMED"
+        try:
+            p_dict = json.loads(db_order.items_json) if db_order.items_json else {}
+            p_dict["requires_approval"] = False
+            p_dict["approved_by"] = current_user.username
+            p_dict["approved_at"] = target["approved_at"]
+            db_order.items_json = json.dumps(p_dict, ensure_ascii=False)
+        except Exception:
+            pass
+        db.commit()
+
     log_audit_event(
         db=db,
         user=current_user,
@@ -1031,6 +1080,18 @@ def reject_order(
                 if pe:
                     pe.stock = (pe.stock or 0) + base_qty
         if db:
+            db_order = db.query(OrderEntity).filter(
+                (OrderEntity.order_code == target["order_code"]) | (OrderEntity.id == target.get("id"))
+            ).first()
+            if db_order:
+                db_order.status = "REJECTED"
+                try:
+                    p_dict = json.loads(db_order.items_json) if db_order.items_json else {}
+                    p_dict["requires_approval"] = False
+                    p_dict["approval_reason"] = target["approval_reason"]
+                    db_order.items_json = json.dumps(p_dict, ensure_ascii=False)
+                except Exception:
+                    pass
             db.commit()
 
     log_audit_event(
