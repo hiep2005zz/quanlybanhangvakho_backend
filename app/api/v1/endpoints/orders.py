@@ -873,55 +873,69 @@ def get_order_detail(
         ),
         None,
     )
-    if order_record is None or not order_record.get("items"):
-        entity = db.query(OrderEntity).filter(
-            func.upper(OrderEntity.order_code) == order_code.upper()
-        ).first()
-        if entity is None and order_record is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Không tìm thấy đơn hàng có mã {order_code}.",
-            )
+    entity = db.query(OrderEntity).filter(
+        func.upper(OrderEntity.order_code) == order_code.upper()
+    ).first()
 
-        if entity is not None:
-            if order_record is None:
-                order_record = {
-                    "id": entity.id,
-                    "order_code": entity.order_code,
-                    "dealer_id": entity.dealer_id,
-                    "dealer_name": entity.dealer_name,
-                    "created_by": entity.created_by,
-                    "assigned_sale_id": entity.assigned_sale_id,
-                    "assigned_sale_name": entity.assigned_sale_name,
-                    "total_amount": entity.total_amount,
-                    "status": entity.status,
-                    "created_at": entity.created_at.isoformat() if entity.created_at else "",
-                    "note": entity.note,
-                    "delivery_point_id": entity.delivery_point_id,
-                }
-            if entity.items_json and not order_record.get("items"):
-                try:
-                    stored_details = json.loads(entity.items_json)
-                    if isinstance(stored_details, list):
+    if entity is None and order_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đơn hàng có mã {order_code}.",
+        )
+
+    if entity is not None:
+        if order_record is None:
+            order_record = {
+                "id": entity.id,
+                "order_code": entity.order_code,
+                "dealer_id": entity.dealer_id,
+                "dealer_name": entity.dealer_name,
+                "created_by": entity.created_by,
+                "assigned_sale_id": entity.assigned_sale_id,
+                "assigned_sale_name": entity.assigned_sale_name,
+                "total_amount": entity.total_amount,
+                "status": entity.status,
+                "created_at": entity.created_at.isoformat() if entity.created_at else "",
+                "note": entity.note,
+                "delivery_point_id": entity.delivery_point_id,
+            }
+        else:
+            if entity.created_by:
+                order_record["created_by"] = entity.created_by
+            if entity.assigned_sale_name:
+                order_record["assigned_sale_name"] = entity.assigned_sale_name
+            if entity.status:
+                order_record["status"] = entity.status
+            if entity.total_amount is not None:
+                order_record["total_amount"] = entity.total_amount
+
+        if entity.items_json:
+            try:
+                stored_details = json.loads(entity.items_json)
+                if isinstance(stored_details, list):
+                    if not order_record.get("items"):
                         order_record["items"] = stored_details
-                    elif isinstance(stored_details, dict):
+                elif isinstance(stored_details, dict):
+                    if not order_record.get("items"):
                         order_record["items"] = stored_details.get("items", [])
-                        for field in (
-                            "subtotal_amount",
-                            "discount_percent",
-                            "discount_rate",
-                            "discount_amount",
-                            "delivery_point",
-                            "desired_delivery_date",
-                        ):
-                            if field in stored_details and not order_record.get(field):
-                                order_record[field] = stored_details[field]
-                        if "discount_rate" not in order_record and "discount_percent" in order_record:
-                            order_record["discount_rate"] = order_record["discount_percent"]
-                        if "note" in stored_details and not order_record.get("note"):
-                            order_record["note"] = stored_details["note"]
-                except Exception:
-                    pass
+                    for field in (
+                        "subtotal_amount",
+                        "discount_percent",
+                        "discount_rate",
+                        "discount_amount",
+                        "delivery_point",
+                        "desired_delivery_date",
+                        "requires_approval",
+                        "approval_reason",
+                    ):
+                        if field in stored_details and (order_record.get(field) is None or order_record.get(field) == ""):
+                            order_record[field] = stored_details[field]
+                    if "discount_rate" not in order_record and "discount_percent" in order_record:
+                        order_record["discount_rate"] = order_record["discount_percent"]
+                    if "note" in stored_details and not order_record.get("note"):
+                        order_record["note"] = stored_details["note"]
+            except Exception:
+                pass
 
     # Đảm bảo delivery_point có giá trị hiển thị rõ ràng
     if not order_record.get("delivery_point"):
