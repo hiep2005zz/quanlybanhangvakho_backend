@@ -62,6 +62,14 @@ def reset_test_state():
         ).delete(synchronize_session=False)
         from app.api.v1.endpoints.products import RAW_PRODUCTS
         RAW_PRODUCTS[:] = [p for p in RAW_PRODUCTS if p.get("code") not in ["SP_CONFIRM_NEW_99", "SP_TEST_NEW_01", "SP_TEST_02", "SP_TEST_03", "SP_TEST_04", "SP_TRUNG_01"]]
+
+        # Xóa các bảng giá test phát sinh (id > 3)
+        from app.models.price_book import PriceBookEntity, PriceBookItemEntity
+        test_pb_ids = [pb.id for pb in db.query(PriceBookEntity).filter(PriceBookEntity.id > 3).all()]
+        if test_pb_ids:
+            db.query(PriceBookItemEntity).filter(PriceBookItemEntity.price_book_id.in_(test_pb_ids)).delete(synchronize_session=False)
+            db.query(PriceBookEntity).filter(PriceBookEntity.id.in_(test_pb_ids)).delete(synchronize_session=False)
+
         db.commit()
 
         # Đặt lại trạng thái ACTIVE, vai trò gốc và mật khẩu chuẩn '123' cho các user hệ thống
@@ -135,10 +143,6 @@ def reset_test_state():
     from app.api.v1.endpoints.orders import ORDERS_DB
     ORDERS_DB.clear()
     original_dealer_sales = {did: d.assigned_sale_id for did, d in DEALERS_DB.items()}
-    from app.models.entities import AuditLogEntity, InventoryTransactionEntity
-    from sqlalchemy import func
-    max_audit_id = db.query(func.max(AuditLogEntity.id)).scalar() or 0
-    max_inv_id = db.query(func.max(InventoryTransactionEntity.id)).scalar() or 0
     yield
 
     # Dọn sạch audit logs và inventory transactions do các ca test sinh ra để không ảnh hưởng dữ liệu thật
@@ -216,6 +220,9 @@ def reset_test_state():
         for did, sid in original_dealer_sales.items():
             if did in DEALERS_DB:
                 DEALERS_DB[did].assigned_sale_id = sid
+        for did in list(DEALERS_DB.keys()):
+            if did > 5:
+                del DEALERS_DB[did]
 
     except Exception:
         cleanup_db.rollback()
