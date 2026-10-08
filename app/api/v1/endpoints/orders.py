@@ -10,7 +10,7 @@ import json
 from uuid import uuid4
 from app.models.entities import DealerDeliveryPointEntity
 from typing import List, Optional
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy import func
@@ -22,7 +22,7 @@ from app.schemas.auth import UserResponse
 from app.api.v1.endpoints.products import RAW_PRODUCTS
 from app.models.dealer import DEALERS_DB, save_dealers_db
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
-from app.models.entities import OrderEntity
+from app.models.entities import OrderEntity, DealerEntity, ProductEntity
 
 from app.models.user import USERS_DB
 from app.services.audit_service import log_audit_event
@@ -129,9 +129,254 @@ def get_order_dealers(
             "name": dealer.name,
             "phone": dealer.phone,
             "address": dealer.address,
+            "assigned_sale_id": getattr(dealer, "assigned_sale_id", None),
         }
         for dealer in sorted(dealers, key=lambda item: item.name.lower())
     ]
+
+
+class PurchaseHistoryItem(BaseModel):
+    product_id: int
+    product_code: str
+    product_name: str
+    unit: str
+    conversion_rate: float = 1.0
+    price: float = 0.0
+    total_quantity: float = 0.0
+    order_count: int = 0
+    avg_quantity: float = 0.0
+    last_order_quantity: float = 0.0
+    last_purchased_date: Optional[str] = None
+
+
+class LastOrderItem(BaseModel):
+    product_id: int
+    product_code: str
+    product_name: str
+    quantity: float
+    price: float
+    unit: str
+    conversion_rate: float = 1.0
+
+
+class LastOrderSummary(BaseModel):
+    order_code: str
+    created_at: str
+    items: List[LastOrderItem] = Field(default_factory=list)
+
+
+class DealerPurchaseHistoryResponse(BaseModel):
+    dealer_id: int
+    dealer_name: str
+    period: str = "3 tháng gần nhất"
+    has_history: bool = False
+    total_orders_3_months: int = 0
+    items: List[PurchaseHistoryItem] = Field(default_factory=list)
+    last_order: Optional[LastOrderSummary] = None
+    last_order_items: List[LastOrderItem] = Field(default_factory=list)
+
+
+@router.get("/dealers/{dealer_id}/purchase-history", response_model=DealerPurchaseHistoryResponse)
+def get_dealer_purchase_history(
+    dealer_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    SCRUM-52 / SCRUM-57:
+    Lấy lịch sử mua hàng của đại lý trong 3 tháng gần nhất kèm số lượng bình quân,
+    và nhóm hàng đã mua ở đơn hàng lần trước.
+    Ràng buộc: Chỉ hiện với đại lý mà nhân viên được phân công.
+    """
+    # 1. Tra cứu đại lý trong DB hoặc in-memory
+    dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+    if not dealer:
+        dealer = DEALERS_DB.get(dealer_id)
+    if not dealer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy đại lý.",
+        )
+
+    # 2. Kiểm tra quyền hạn: Chỉ hiện với đại lý mà nhân viên được phân công
+    user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
+    if "admin" not in user_roles and "sales_manager" not in user_roles:
+        assigned_user = USERS_DB.get(current_user.username)
+        current_uid = assigned_user.id if assigned_user else current_user.id
+        dealer_assigned_id = getattr(dealer, "assigned_sale_id", None)
+        if dealer_assigned_id != current_uid:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Chỉ hiển thị với đại lý mà nhân viên được phân công.",
+            )
+
+    # 3. Lấy toàn bộ đơn hàng của đại lý (loại trừ đơn bị hủy)
+    all_orders = []
+    seen_codes = set()
+
+    db_orders = db.query(OrderEntity).filter(
+        OrderEntity.dealer_id == dealer_id,
+        OrderEntity.status != "CANCELLED",
+    ).all()
+    for o in db_orders:
+        if o.order_code not in seen_codes:
+            seen_codes.add(o.order_code)
+            all_orders.append(o)
+
+    for o_dict in ORDERS_DB.values():
+        if o_dict.get("dealer_id") == dealer_id and o_dict.get("status") != "CANCELLED":
+            code = o_dict.get("order_code")
+            if code and code not in seen_codes:
+                seen_codes.add(code)
+                all_orders.append(o_dict)
+
+    now = datetime.now(timezone.utc)
+    three_months_ago = now - timedelta(days=90)
+
+    def parse_created_at(o):
+        val = getattr(o, "created_at", None) if hasattr(o, "created_at") else (o.get("created_at") if isinstance(o, dict) else None)
+        if isinstance(val, datetime):
+            return val if val.tzinfo is not None else val.replace(tzinfo=timezone.utc)
+        if isinstance(val, str):
+            try:
+                dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                return now
+        return now
+
+    def get_order_items(o):
+        if hasattr(o, "items_json") and o.items_json:
+            try:
+                parsed = json.loads(o.items_json)
+                if isinstance(parsed, list):
+                    return parsed
+                if isinstance(parsed, dict):
+                    return parsed.get("items", [])
+            except Exception:
+                pass
+        if isinstance(o, dict):
+            if "items" in o and isinstance(o["items"], list):
+                return o["items"]
+            if "items_json" in o and o["items_json"]:
+                try:
+                    parsed = json.loads(o["items_json"])
+                    if isinstance(parsed, list):
+                        return parsed
+                    if isinstance(parsed, dict):
+                        return parsed.get("items", [])
+                except Exception:
+                    pass
+        return []
+
+    all_orders.sort(key=parse_created_at, reverse=True)
+
+    # 4. Xác định nhóm hàng đã mua lần trước (đơn hàng mới nhất)
+    last_order_obj = all_orders[0] if all_orders else None
+    last_order_summary = None
+    last_order_items: List[LastOrderItem] = []
+
+    product_map = {p.id: p for p in db.query(ProductEntity).all()}
+    for rp in RAW_PRODUCTS:
+        if rp.get("id") and rp["id"] not in product_map:
+            product_map[rp["id"]] = type("RawProd", (), rp)()
+
+    if last_order_obj:
+        raw_items = get_order_items(last_order_obj)
+        last_code = getattr(last_order_obj, "order_code", None) if hasattr(last_order_obj, "order_code") else last_order_obj.get("order_code", "")
+        last_dt = parse_created_at(last_order_obj).strftime("%Y-%m-%d %H:%M")
+        for it in raw_items:
+            pid = it.get("product_id")
+            if not pid:
+                continue
+            prod = product_map.get(pid)
+            p_code = getattr(prod, "code", f"SP{pid:03d}") if prod else f"SP{pid:03d}"
+            p_name = it.get("product_name") or (getattr(prod, "name", f"Sản phẩm #{pid}") if prod else f"Sản phẩm #{pid}")
+            last_item = LastOrderItem(
+                product_id=pid,
+                product_code=p_code,
+                product_name=p_name,
+                quantity=float(it.get("quantity", 1)),
+                price=float(it.get("price", 0.0)),
+                unit=it.get("unit") or it.get("unit_name") or getattr(prod, "base_unit", "Cái"),
+                conversion_rate=float(it.get("conversion_rate", 1.0)),
+            )
+            last_order_items.append(last_item)
+
+        last_order_summary = LastOrderSummary(
+            order_code=last_code,
+            created_at=last_dt,
+            items=last_order_items,
+        )
+
+    # 5. Thống kê các mặt hàng đại lý đã mua trong 3 tháng gần nhất kèm số lượng bình quân
+    recent_orders = [o for o in all_orders if parse_created_at(o) >= three_months_ago]
+    product_stats = {}
+    last_order_pids = {it.product_id: it.quantity for it in last_order_items}
+
+    for o in recent_orders:
+        o_date_str = parse_created_at(o).strftime("%Y-%m-%d")
+        items = get_order_items(o)
+        for it in items:
+            pid = it.get("product_id")
+            if not pid:
+                continue
+            qty = float(it.get("quantity", 0))
+            if pid not in product_stats:
+                prod = product_map.get(pid)
+                p_code = getattr(prod, "code", f"SP{pid:03d}") if prod else f"SP{pid:03d}"
+                p_name = it.get("product_name") or (getattr(prod, "name", f"Sản phẩm #{pid}") if prod else f"Sản phẩm #{pid}")
+                product_stats[pid] = {
+                    "product_id": pid,
+                    "product_code": p_code,
+                    "product_name": p_name,
+                    "unit": it.get("unit") or it.get("unit_name") or getattr(prod, "base_unit", "Cái"),
+                    "conversion_rate": float(it.get("conversion_rate", 1.0)),
+                    "price": float(it.get("price", 0.0)),
+                    "total_quantity": qty,
+                    "order_count": 1,
+                    "last_purchased_date": o_date_str,
+                    "last_order_quantity": last_order_pids.get(pid, qty),
+                }
+            else:
+                stat = product_stats[pid]
+                stat["total_quantity"] += qty
+                stat["order_count"] += 1
+                if not stat["last_purchased_date"]:
+                    stat["last_purchased_date"] = o_date_str
+
+    history_items = []
+    for pid, stat in product_stats.items():
+        avg = stat["total_quantity"] / stat["order_count"] if stat["order_count"] > 0 else 0
+        history_items.append(
+            PurchaseHistoryItem(
+                product_id=stat["product_id"],
+                product_code=stat["product_code"],
+                product_name=stat["product_name"],
+                unit=stat["unit"],
+                conversion_rate=stat["conversion_rate"],
+                price=stat["price"],
+                total_quantity=round(stat["total_quantity"], 2),
+                order_count=stat["order_count"],
+                avg_quantity=round(avg, 1),
+                last_order_quantity=round(stat["last_order_quantity"], 2),
+                last_purchased_date=stat["last_purchased_date"],
+            )
+        )
+
+    history_items.sort(key=lambda x: (x.order_count, x.total_quantity), reverse=True)
+
+    return DealerPurchaseHistoryResponse(
+        dealer_id=dealer.id,
+        dealer_name=dealer.name,
+        period="3 tháng gần nhất",
+        has_history=len(history_items) > 0,
+        total_orders_3_months=len(recent_orders),
+        items=history_items,
+        last_order=last_order_summary,
+        last_order_items=last_order_items,
+    )
+
 
 @router.get("", response_model=List[OrderResponse])
 def get_orders(
