@@ -89,6 +89,14 @@ def adjust_stock(
             detail=f"Không tìm thấy sản phẩm có ID {data.product_id}."
         )
 
+    prod_status = product.get("status") if product else (prod_entity.status if prod_entity else "active")
+    prod_code = product["code"] if product else prod_entity.code
+    if prod_status == "inactive":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Sản phẩm '{prod_code}' đã ngừng kinh doanh, không thể thao tác kho."
+        )
+
     chosen_unit, chosen_rate, base_unit = _resolve_unit_and_rate(product, prod_entity, data.unit_name, data.conversion_rate)
     base_adjustment = int(round(data.adjustment * chosen_rate))
 
@@ -189,6 +197,14 @@ def create_stock_receipt(
             detail=f"Không tìm thấy sản phẩm có ID {data.product_id}."
         )
 
+    prod_status = product.get("status") if product else (prod_entity.status if prod_entity else "active")
+    prod_code = product["code"] if product else prod_entity.code
+    if prod_status == "inactive":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Sản phẩm '{prod_code}' đã ngừng kinh doanh, không thể thao tác kho."
+        )
+
     chosen_unit, chosen_rate, base_unit = _resolve_unit_and_rate(product, prod_entity, data.unit_name, data.conversion_rate)
     base_qty = int(round(data.quantity * chosen_rate))
 
@@ -284,6 +300,14 @@ def create_stock_issue(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy sản phẩm có ID {data.product_id}."
+        )
+
+    prod_status = product.get("status") if product else (prod_entity.status if prod_entity else "active")
+    prod_code = product["code"] if product else prod_entity.code
+    if prod_status == "inactive":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Sản phẩm '{prod_code}' đã ngừng kinh doanh, không thể thao tác kho."
         )
 
     chosen_unit, chosen_rate, base_unit = _resolve_unit_and_rate(product, prod_entity, data.unit_name, data.conversion_rate)
