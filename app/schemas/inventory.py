@@ -52,3 +52,36 @@ class InventoryResponse(BaseModel):
     product_id: int
     current_stock: int
     transaction: Optional[InventoryTransaction] = None
+
+
+class AvailableStockResponse(BaseModel):
+    product_id: int
+    product_code: str
+    product_name: str
+    dealer_id: int
+    dealer_name: str
+    warehouse_id: str
+    warehouse_name: str
+    actual_stock: int
+    reserved_stock: int
+    available_stock: int
+    base_unit: str = "Cái"
+
+
+class ProductStockSummaryItem(BaseModel):
+    product_id: int
+    product_code: str
+    product_name: str
+    base_unit: str = "Cái"
+    actual_stock: int
+    reserved_stock: int
+    available_stock: int
+
+
+class DealerStockSummaryResponse(BaseModel):
+    dealer_id: int
+    dealer_name: str
+    warehouse_id: str
+    warehouse_name: str
+    items: List[ProductStockSummaryItem]
+

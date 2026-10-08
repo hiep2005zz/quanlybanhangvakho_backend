@@ -16,7 +16,9 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "2": {
     "id": 2,
@@ -35,7 +37,9 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "3": {
     "id": 3,
@@ -54,7 +58,9 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "4": {
     "id": 4,
@@ -73,7 +79,9 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "5": {
     "id": 5,
@@ -92,7 +100,9 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "7": {
     "id": 7,
@@ -111,7 +121,9 @@
     "lock_reason": "rrrr",
     "locked_at": "2026-10-06T22:55:33.553365",
     "locked_by": "admin",
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "1000": {
     "id": 1000,
@@ -130,7 +142,9 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "1001": {
     "id": 1001,
@@ -147,8 +161,31 @@
     "customer_group": "Đại lý cấp 1",
     "status": "Đã khóa",
     "lock_reason": "jj",
-    "locked_at": "2026-10-07T08:35:56.162164+00:00",
+    "locked_at": "2026-10-07T08:35:56.162164",
     "locked_by": "admin",
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
+  },
+  "1002": {
+    "id": 1002,
+    "code": "DL9182",
+    "name": "Tran Ngoc Huy",
+    "tax_code": null,
+    "phone": null,
+    "email": null,
+    "address": "z115 thái nguyên",
+    "region": "Đà Nẵng",
+    "assigned_sale_id": 3,
+    "credit_limit": 50000000.0,
+    "max_debt_days": 30,
+    "customer_group": "Đại lý cấp 1",
+    "status": "Đang hoạt động",
+    "lock_reason": null,
+    "locked_at": null,
+    "locked_by": null,
+    "transaction_count": 2,
+    "warehouse_id": null,
+    "warehouse_name": null
   }
 }
