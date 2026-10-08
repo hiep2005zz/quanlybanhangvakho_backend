@@ -1,4 +1,5 @@
 # backend/app/api/v1/endpoints/orders.py
+from __future__ import annotations
 """
 Order Management Endpoint:
 AC 3: Kiểm tra nhân viên phụ trách của Đại lý đó.
@@ -19,7 +20,7 @@ from app.core.database import get_db
 from app.core.rbac import Permission, Role
 from app.schemas.auth import UserResponse
 from app.api.v1.endpoints.products import RAW_PRODUCTS
-from app.models.dealer import DEALERS_DB, save_dealers_db
+from app.models.dealer import DEALERS_DB, save_dealers_db, load_dealers_db
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.entities import OrderEntity
 
@@ -69,6 +70,8 @@ class OrderResponse(BaseModel):
     discount_percent: float = 0.0
     discount_rate: Optional[float] = 0.0
     discount_amount: float = 0.0
+    dealer_status: Optional[str] = "Đang hoạt động"
+    dealer_lock_reason: Optional[str] = None
 
 class SalesOrderResponse(OrderResponse):
     subtotal_amount: float = 0
@@ -106,14 +109,44 @@ def _allocate_order_id(db: Session) -> int:
     NEXT_ORDER_ID = order_id + 1
     return order_id
 
+def _is_dealer_locked(d) -> bool:
+    if not d:
+        return False
+    st = getattr(d, "status", "Đang hoạt động") or "Đang hoạt động"
+    st_str = str(st).lower()
+    return (
+        st in ["Đã khóa", "LOCKED"]
+        or "khóa" in st_str
+        or "lock" in st_str
+    )
+
+def _get_customer_dealer(current_user: UserResponse):
+    customer_dealer = DEALERS_DB.get(current_user.id)
+    if not customer_dealer:
+        for d in DEALERS_DB.values():
+            if (d.email and d.email == current_user.email) or \
+               (d.phone and d.phone == current_user.phone) or \
+               (d.code and d.code.lower() == current_user.username.lower()) or \
+               (d.name and d.name.lower() == (current_user.full_name or "").lower()):
+                customer_dealer = d
+                break
+    return customer_dealer
+
 @router.get("/dealers")
 def get_order_dealers(
     current_user: UserResponse = Depends(require_permission(Permission.ORDER_WRITE.value))
 ):
-    """Return dealers available for order entry, restricted to the assigned salesperson."""
+    """Return dealers available for order entry, restricted to the assigned salesperson or customer."""
+    load_dealers_db()
     dealers = list(DEALERS_DB.values())
-    if current_user.role == "sales":
-        assigned_user = USERS_DB.get(current_user.username)
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+
+    if is_customer or current_user.role == "customer":
+        customer_dealer = _get_customer_dealer(current_user)
+        dealers = [customer_dealer] if customer_dealer else []
+    elif current_user.role == "sales" or ("sales" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager"])):
+        assigned_user = USERS_DB.get(current_user.username) or next((u for u in USERS_DB.values() if u.id == current_user.id), None)
         if not assigned_user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -128,6 +161,8 @@ def get_order_dealers(
             "name": dealer.name,
             "phone": dealer.phone,
             "address": dealer.address,
+            "status": getattr(dealer, "status", "Đang hoạt động"),
+            "lock_reason": getattr(dealer, "lock_reason", None),
         }
         for dealer in sorted(dealers, key=lambda item: item.name.lower())
     ]
@@ -138,6 +173,7 @@ def get_orders(
     current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value))
 ):
     """Lấy danh sách đơn hàng / hóa đơn."""
+    load_dealers_db()
     orders_by_code: dict[str, OrderResponse] = {}
     for order in ORDERS_DB.values():
         try:
@@ -278,6 +314,18 @@ def get_orders(
             if (not existing.items or len(existing.items) == 0) and items:
                 existing.items = items
 
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+
+    for resp in orders_by_code.values():
+        d = DEALERS_DB.get(resp.dealer_id)
+        if d:
+            resp.dealer_status = getattr(d, "status", "Đang hoạt động")
+            resp.dealer_lock_reason = None if is_customer else getattr(d, "lock_reason", None)
+        else:
+            resp.dealer_status = "Đang hoạt động"
+            resp.dealer_lock_reason = None
+
     def _order_sort_key(order: OrderResponse):
         is_pending = 1 if getattr(order, "status", "") in ("PENDING_APPROVAL", "PENDING") else 0
         return (is_pending, getattr(order, "id", 0))
@@ -292,6 +340,7 @@ def create_order(
     current_user: UserResponse = Depends(require_permission(Permission.ORDER_WRITE.value))
 ):
     global NEXT_ORDER_ID
+    load_dealers_db()
 
     # 1. Tìm thông tin đại lý
     dealer = DEALERS_DB.get(data.dealer_id)
@@ -300,6 +349,33 @@ def create_order(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy đại lý có ID {data.dealer_id}."
         )
+
+    # Lỗi tạo đơn chéo / tài khoản đại lý bị khóa:
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+    if is_customer or current_user.role == "customer":
+        customer_dealer = _get_customer_dealer(current_user)
+        if customer_dealer:
+            if _is_dealer_locked(customer_dealer):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Đại lý '{customer_dealer.name}' hiện đang bị KHÓA giao dịch. Không thể tạo đơn hàng mới."
+                )
+            if dealer.id != customer_dealer.id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Tài khoản đại lý chỉ được phép tạo đơn hàng cho chính mình."
+                )
+        else:
+            is_own = (dealer.id == current_user.id) or \
+                     (dealer.email and dealer.email == current_user.email) or \
+                     (dealer.phone and dealer.phone == current_user.phone) or \
+                     (dealer.code and dealer.code.lower() == current_user.username.lower())
+            if not is_own:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Tài khoản đại lý chỉ được phép tạo đơn hàng cho chính mình."
+                )
 
     selected_delivery_point_id = None
     if data.delivery_point_id is not None:
@@ -340,12 +416,11 @@ def create_order(
             detail="Đại lý này thuộc nhân viên đã bị khóa tài khoản, vui lòng bàn giao trước khi lên đơn"
         )
 
-    # 2. Kiểm tra trạng thái khóa giao dịch của chính Đại lý
-    if getattr(dealer, "status", "ACTIVE") == "LOCKED":
-        lock_msg = f"Đại lý này đang bị KHÓA giao dịch (Lý do: {dealer.lock_reason or 'Không có lý do'}). Không thể tạo đơn hàng mới!"
+    # 2. Kiểm tra trạng thái khóa giao dịch của chính Đại lý (TRỤ CỘT 2)
+    if _is_dealer_locked(dealer):
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=lock_msg
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đại lý '{dealer.name}' hiện đang bị KHÓA giao dịch. Không thể tạo đơn hàng mới."
         )
 
     # 3. Kiểm tra hạn mức công nợ và số ngày nợ tối đa
@@ -397,6 +472,14 @@ def create_order(
         # Tìm thông tin sản phẩm để lấy đơn vị cơ sở và hệ số quy đổi mặc định nếu chưa truyền
         raw_p = _find_product_in_raw(item.product_id)
         prod_entity = db.query(ProductEntity).filter(ProductEntity.id == item.product_id).first() if db else None
+
+        prod_status = raw_p.get("status") if raw_p else (prod_entity.status if prod_entity else "active")
+        prod_code = raw_p.get("code") if raw_p else (prod_entity.code if prod_entity else f"SP#{item.product_id}")
+        if prod_status == "inactive":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Sản phẩm '{prod_code}' đã ngừng kinh doanh, không thể tạo đơn hàng."
+            )
 
         base_unit = "Cái"
         units_list = []
@@ -526,6 +609,12 @@ def create_order(
                 f"Chiết khấu thủ công ({effective_pct}%) vượt mức chính sách {best_disc.get('applied_policy_code', '')} ({best_pct}%)"
             )
 
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+    if is_customer or current_user.role == "customer" or "customer" in user_roles:
+        requires_approval = True
+        approval_reasons.append("Đơn hàng do Đại lý tạo từ cổng đặt hàng (Cần quản lý duyệt)")
+
     discount_amount = round(subtotal_amount * effective_pct / 100, 2)
     final_total_amount = subtotal_amount - discount_amount
     order_id = _allocate_order_id(db)
@@ -603,6 +692,8 @@ def create_order(
         "delivery_point": delivery_point_str,
         "desired_delivery_date": data.desired_delivery_date.isoformat() if data.desired_delivery_date else None,
         "note": data.note,
+        "dealer_status": getattr(dealer, "status", "Đang hoạt động"),
+        "dealer_lock_reason": None if ("customer" in current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]) else getattr(dealer, "lock_reason", None),
     }
     ORDERS_DB[order_id] = order_record
 
@@ -655,12 +746,41 @@ def create_sales_entry_order(
             detail="Ngày giao mong muốn không được ở quá khứ.",
         )
 
+    load_dealers_db()
+
     dealer = DEALERS_DB.get(data.dealer_id)
     if not dealer:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy đại lý có ID {data.dealer_id}.",
         )
+
+    # Lỗi tạo đơn chéo / tài khoản đại lý bị khóa:
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+    if is_customer or current_user.role == "customer":
+        customer_dealer = _get_customer_dealer(current_user)
+        if customer_dealer:
+            if _is_dealer_locked(customer_dealer):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Đại lý '{customer_dealer.name}' hiện đang bị KHÓA giao dịch. Không thể tạo đơn hàng mới."
+                )
+            if dealer.id != customer_dealer.id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Tài khoản đại lý chỉ được phép tạo đơn hàng cho chính mình."
+                )
+        else:
+            is_own = (dealer.id == current_user.id) or \
+                     (dealer.email and dealer.email == current_user.email) or \
+                     (dealer.phone and dealer.phone == current_user.phone) or \
+                     (dealer.code and dealer.code.lower() == current_user.username.lower())
+            if not is_own:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Tài khoản đại lý chỉ được phép tạo đơn hàng cho chính mình."
+                )
 
     assigned_sale_id = dealer.assigned_sale_id
     assigned_user = next((user for user in USERS_DB.values() if user.id == assigned_sale_id), None)
@@ -675,6 +795,13 @@ def create_sales_entry_order(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Đại lý này thuộc nhân viên đã bị khóa tài khoản, vui lòng bàn giao trước khi lên đơn",
+        )
+
+    # Kiểm tra trạng thái khóa giao dịch của Đại lý (TRỤ CỘT 2)
+    if _is_dealer_locked(dealer):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đại lý '{dealer.name}' hiện đang bị KHÓA giao dịch. Không thể tạo đơn hàng mới."
         )
 
     product_by_id = {product["id"]: product for product in RAW_PRODUCTS}
@@ -695,6 +822,14 @@ def create_sales_entry_order(
                 detail=f"Không tìm thấy sản phẩm có ID {item.product_id}.",
             )
         entity = products_by_id.get(item.product_id)
+
+        prod_status = product.get("status") if product else (entity.status if entity else "active")
+        if prod_status == "inactive":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Sản phẩm '{product['code']}' đã ngừng kinh doanh, không thể tạo đơn hàng."
+            )
+
         base_unit = (entity.base_unit if entity and entity.base_unit else product.get("base_unit")) or "Cái"
         configured_units = entity.units if entity and entity.units else product.get("units", [])
         unit_rates = {unit: 1.0 for unit in SALES_ORDER_UNITS}
@@ -764,6 +899,12 @@ def create_sales_entry_order(
             approval_reasons.append(
                 f"Chiết khấu thủ công ({effective_pct}%) vượt mức chính sách {best_disc.get('applied_policy_code', '')} ({best_pct}%)"
             )
+
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+    if is_customer or current_user.role == "customer" or "customer" in user_roles:
+        requires_approval = True
+        approval_reasons.append("Đơn hàng do Đại lý tạo từ cổng đặt hàng (Cần quản lý duyệt)")
 
     discount_amount = round(subtotal_amount * effective_pct / 100, 2)
     final_total_amount = subtotal_amount - discount_amount
@@ -835,6 +976,8 @@ def create_sales_entry_order(
         "desired_delivery_date": data.desired_delivery_date.isoformat(),
         "note": data.note,
         "items": priced_items,
+        "dealer_status": getattr(dealer, "status", "Đang hoạt động"),
+        "dealer_lock_reason": None if ("customer" in current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]) else getattr(dealer, "lock_reason", None),
     }
     ORDERS_DB[db_order.id] = order_record
 
@@ -865,6 +1008,7 @@ def get_order_detail(
     current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value)),
 ):
     """Return one order with its persisted line items and delivery details."""
+    load_dealers_db()
     order_record = next(
         (
             order
@@ -974,12 +1118,20 @@ def get_order_detail(
         "discount_amount",
         round(subtotal_amount * discount_percent / 100, 2),
     )
+    d = DEALERS_DB.get(order_record.get("dealer_id"))
+    d_status = getattr(d, "status", "Đang hoạt động") if d else "Đang hoạt động"
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+    d_lock_reason = None if is_customer else (getattr(d, "lock_reason", None) if d else None)
+
     detail_response = dict(order_record)
     detail_response.update({
         "items": items,
         "subtotal_amount": subtotal_amount,
         "discount_percent": discount_percent,
         "discount_amount": discount_amount,
+        "dealer_status": d_status,
+        "dealer_lock_reason": d_lock_reason,
     })
     return SalesOrderResponse(**detail_response)
 

@@ -1,4 +1,5 @@
 # backend/app/models/entities.py
+from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from sqlalchemy import (
@@ -38,7 +39,6 @@ class UserEntity(Base):
     failed_attempts = Column(Integer, default=0)
     locked_until = Column(DateTime, nullable=True)
     token_version = Column(Integer, default=1)
-    avatar_url = Column(Unicode(500), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
     @property
@@ -88,23 +88,43 @@ class ProductEntity(Base):
     cost_price = Column(Float, default=0.0)
     sell_price = Column(Float, default=0.0)
     base_unit = Column(Unicode(50), default="Cái")
-    units_json = Column(UnicodeText, nullable=True)  # JSON string lưu danh sách đơn vị quy đổi [{"unit_name": "Thùng", "conversion_rate": 24}]
+    units_json = Column(UnicodeText, nullable=True)
+    packaging_specification = Column(Unicode(255), nullable=True)
+    images_json = Column(UnicodeText, nullable=True)
+    status = Column(String(50), default="active")
     created_at = Column(DateTime, default=get_utc_now)
 
     category_rel = relationship("CategoryEntity", backref="products")
 
     @property
-    def units(self) -> list[dict]:
+    def units(self):
         if self.units_json:
             try:
-                return json.loads(self.units_json)
+                res = json.loads(self.units_json)
+                if isinstance(res, list):
+                    return res
             except Exception:
                 pass
         return []
 
     @units.setter
-    def units(self, val: list[dict]):
+    def units(self, val):
         self.units_json = json.dumps(val or [], ensure_ascii=False)
+
+    @property
+    def images(self):
+        if self.images_json:
+            try:
+                res = json.loads(self.images_json)
+                if isinstance(res, list):
+                    return res
+            except Exception:
+                pass
+        return []
+
+    @images.setter
+    def images(self, val):
+        self.images_json = json.dumps(val or [], ensure_ascii=False)
 
 
 class DealerEntity(Base):
@@ -113,6 +133,7 @@ class DealerEntity(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     code = Column(String(50), unique=True, index=True, nullable=False)
     name = Column(Unicode(255), nullable=False)
+    tax_code = Column(String(50), nullable=True)
     phone = Column(String(50), nullable=True)
     email = Column(String(255), nullable=True)
     address = Column(Unicode(500), nullable=True)
@@ -122,6 +143,7 @@ class DealerEntity(Base):
     max_debt_days = Column(Integer, default=30)
     customer_group = Column(Unicode(100), default="Đại lý cấp 1")
     status = Column(Unicode(50), default="Đang hoạt động")
+    transaction_count = Column(Integer, default=0, nullable=True)
     lock_reason = Column(Unicode(500), nullable=True)
     locked_at = Column(DateTime, nullable=True)
     locked_by = Column(String(50), nullable=True)
@@ -139,12 +161,12 @@ class InventoryTransactionEntity(Base):
     quantity = Column(Integer, nullable=False)
     previous_stock = Column(Integer, nullable=False)
     new_stock = Column(Integer, nullable=False)
-    unit_name = Column(Unicode(50), nullable=True)
-    conversion_rate = Column(Float, default=1.0)
-    base_quantity = Column(Integer, nullable=True)
     performed_by = Column(Unicode(100), nullable=False)
     user_role = Column(String(50), nullable=False)
     reason = Column(UnicodeText, nullable=True)
+    unit_name = Column(Unicode(50), default="Cái")
+    conversion_rate = Column(Float, default=1.0)
+    base_quantity = Column(Float, default=0.0)
     created_at = Column(DateTime, default=get_utc_now)
 
 
