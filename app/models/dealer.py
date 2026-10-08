@@ -4,7 +4,8 @@ from __future__ import annotations
 Data model and in-memory store for Dealers/Customers.
 Stores assigned_sale_id pointing to users.id.
 """
-from typing import Optional, List
+from typing import Optional, List, Union
+from datetime import datetime
 from pydantic import BaseModel
 
 class Dealer(BaseModel):
@@ -20,11 +21,13 @@ class Dealer(BaseModel):
     credit_limit: float = 50000000.0        # Hạn mức công nợ mặc định (VNĐ)
     max_debt_days: int = 30                 # Số ngày nợ tối đa cho phép
     customer_group: Optional[str] = "Đại lý cấp 1"
-    status: str = "ACTIVE"                  # ACTIVE | LOCKED
+    status: str = "Đang hoạt động"          # Đang hoạt động | Tạm ngừng | Đã khóa
     lock_reason: Optional[str] = None
-    locked_at: Optional[str] = None
+    locked_at: Optional[Union[str, datetime]] = None
     locked_by: Optional[str] = None
     transaction_count: Optional[int] = 0
+    warehouse_id: Optional[str] = None
+    warehouse_name: Optional[str] = None
 # Initial seed data for dealers
 # Sales user: id=3 (username: 'sales', full_name: 'Trần Bán Hàng')
 DEALERS_DB: dict[int, Dealer] = {
@@ -93,6 +96,19 @@ DEALERS_DB: dict[int, Dealer] = {
         customer_group="khach_le",
         status="Đang hoạt động",
     ),
+    7: Dealer(
+        id=7,
+        code="DL007",
+        name="Vũ Mua Hàng",
+        phone="0911223377",
+        email="muahang@congty.vn",
+        address="12 Hàng Buồm, Hà Nội",
+        region="Hà Nội",
+        assigned_sale_id=None,
+        credit_limit=50000000.0,
+        customer_group="Đại lý cấp 1",
+        status="Đang hoạt động",
+    ),
 }
 
 import os
@@ -130,10 +146,24 @@ def save_dealers_db():
                 if hasattr(db_dealer, "transaction_count"):
                     db_dealer.transaction_count = getattr(d, "transaction_count", 0) or 0
                 if hasattr(db_dealer, "status"):
-                    db_dealer.status = getattr(d, "status", "ACTIVE")
+                    db_dealer.status = getattr(d, "status", "Đang hoạt động")
                     db_dealer.lock_reason = getattr(d, "lock_reason", None)
-                    db_dealer.locked_at = getattr(d, "locked_at", None)
+                    locked_at_val = getattr(d, "locked_at", None)
+                    if locked_at_val:
+                        if isinstance(locked_at_val, str):
+                            try:
+                                db_dealer.locked_at = datetime.fromisoformat(locked_at_val.replace("Z", "+00:00"))
+                            except Exception:
+                                db_dealer.locked_at = None
+                        elif isinstance(locked_at_val, datetime):
+                            db_dealer.locked_at = locked_at_val
+                    else:
+                        db_dealer.locked_at = None
                     db_dealer.locked_by = getattr(d, "locked_by", None)
+                if hasattr(db_dealer, "warehouse_id"):
+                    db_dealer.warehouse_id = getattr(d, "warehouse_id", None)
+                if hasattr(db_dealer, "warehouse_name"):
+                    db_dealer.warehouse_name = getattr(d, "warehouse_name", None)
 
             if DEALERS_DB:
                 existing_ids = list(DEALERS_DB.keys())
@@ -180,9 +210,11 @@ def load_dealers_db():
                         customer_group=getattr(entity, "customer_group", None) or "Đại lý cấp 1",
                         status="Đang hoạt động" if ("ho?t" in str(getattr(entity, "status", "")) or "Ðang" in str(getattr(entity, "status", ""))) else (getattr(entity, "status", "Đang hoạt động") or "Đang hoạt động"),
                         lock_reason=getattr(entity, "lock_reason", None),
-                        locked_at=getattr(entity, "locked_at", None),
+                        locked_at=entity.locked_at.isoformat() if hasattr(getattr(entity, "locked_at", None), "isoformat") else getattr(entity, "locked_at", None),
                         locked_by=getattr(entity, "locked_by", None),
                         transaction_count=int(getattr(entity, "transaction_count", 0) or 0),
+                        warehouse_id=getattr(entity, "warehouse_id", None),
+                        warehouse_name=getattr(entity, "warehouse_name", None),
                     )
                     DEALERS_DB[entity.id] = d
                 loaded_from_sql = True

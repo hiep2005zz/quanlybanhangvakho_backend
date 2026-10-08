@@ -55,15 +55,17 @@ SYSTEM_AUDIT_ACTION_TYPES = {
 }
 
 # Danh sách tất cả các hành động nghiệp vụ hợp lệ được phép ghi log kiểm toán:
-# Bao gồm 4 nhóm cốt lõi + các thao tác quản lý đại lý (SCRUM-48: Phân công/chuyển giao đại lý, trạng thái đại lý)
+# Bao gồm 4 nhóm cốt lõi + các thao tác quản lý đại lý (SCRUM-48: Phân công/chuyển giao đại lý, trạng thái đại lý) + nhập kho (GRN)
 ALLOWED_ACTION_TYPES = SYSTEM_AUDIT_ACTION_TYPES | {
     "DEALER_ASSIGNMENT",
     "DEALER_STATUS_CHANGE",
+    "GOODS_RECEIPT_CONFIRM",
 }
 
 ALLOWED_ENTITY_TYPES = {
     # 1. Tồn kho
     "Inventory",
+    "GoodsReceiptNote",
     # 2. Tồn kho & Giá bán
     "Product",
     "ProductPrice",

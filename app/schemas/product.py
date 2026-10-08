@@ -21,11 +21,13 @@ class ProductCreateRequest(BaseModel):
     category: Optional[str] = "Thời trang"
     category_id: Optional[int] = None
     base_unit: Optional[str] = "Cái"
+    units: Optional[List[UnitConversionItem]] = []
     packaging_specification: Optional[str] = None
-    sell_price: float = Field(..., ge=0)
+    sell_price: Optional[float] = Field(0.0, ge=0)
     cost_price: Optional[float] = Field(None, ge=0)
     images: Optional[List[str]] = []
     status: Optional[str] = "active"
+    is_batch_managed: Optional[bool] = False
 
 class ProductUpdateRequest(BaseModel):
     code: Optional[str] = Field(None, min_length=1, max_length=50)
@@ -33,11 +35,13 @@ class ProductUpdateRequest(BaseModel):
     category: Optional[str] = None
     category_id: Optional[int] = None
     base_unit: Optional[str] = None
+    units: Optional[List[UnitConversionItem]] = None
     packaging_specification: Optional[str] = None
     sell_price: Optional[float] = Field(None, ge=0)
     cost_price: Optional[float] = Field(None, ge=0)
     images: Optional[List[str]] = None
     status: Optional[str] = None
+    is_batch_managed: Optional[bool] = None
 
 class ProductItem(BaseModel):
     id: int
@@ -52,6 +56,7 @@ class ProductItem(BaseModel):
     packaging_specification: Optional[str] = None
     images: List[str] = []
     status: str = "active"
+    is_batch_managed: Optional[bool] = False
     transaction_count: Optional[int] = 0
     # Dữ liệu nhạy cảm (AC 3: Bị lọc bỏ hoàn toàn nếu không phải Admin hoặc Sales Manager)
     cost_price: Optional[float] = None

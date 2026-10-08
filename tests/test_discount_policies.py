@@ -121,3 +121,105 @@ def test_sales_entry_order_auto_discount_101_qty():
     expected_discount = round(order["subtotal_amount"] * 0.05, 2)
     assert order["discount_amount"] == expected_discount
     assert order["total_amount"] == order["subtotal_amount"] - expected_discount
+
+def test_crud_discount_policy_database_persistence():
+    """
+    Kiểm tra toàn diện CRUD và lưu trữ vào Cơ sở dữ liệu:
+    1. Tạo chính sách mới với các bậc chiết khấu
+    2. Xác thực lưu trực tiếp trong DB (DiscountPolicyEntity, DiscountTierEntity)
+    3. Cập nhật chính sách
+    4. Bật / tắt trạng thái (toggle-status)
+    5. Xóa chính sách (cascade xóa các bậc liên kết)
+    """
+    from app.core.database import SessionLocal
+    from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
+
+    token = _admin_login()
+
+    # 1. CREATE
+    payload = {
+        "code": "CK-TEST-DB-01",
+        "name": "Chính sách kiểm thử DB",
+        "title": "Chính sách kiểm thử DB",
+        "category": "Thời trang",
+        "target_dealer_type": "ALL",
+        "target_group": "all",
+        "description": "Chính sách lưu trực tiếp vào CSDL",
+        "start_date": "2026-01-01",
+        "end_date": "2026-12-31",
+        "is_active": True,
+        "tiers": [
+            {"min_quantity": 50, "max_quantity": 99, "discount_percent": 3.0},
+            {"min_quantity": 100, "max_quantity": 199, "discount_percent": 7.0},
+        ],
+    }
+    res = client.post("/api/v1/discounts", json=payload, headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 201, res.text
+    created = res.json()
+    policy_id = created["id"]
+    assert created["code"] == "CK-TEST-DB-01"
+    assert len(created["tiers"]) == 2
+
+    # 2. XÁC THỰC TRỰC TIẾP TRONG DB
+    db = SessionLocal()
+    try:
+        db_entity = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.id == policy_id).first()
+        assert db_entity is not None
+        assert db_entity.name == "Chính sách kiểm thử DB"
+        assert db_entity.category == "Thời trang"
+        assert len(db_entity.tiers) == 2
+        assert db_entity.tiers[0].min_quantity == 50
+        assert db_entity.tiers[0].discount_percent == 3.0
+    finally:
+        db.close()
+
+    # 3. UPDATE
+    update_payload = {
+        "name": "Chính sách kiểm thử DB đã cập nhật",
+        "category": "Thời trang",
+        "tiers": [
+            {"min_quantity": 30, "max_quantity": 80, "discount_percent": 4.0},
+        ],
+    }
+    res_update = client.put(f"/api/v1/discounts/{policy_id}", json=update_payload, headers={"Authorization": f"Bearer {token}"})
+    assert res_update.status_code == 200
+    updated = res_update.json()
+    assert updated["name"] == "Chính sách kiểm thử DB đã cập nhật"
+    assert len(updated["tiers"]) == 1
+
+    # Kiểm tra DB sau update
+    db = SessionLocal()
+    try:
+        db_entity = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.id == policy_id).first()
+        assert db_entity.name == "Chính sách kiểm thử DB đã cập nhật"
+        assert len(db_entity.tiers) == 1
+        assert db_entity.tiers[0].discount_percent == 4.0
+    finally:
+        db.close()
+
+    # 4. TOGGLE STATUS
+    res_toggle = client.patch(f"/api/v1/discounts/{policy_id}/toggle-status", headers={"Authorization": f"Bearer {token}"})
+    assert res_toggle.status_code == 200
+    assert res_toggle.json()["is_active"] is False
+
+    db = SessionLocal()
+    try:
+        db_entity = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.id == policy_id).first()
+        assert db_entity.is_active is False
+    finally:
+        db.close()
+
+    # 5. DELETE
+    res_delete = client.delete(f"/api/v1/discounts/{policy_id}", headers={"Authorization": f"Bearer {token}"})
+    assert res_delete.status_code == 200
+
+    db = SessionLocal()
+    try:
+        db_entity = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.id == policy_id).first()
+        assert db_entity is None
+        # Đảm bảo tiers bị cascade xóa
+        tiers = db.query(DiscountTierEntity).filter(DiscountTierEntity.policy_id == policy_id).all()
+        assert len(tiers) == 0
+    finally:
+        db.close()
+
