@@ -24,6 +24,7 @@ from app.models.goods_receipt import (
     InventoryLedgerEntity,
 )
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
+from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 
@@ -473,6 +474,71 @@ def init_db():
             db.add_all(initial_uoms)
             db.commit()
             print("Units of measure seeded successfully.")
+
+        # 9. Seed Discount Policies nếu chưa có
+        if db.query(DiscountPolicyEntity).count() == 0:
+            print("Seeding initial discount policies...")
+            default_policy = DiscountPolicyEntity(
+                code="CK-SL-001",
+                name="Chiết khấu sản lượng toàn hệ thống",
+                title="Tất cả sản phẩm",
+                category="ALL",
+                target_dealer_type="ALL",
+                target_group="all",
+                description="Giảm giá theo sản lượng đặt hàng áp dụng toàn hệ thống",
+                start_date="2026-01-01",
+                end_date="2026-12-31",
+                is_active=True,
+                status="active",
+                created_by="admin",
+            )
+            db.add(default_policy)
+            db.flush()
+
+            tier1 = DiscountTierEntity(
+                policy_id=default_policy.id,
+                min_quantity=100,
+                max_quantity=499,
+                discount_percent=5.0,
+            )
+            tier2 = DiscountTierEntity(
+                policy_id=default_policy.id,
+                min_quantity=500,
+                max_quantity=999,
+                discount_percent=10.0,
+            )
+            tier3 = DiscountTierEntity(
+                policy_id=default_policy.id,
+                min_quantity=1000,
+                max_quantity=None,
+                discount_percent=15.0,
+            )
+            db.add_all([tier1, tier2, tier3])
+
+            policy_cap1 = DiscountPolicyEntity(
+                code="CK-CAP1",
+                name="Chính sách chiết khấu - Đại lý Cấp 1",
+                title="Chính sách chiết khấu - Đại lý Cấp 1",
+                category="ALL",
+                target_dealer_type="agent_tier_1",
+                target_group="agent_tier_1",
+                description="Áp dụng cho đơn hàng đạt mốc sản lượng",
+                start_date="2026-10-01",
+                end_date="2026-12-31",
+                is_active=True,
+                status="active",
+                created_by="admin",
+            )
+            db.add(policy_cap1)
+            db.flush()
+
+            t1 = DiscountTierEntity(policy_id=policy_cap1.id, min_quantity=100, max_quantity=499, discount_percent=5.0)
+            t2 = DiscountTierEntity(policy_id=policy_cap1.id, min_quantity=500, max_quantity=999, discount_percent=8.0)
+            t3 = DiscountTierEntity(policy_id=policy_cap1.id, min_quantity=1000, max_quantity=None, discount_percent=12.0)
+            db.add_all([t1, t2, t3])
+
+            db.commit()
+            print("Discount policies seeded successfully.")
 
         from app.models.dealer import load_dealers_db
         load_dealers_db()

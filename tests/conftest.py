@@ -32,6 +32,7 @@ if DEV_USERS_JSON.exists():
 app.models.user.DB_FILE_PATH = str(TEST_USERS_JSON)
 
 from app.db.init_db import init_db
+init_db()
 from app.core.database import SessionLocal
 from app.models.entities import UserEntity
 from app.core.security import get_password_hash
