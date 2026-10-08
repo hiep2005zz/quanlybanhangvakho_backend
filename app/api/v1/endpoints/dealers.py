@@ -1,4 +1,5 @@
 from typing import Optional, List
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query, HTTPException, status, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -184,6 +185,7 @@ def search_dealers(
             "sales_manager",
             "sales",
             "accountant",
+            "customer",
         ])
     ),
 ):
@@ -201,6 +203,64 @@ def search_dealers(
     status_clean = status.strip().lower() if status else None
 
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+
+    from app.api.v1.endpoints.orders import ORDERS_DB
+
+    if is_customer:
+        customer_dealer = DEALERS_DB.get(current_user.id)
+        if not customer_dealer:
+            for d in DEALERS_DB.values():
+                if (d.email and d.email == current_user.email) or \
+                   (d.phone and d.phone == current_user.phone) or \
+                   (d.code and d.code.lower() == current_user.username.lower()) or \
+                   (d.name and d.name.lower() == (current_user.full_name or "").lower()):
+                    customer_dealer = d
+                    break
+        if not customer_dealer:
+            return {"items": [], "total": 0}
+
+        dealer_region = customer_dealer.region or get_region(customer_dealer.address)
+        c_limit = float(getattr(customer_dealer, "credit_limit", 50000000.0) or 50000000.0)
+        c_days = int(getattr(customer_dealer, "max_debt_days", 30) or 30)
+        current_debt = 0.0
+        for o in ORDERS_DB.values():
+            if o.get("dealer_id") == customer_dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
+                current_debt += o.get("total_amount", 0.0)
+
+        debt_status = "Bình thường"
+        if current_debt > c_limit:
+            debt_status = "Vượt hạn mức"
+
+        applied_pb = get_applied_price_book_info(getattr(customer_dealer, "customer_group", "Đại lý cấp 1"))
+        return {
+            "items": [{
+                "id": customer_dealer.id,
+                "code": customer_dealer.code,
+                "name": customer_dealer.name,
+                "tax_code": getattr(customer_dealer, "tax_code", None),
+                "phone": customer_dealer.phone,
+                "email": customer_dealer.email,
+                "address": customer_dealer.address,
+                "region": dealer_region,
+                "credit_limit": c_limit,
+                "max_debt_days": c_days,
+                "current_debt": current_debt,
+                "debt_status": debt_status,
+                "assigned_sale_id": customer_dealer.assigned_sale_id,
+                "assigned_sale_name": get_sale_name(customer_dealer.assigned_sale_id),
+                "customer_group": getattr(customer_dealer, "customer_group", "Đại lý cấp 1"),
+                "status": getattr(customer_dealer, "status", "Đang hoạt động"),
+                "lock_reason": None,
+                "locked_at": None,
+                "locked_by": None,
+                "transaction_count": 0,
+                "has_transactions": False,
+                "applied_price_book": applied_pb,
+            }],
+            "total": 1,
+        }
+
     if "admin" not in user_roles and "sales_manager" not in user_roles and "accountant" not in user_roles:
         # Sales chỉ thấy đại lý của mình
         assigned_sale_id = current_user.id
@@ -328,6 +388,9 @@ def search_dealers(
             "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
             "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
             "status": getattr(dealer, "status", "Đang hoạt động"),
+            "lock_reason": getattr(dealer, "lock_reason", None),
+            "locked_at": getattr(dealer, "locked_at", None),
+            "locked_by": getattr(dealer, "locked_by", None),
             "transaction_count": transaction_count,
             "has_transactions": transaction_count > 0,
             "applied_price_book": applied_pb,
@@ -730,22 +793,33 @@ def update_dealer_status(
             )
 
     new_status = payload.status.strip()
-    if new_status not in ["Đang hoạt động", "Tạm ngừng", "Ngừng giao dịch"]:
+    if new_status not in ["Đang hoạt động", "Tạm ngừng", "Ngừng giao dịch", "Đã khóa"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Trạng thái chỉ có thể là 'Đang hoạt động', 'Ngừng giao dịch' hoặc 'Tạm ngừng'."
+            detail="Trạng thái chỉ có thể là 'Đang hoạt động', 'Ngừng giao dịch', 'Tạm ngừng' hoặc 'Đã khóa'."
         )
 
-    old_status = getattr(dealer, "status", "Đang hoạt động")
-    if old_status == new_status:
-        return {
-            "id": dealer.id,
-            "code": dealer.code,
-            "name": dealer.name,
-            "status": dealer.status,
-            "message": "Trạng thái không thay đổi",
-        }
+    clean_reason = payload.reason.strip() if payload.reason and payload.reason.strip() else None
+    utc_now_str = datetime.now(timezone.utc).isoformat()
 
+    if new_status == "Đã khóa":
+        if not clean_reason:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Lý do khóa giao dịch là bắt buộc khi chuyển sang trạng thái 'Đã khóa'."
+            )
+        dealer.lock_reason = clean_reason
+        dealer.locked_at = utc_now_str
+        dealer.locked_by = current_user.username
+    elif new_status == "Đang hoạt động":
+        dealer.lock_reason = None
+        dealer.locked_at = None
+        dealer.locked_by = None
+    else:
+        if clean_reason:
+            dealer.lock_reason = clean_reason
+
+    old_status = getattr(dealer, "status", "Đang hoạt động")
     dealer.status = new_status
     save_dealers_db()
 
@@ -758,8 +832,13 @@ def update_dealer_status(
             entity_type="Dealer",
             entity_id=dealer.code,
             old_val={"status": old_status, "name": dealer.name},
-            new_val={"status": new_status},
-            reason=payload.reason or f"Chuyển trạng thái sang '{new_status}'",
+            new_val={
+                "status": dealer.status,
+                "lock_reason": getattr(dealer, "lock_reason", None),
+                "locked_at": getattr(dealer, "locked_at", None),
+                "locked_by": getattr(dealer, "locked_by", None),
+            },
+            reason=clean_reason or payload.reason or f"Chuyển trạng thái sang '{new_status}'",
             request=request,
         )
     except Exception as e:
@@ -778,6 +857,9 @@ def update_dealer_status(
         "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
         "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
         "status": dealer.status,
+        "lock_reason": getattr(dealer, "lock_reason", None),
+        "locked_at": getattr(dealer, "locked_at", None),
+        "locked_by": getattr(dealer, "locked_by", None),
     }
 
 
@@ -1018,10 +1100,48 @@ def delete_dealer(
 @router.get("")
 @router.get("/")
 def get_dealers(
-    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "accountant"]))
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "accountant", "customer"]))
 ):
-    """Lấy danh sách tất cả đại lý."""
+    """Lấy danh sách tất cả đại lý (tự động cô lập cho customer)."""
     load_dealers_db()
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+
+    if is_customer:
+        customer_dealer = DEALERS_DB.get(current_user.id)
+        if not customer_dealer:
+            for d in DEALERS_DB.values():
+                if (d.email and d.email == current_user.email) or \
+                   (d.phone and d.phone == current_user.phone) or \
+                   (d.code and d.code.lower() == current_user.username.lower()) or \
+                   (d.name and d.name.lower() == (current_user.full_name or "").lower()):
+                    customer_dealer = d
+                    break
+        if not customer_dealer:
+            return []
+        return [{
+            "id": customer_dealer.id,
+            "code": customer_dealer.code,
+            "name": customer_dealer.name,
+            "phone": customer_dealer.phone,
+            "email": customer_dealer.email,
+            "address": customer_dealer.address,
+            "region": getattr(customer_dealer, "region", None) or get_region(customer_dealer.address),
+            "assigned_sale_id": customer_dealer.assigned_sale_id,
+            "assigned_sale_name": get_sale_name(customer_dealer.assigned_sale_id),
+            "credit_limit": getattr(customer_dealer, "credit_limit", 50000000.0),
+            "max_debt_days": getattr(customer_dealer, "max_debt_days", 30),
+            "customer_group": getattr(customer_dealer, "customer_group", "Đại lý cấp 1"),
+            "status": getattr(customer_dealer, "status", "Đang hoạt động"),
+            "lock_reason": None,
+            "locked_at": None,
+            "locked_by": None,
+            "transaction_count": 0,
+            "has_transactions": False,
+            "applied_price_book": get_applied_price_book_info(getattr(customer_dealer, "customer_group", "Đại lý cấp 1")),
+        }]
+
+    from app.api.v1.endpoints.orders import ORDERS_DB
     res = []
     for d in DEALERS_DB.values():
         tx_count = sum(1 for o in ORDERS_DB.values() if o.get("dealer_id") == d.id)
@@ -1042,6 +1162,8 @@ def get_dealers(
             "customer_group": getattr(d, "customer_group", "Đại lý cấp 1"),
             "status": getattr(d, "status", "Đang hoạt động"),
             "lock_reason": getattr(d, "lock_reason", None),
+            "locked_at": getattr(d, "locked_at", None),
+            "locked_by": getattr(d, "locked_by", None),
             "transaction_count": tx_count,
             "has_transactions": tx_count > 0,
             "applied_price_book": applied_pb,
