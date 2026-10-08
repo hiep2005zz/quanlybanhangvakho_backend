@@ -92,6 +92,7 @@ class ProductEntity(Base):
     packaging_specification = Column(Unicode(255), nullable=True)
     images_json = Column(UnicodeText, nullable=True)
     status = Column(String(50), default="active")
+    is_batch_managed = Column(Boolean, default=False)
     created_at = Column(DateTime, default=get_utc_now)
 
     category_rel = relationship("CategoryEntity", backref="products")

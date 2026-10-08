@@ -14,6 +14,15 @@ from app.models.entities import (
     CategoryEntity,
     AuditLogEntity,
 )
+from app.models.supplier import SupplierEntity
+from app.models.goods_receipt import (
+    WarehouseEntity,
+    UnitOfMeasureEntity,
+    GoodsReceiptNoteEntity,
+    GoodsReceiptNoteItemEntity,
+    ProductBatchEntity,
+    InventoryLedgerEntity,
+)
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.core.security import get_password_hash
 from app.core.rbac import Role
@@ -46,6 +55,7 @@ def _ensure_legacy_columns(bind=engine):
             "packaging_specification": ("VARCHAR(255)", "NVARCHAR(255)"),
             "images_json": ("TEXT", "NVARCHAR(MAX)"),
             "status": ("VARCHAR(50) DEFAULT 'active'", "NVARCHAR(50) DEFAULT 'active'"),
+            "is_batch_managed": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
         },
         "dealers": {
             "max_debt_days": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
@@ -423,6 +433,46 @@ def init_db():
 
             db.commit()
             print("Price books seeded successfully.")
+
+        # 6. Seed Suppliers nếu chưa có
+        if db.query(SupplierEntity).count() == 0:
+            print("Seeding initial suppliers...")
+            initial_suppliers = [
+                SupplierEntity(id=1, code="NCC001", name="Công ty Cổ phần Nước Giải Khát Sabeco", tax_code="0300588569", contact_person="Nguyễn Văn Cung", payment_terms="Gối đầu 30 ngày", is_active=True),
+                SupplierEntity(id=2, code="NCC002", name="Công ty TNHH May Mặc An Phước", tax_code="0301438927", contact_person="Trần Thị May", payment_terms="Thanh toán ngay khi giao", is_active=True),
+            ]
+            db.add_all(initial_suppliers)
+            db.commit()
+            print("Suppliers seeded successfully.")
+
+        # 7. Seed Warehouses nếu chưa có
+        if db.query(WarehouseEntity).count() == 0:
+            print("Seeding initial warehouses...")
+            initial_warehouses = [
+                WarehouseEntity(id=1, code="KHO_HN", name="Kho Tổng Hà Nội", address="Lô CN1 KCN Từ Liêm, Bắc Từ Liêm, Hà Nội", is_active=True),
+                WarehouseEntity(id=2, code="KHO_DN", name="Kho Chi Nhánh Đà Nẵng", address="KCN Hòa Khánh, Liên Chiểu, Đà Nẵng", is_active=True),
+                WarehouseEntity(id=3, code="KHO_HCM", name="Kho Chi Nhánh TP. Hồ Chí Minh", address="Khu chế xuất Tân Thuận, Quận 7, TP. HCM", is_active=True),
+            ]
+            db.add_all(initial_warehouses)
+            db.commit()
+            print("Warehouses seeded successfully.")
+
+        # 8. Seed Units of Measure nếu chưa có
+        if db.query(UnitOfMeasureEntity).count() == 0:
+            print("Seeding initial units of measure...")
+            initial_uoms = [
+                UnitOfMeasureEntity(id=1, code="CAI", name="Cái", description="Đơn vị cơ sở cái"),
+                UnitOfMeasureEntity(id=2, code="LON", name="Lon", description="Đơn vị cơ sở lon"),
+                UnitOfMeasureEntity(id=3, code="LOC", name="Lốc", description="Quy cách lốc 6 cái/lon"),
+                UnitOfMeasureEntity(id=4, code="THUNG", name="Thùng", description="Quy cách thùng 24 cái/lon"),
+                UnitOfMeasureEntity(id=5, code="CHIEC", name="Chiếc", description="Đơn vị chiếc"),
+                UnitOfMeasureEntity(id=6, code="KIEN", name="Kiện", description="Quy cách kiện 10 chiếc"),
+                UnitOfMeasureEntity(id=7, code="HOP", name="Hộp", description="Đơn vị hộp"),
+                UnitOfMeasureEntity(id=8, code="KG", name="Kg", description="Đơn vị kilogam"),
+            ]
+            db.add_all(initial_uoms)
+            db.commit()
+            print("Units of measure seeded successfully.")
 
         from app.models.dealer import load_dealers_db
         load_dealers_db()
