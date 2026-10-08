@@ -75,7 +75,7 @@
     "credit_limit": 50000000.0,
     "max_debt_days": 30,
     "customer_group": "khach_le",
-    "status": "Tạm ngừng",
+    "status": "Ngừng giao dịch",
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
