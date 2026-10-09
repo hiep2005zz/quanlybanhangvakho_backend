@@ -26,6 +26,8 @@ class Dealer(BaseModel):
     locked_at: Optional[Union[str, datetime]] = None
     locked_by: Optional[str] = None
     transaction_count: Optional[int] = 0
+    warehouse_id: Optional[str] = None
+    warehouse_name: Optional[str] = None
 # Initial seed data for dealers
 # Sales user: id=3 (username: 'sales', full_name: 'Trần Bán Hàng')
 DEALERS_DB: dict[int, Dealer] = {
@@ -158,6 +160,10 @@ def save_dealers_db():
                     else:
                         db_dealer.locked_at = None
                     db_dealer.locked_by = getattr(d, "locked_by", None)
+                if hasattr(db_dealer, "warehouse_id"):
+                    db_dealer.warehouse_id = getattr(d, "warehouse_id", None)
+                if hasattr(db_dealer, "warehouse_name"):
+                    db_dealer.warehouse_name = getattr(d, "warehouse_name", None)
 
             if DEALERS_DB:
                 existing_ids = list(DEALERS_DB.keys())
@@ -207,6 +213,8 @@ def load_dealers_db():
                         locked_at=entity.locked_at.isoformat() if hasattr(getattr(entity, "locked_at", None), "isoformat") else getattr(entity, "locked_at", None),
                         locked_by=getattr(entity, "locked_by", None),
                         transaction_count=int(getattr(entity, "transaction_count", 0) or 0),
+                        warehouse_id=getattr(entity, "warehouse_id", None),
+                        warehouse_name=getattr(entity, "warehouse_name", None),
                     )
                     DEALERS_DB[entity.id] = d
                 loaded_from_sql = True

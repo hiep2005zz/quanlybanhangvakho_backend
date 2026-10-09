@@ -701,6 +701,7 @@ def create_order(
 
         processed_items.append({
             "product_id": item.product_id,
+            "product_code": prod_code,
             "product_name": raw_p.get("name") if raw_p else (prod_entity.name if prod_entity else f"SP #{item.product_id}"),
             "quantity": item.quantity,
             "price": item.price,
@@ -709,6 +710,14 @@ def create_order(
             "conversion_rate": chosen_rate,
             "base_quantity": base_quantity,
         })
+
+    # SCRUM-56 / AC 3 & AC 4: Kiểm tra tồn khả dụng & giữ chỗ tồn kho (Database Row-Level Locking)
+    from app.services.inventory_availability_service import validate_and_reserve_order_stock
+    validate_and_reserve_order_stock(
+        db=db,
+        dealer_id=dealer.id,
+        items=processed_items,
+    )
 
     # AC: Kiểm tra bảng giá áp dụng cho nhóm khách hàng của Đại lý
     cust_group = getattr(dealer, "customer_group", None) or "dai_ly_cap_1"
@@ -1055,6 +1064,21 @@ def create_sales_entry_order(
             "conversion_rate": expected_rate,
             "base_quantity": int(round(item.quantity * expected_rate)),
         })
+
+    # SCRUM-56 / AC 3 & AC 4: Kiểm tra tồn khả dụng & giữ chỗ tồn kho (Database Row-Level Locking)
+    from app.services.inventory_availability_service import validate_and_reserve_order_stock
+    validate_and_reserve_order_stock(
+        db=db,
+        dealer_id=dealer.id,
+        items=priced_items,
+    )
+    for pi in priced_items:
+        raw_p = product_by_id.get(pi["product_id"])
+        if raw_p:
+            raw_p["stock"] = max(0, raw_p.get("stock", 0) - pi["base_quantity"])
+        entity_p = products_by_id.get(pi["product_id"])
+        if entity_p:
+            entity_p.stock = max(0, (entity_p.stock or 0) - pi["base_quantity"])
 
     delivery_point = data.delivery_point.strip()
     selected_dp_id = data.delivery_point_id
@@ -1449,6 +1473,8 @@ def reject_order(
                     db_order.items_json = json.dumps(p_dict, ensure_ascii=False)
                 except Exception:
                     pass
+                from app.services.inventory_availability_service import release_order_stock
+                release_order_stock(db, db_order)
             db.commit()
 
     log_audit_event(

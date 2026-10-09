@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
-from app.api.deps import require_permission
+from app.api.deps import require_permission, require_sales_role
 from app.core.database import get_db
 from app.core.rbac import Permission
 from app.schemas.auth import UserResponse
@@ -14,9 +14,15 @@ from app.schemas.inventory import (
     StockUpdateRequest,
     InventoryResponse,
     InventoryTransaction,
+    AvailableStockResponse,
+    DealerStockSummaryResponse,
 )
 from app.api.v1.endpoints.products import RAW_PRODUCTS
 from app.services.audit_service import log_audit_event
+from app.services.inventory_availability_service import (
+    get_available_stock_info,
+    get_dealer_stock_summary,
+)
 
 router = APIRouter()
 
@@ -41,6 +47,36 @@ def get_inventory_transactions(
     Yêu cầu quyền 'inventory:read'.
     """
     return INVENTORY_TRANSACTIONS
+
+
+@router.get("/available-stock", response_model=AvailableStockResponse)
+def get_available_stock_endpoint(
+    dealer_id: int,
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_sales_role)
+):
+    """
+    SCRUM-56 / AC 1, AC 2, AC 5:
+    Lấy thông tin tồn khả dụng của sản phẩm tại kho phục vụ riêng cho đại lý.
+    Chỉ cho phép Nhân viên kinh doanh (Role: sales, sales_manager, admin).
+    """
+    return get_available_stock_info(db, dealer_id, product_id)
+
+
+@router.get("/dealer-stock-summary/{dealer_id}", response_model=DealerStockSummaryResponse)
+def get_dealer_stock_summary_endpoint(
+    dealer_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_sales_role)
+):
+    """
+    SCRUM-56 / AC 1, AC 2, AC 5:
+    Lấy danh sách tồn khả dụng của tất cả sản phẩm tại kho phục vụ riêng cho đại lý.
+    Chỉ cho phép Nhân viên kinh doanh (Role: sales, sales_manager, admin).
+    """
+    return get_dealer_stock_summary(db, dealer_id)
+
 
 
 def _resolve_unit_and_rate(product: dict, prod_entity, unit_name: Optional[str], conversion_rate: Optional[float]):
