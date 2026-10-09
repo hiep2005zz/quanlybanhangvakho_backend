@@ -15,6 +15,20 @@ def _admin_login() -> str:
     assert res.status_code == 200
     return res.json()["access_token"]
 
+@pytest.fixture(autouse=True)
+def ensure_stock():
+    from app.core.database import SessionLocal
+    from app.models.entities import WarehouseStockEntity
+    db = SessionLocal()
+    try:
+        stocks = db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id == 1).all()
+        for s in stocks:
+            s.actual_stock = 1000
+            s.reserved_stock = 0
+        db.commit()
+    finally:
+        db.close()
+
 def test_get_discount_policies():
     token = _login()
     res = client.get("/api/v1/discounts", headers={"Authorization": f"Bearer {token}"})
@@ -222,4 +236,88 @@ def test_crud_discount_policy_database_persistence():
         assert len(tiers) == 0
     finally:
         db.close()
+
+
+def test_discount_policy_rbac_permissions():
+    """
+    Kiểm tra phân quyền RBAC:
+    - Chỉ có admin và sales_manager mới được tạo, sửa, toggle, xóa chính sách chiết khấu.
+    - Các vai trò khác (như sales, kho, ketoan) chỉ được xem (GET 200) và tính toán (calculate 200),
+      nếu cố tình thao tác tạo/sửa/xóa sẽ bị chặn với mã 403 Forbidden.
+    """
+    sales_token = _login("sales", "123")
+    sm_token = _login("sales_manager", "123")
+    admin_token = _admin_login()
+
+    # 1. Các vai trò khác (sales) CÓ THỂ XEM
+    get_res = client.get("/api/v1/discounts", headers={"Authorization": f"Bearer {sales_token}"})
+    assert get_res.status_code == 200
+
+    # 2. Các vai trò khác (sales) CÓ THỂ TÍNH TOÁN
+    calc_res = client.post(
+        "/api/v1/discounts/calculate",
+        json={"product_id": 1, "quantity": 10, "base_price": 50000.0},
+        headers={"Authorization": f"Bearer {sales_token}"}
+    )
+    assert calc_res.status_code == 200
+
+    # 3. Các vai trò khác (sales) BỊ CHẶN (403) khi TẠO chính sách mới
+    payload = {
+        "code": "CK-FORBIDDEN-TEST",
+        "name": "Chính sách thử quyền sales",
+        "category": "ALL",
+        "tiers": [{"min_quantity": 10, "discount_percent": 2.0}],
+    }
+    create_forbidden = client.post("/api/v1/discounts", json=payload, headers={"Authorization": f"Bearer {sales_token}"})
+    assert create_forbidden.status_code == 403
+    assert "Truy cập bị từ chối (403 Forbidden)" in create_forbidden.text
+
+    # 4. Quản lý kinh doanh (sales_manager) CÓ THỂ TẠO chính sách mới (201)
+    create_res = client.post("/api/v1/discounts", json=payload, headers={"Authorization": f"Bearer {sm_token}"})
+    assert create_res.status_code == 201
+    created_id = create_res.json()["id"]
+
+    # 5. Các vai trò khác (sales) BỊ CHẶN (403) khi SỬA chính sách
+    update_forbidden = client.put(
+        f"/api/v1/discounts/{created_id}",
+        json={"name": "Sửa bởi sales"},
+        headers={"Authorization": f"Bearer {sales_token}"}
+    )
+    assert update_forbidden.status_code == 403
+
+    # 6. Các vai trò khác (sales) BỊ CHẶN (403) khi TOGGLE STATUS
+    toggle_forbidden = client.patch(
+        f"/api/v1/discounts/{created_id}/toggle-status",
+        headers={"Authorization": f"Bearer {sales_token}"}
+    )
+    assert toggle_forbidden.status_code == 403
+
+    # 7. Các vai trò khác (sales) BỊ CHẶN (403) khi XÓA chính sách
+    delete_forbidden = client.delete(
+        f"/api/v1/discounts/{created_id}",
+        headers={"Authorization": f"Bearer {sales_token}"}
+    )
+    assert delete_forbidden.status_code == 403
+
+    # 8. Quản lý kinh doanh (sales_manager) CÓ THỂ SỬA và TOGGLE STATUS
+    update_res = client.put(
+        f"/api/v1/discounts/{created_id}",
+        json={"name": "Chính sách quản lý cập nhật"},
+        headers={"Authorization": f"Bearer {sm_token}"}
+    )
+    assert update_res.status_code == 200
+
+    toggle_res = client.patch(
+        f"/api/v1/discounts/{created_id}/toggle-status",
+        headers={"Authorization": f"Bearer {sm_token}"}
+    )
+    assert toggle_res.status_code == 200
+
+    # 9. Admin (admin) CÓ THỂ XÓA chính sách
+    del_res = client.delete(
+        f"/api/v1/discounts/{created_id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert del_res.status_code == 200
+
 

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db, SessionLocal
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_roles
 from app.schemas.auth import UserResponse
 
 router = APIRouter()
@@ -280,7 +280,7 @@ def get_discount_policies(
 def create_discount_policy(
     data: DiscountPolicyCreate,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager"])),
 ):
     count = db.query(DiscountPolicyEntity).count()
     code = data.code or f"CK-SL-{count + 1:03d}"
@@ -327,7 +327,7 @@ def update_discount_policy(
     policy_id: int,
     data: DiscountPolicyCreate,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager"])),
 ):
     policy = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.id == policy_id).first()
     if not policy:
@@ -379,7 +379,7 @@ def update_discount_policy(
 def toggle_policy_status(
     policy_id: int,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager"])),
 ):
     policy = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.id == policy_id).first()
     if not policy:
@@ -397,7 +397,7 @@ def toggle_policy_status(
 def delete_discount_policy(
     policy_id: int,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager"])),
 ):
     policy = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.id == policy_id).first()
     if not policy:
