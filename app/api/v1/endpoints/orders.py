@@ -72,6 +72,9 @@ class OrderResponse(BaseModel):
     discount_amount: float = 0.0
     dealer_status: Optional[str] = "Đang hoạt động"
     dealer_lock_reason: Optional[str] = None
+    cancel_reason: Optional[str] = None
+    cancelled_by: Optional[str] = None
+    cancelled_at: Optional[str] = None
 
 class SalesOrderResponse(OrderResponse):
     subtotal_amount: float = 0
@@ -84,10 +87,13 @@ class SalesOrderResponse(OrderResponse):
     note: Optional[str] = None
     items: List[dict] = Field(default_factory=list)
 
+class OrderCancelRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=500, description="Lý do hủy đơn hàng")
+
 class InvoiceEditRequest(BaseModel):
     note: Optional[str] = None
     status: Optional[str] = None  # e.g. CANCELLED, EDITED
-    reason: str = Field(..., min_length=2, max_length=255)
+    reason: str = Field(..., min_length=1, max_length=500)
 
 class DebtLimitUpdateRequest(BaseModel):
     credit_limit: float = Field(..., ge=0)
@@ -276,6 +282,13 @@ def get_orders(
     current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value))
 ):
     """Lấy danh sách đơn hàng / hóa đơn."""
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    if current_user.username == "muahang" or "purchasing" in user_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Nhân viên mua hàng không có quyền truy cập đơn hàng bán."
+        )
+
     load_dealers_db()
     orders_by_code: dict[str, OrderResponse] = {}
     for order in ORDERS_DB.values():
@@ -327,6 +340,11 @@ def get_orders(
             if d_obj and getattr(d_obj, "address", None):
                 delivery_point = f"Địa chỉ đại lý — {d_obj.address}"
 
+        c_reason = getattr(order, "cancel_reason", None)
+        c_by = getattr(order, "cancelled_by", None)
+        c_at_val = getattr(order, "cancelled_at", None)
+        c_at_str = c_at_val.isoformat() if c_at_val and hasattr(c_at_val, "isoformat") else (str(c_at_val) if c_at_val else None)
+
         if order.order_code not in orders_by_code:
             disc_rate = getattr(order, "discount_rate", 0.0) or 0.0
             disc_amt = getattr(order, "discount_amount", 0.0) or 0.0
@@ -356,6 +374,10 @@ def get_orders(
                 req_appr = in_mem.get("requires_approval", req_appr)
                 appr_by = in_mem.get("approved_by", appr_by)
                 appr_at = in_mem.get("approved_at", appr_at)
+            if not c_reason and in_mem:
+                c_reason = in_mem.get("cancel_reason")
+                c_by = in_mem.get("cancelled_by", c_by)
+                c_at_str = in_mem.get("cancelled_at", c_at_str)
 
             if order.status in ("PENDING_APPROVAL", "PENDING"):
                 req_appr = True
@@ -385,6 +407,9 @@ def get_orders(
                 approved_at=appr_at,
                 items=items_parsed or items,
                 created_at=order.created_at.isoformat() if order.created_at else "",
+                cancel_reason=c_reason,
+                cancelled_by=c_by,
+                cancelled_at=c_at_str,
             )
             orders_by_code[order.order_code] = resp_item
 
@@ -411,11 +436,18 @@ def get_orders(
                 "subtotal_amount": subtotal_amount,
                 "discount_percent": discount_percent,
                 "discount_amount": discount_amount,
+                "cancel_reason": c_reason,
+                "cancelled_by": c_by,
+                "cancelled_at": c_at_str,
             }
         else:
             existing = orders_by_code[order.order_code]
             if (not existing.items or len(existing.items) == 0) and items:
                 existing.items = items
+            if c_reason and not existing.cancel_reason:
+                existing.cancel_reason = c_reason
+                existing.cancelled_by = c_by
+                existing.cancelled_at = c_at_str
 
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
     is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
@@ -659,7 +691,7 @@ def create_order(
             if item_match:
                 pbi, pb_matched = item_match
                 pb_matched.is_locked = True
-                fl_val = pbi.floor_price if pbi.floor_price is not None else pbi.min_price
+                fl_val = pbi.floor_price if (pbi.floor_price is not None and pbi.floor_price > 0) else (pbi.min_price if (pbi.min_price is not None and pbi.min_price > 0) else None)
                 if fl_val is not None and it.price < fl_val:
                     requires_approval = True
                     approval_reasons.append(
@@ -1160,6 +1192,13 @@ def get_order_detail(
     current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value)),
 ):
     """Return one order with its persisted line items and delivery details."""
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    if current_user.username == "muahang" or "purchasing" in user_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Nhân viên mua hàng không có quyền truy cập đơn hàng bán."
+        )
+
     load_dealers_db()
     order_record = next(
         (
@@ -1194,6 +1233,9 @@ def get_order_detail(
                 "created_at": entity.created_at.isoformat() if entity.created_at else "",
                 "note": entity.note,
                 "delivery_point_id": entity.delivery_point_id,
+                "cancel_reason": entity.cancel_reason,
+                "cancelled_by": entity.cancelled_by,
+                "cancelled_at": entity.cancelled_at.isoformat() if entity.cancelled_at else None,
             }
         else:
             if entity.created_by:
@@ -1204,6 +1246,12 @@ def get_order_detail(
                 order_record["status"] = entity.status
             if entity.total_amount is not None:
                 order_record["total_amount"] = entity.total_amount
+            if entity.cancel_reason:
+                order_record["cancel_reason"] = entity.cancel_reason
+            if entity.cancelled_by:
+                order_record["cancelled_by"] = entity.cancelled_by
+            if entity.cancelled_at:
+                order_record["cancelled_at"] = entity.cancelled_at.isoformat() if hasattr(entity.cancelled_at, "isoformat") else str(entity.cancelled_at)
 
         if entity.items_json:
             try:
@@ -1429,6 +1477,213 @@ def reject_order(
     return OrderResponse(**target)
 
 
+ORDER_STATUS_RANKS = {
+    "DRAFT": 1,
+    "PENDING": 2,
+    "PENDING_APPROVAL": 2,
+    "CONFIRMED": 3,
+    "APPROVED": 3,
+    "PICKING": 4,
+    "PREPARING": 4,
+    "PACKING": 4,
+    "EXPORTED": 5,      # >= 5: Đã xuất, Đã giao, Đóng -> CHẶN HỦY!
+    "DISPATCHED": 5,
+    "SHIPPED": 5,
+    "DELIVERED": 6,
+    "CLOSED": 7,
+    "COMPLETED": 7,
+    "CANCELLED": -1,
+    "REJECTED": -1,
+}
+
+
+def _execute_order_cancellation(
+    order_code: str,
+    reason: str,
+    current_user: UserResponse,
+    request: Request,
+    db: Session,
+) -> dict:
+    """
+    Hàm xử lý hủy đơn hàng tập trung tuân thủ nghiêm ngặt các quy tắc:
+    1. Authorization Guard: Chỉ admin, sales_manager, sales được phép hủy. Kho, kế toán, mua hàng bị 403.
+    2. Lý do hủy bắt buộc.
+    3. State Guard: Đơn đã xuất kho (>= 'EXPORTED') không được hủy (ném HTTP 400). Đơn đã hủy cũng chặn 400.
+    4. Database Transaction: Đổi trạng thái sang CANCELLED, lưu lý do hủy, và tự động nhả (giảm) reserved_stock.
+    """
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    if current_user.username == "muahang" or "purchasing" in user_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Nhân viên mua hàng không có quyền truy cập hay hủy đơn hàng bán."
+        )
+
+    ALLOWED_CANCEL_ROLES = {"admin", "sales_manager", "sales"}
+    if not (any(r in ALLOWED_CANCEL_ROLES for r in user_roles) or current_user.username in ALLOWED_CANCEL_ROLES):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Thao tác hủy đơn hàng chỉ dành cho các vai trò: Quản trị viên (admin), Quản lý kinh doanh (sales_manager), Nhân viên kinh doanh (sales)."
+        )
+
+    target = None
+    for o in ORDERS_DB.values():
+        if o["order_code"].upper() == order_code.upper() or str(o.get("id")) == str(order_code):
+            target = o
+            break
+
+    persisted_order = db.query(OrderEntity).filter(
+        (func.upper(OrderEntity.order_code) == order_code.upper()) | (OrderEntity.id == (target["id"] if target else -1))
+    ).first()
+
+    if not target and persisted_order is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đơn hàng có mã {order_code}."
+        )
+
+    clean_reason = (reason or "").strip()
+    if not clean_reason:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Lý do hủy đơn hàng là bắt buộc. Vui lòng nhập lý do hủy."
+        )
+
+    cur_status = (persisted_order.status if persisted_order else target.get("status", "")).upper()
+    if cur_status in ("CANCELLED", "REJECTED"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đơn hàng đã ở trạng thái hủy hoặc từ chối, không thể hủy lại."
+        )
+
+    rank = ORDER_STATUS_RANKS.get(cur_status, 0)
+    if rank >= 5:  # >= EXPORTED (Đã xuất)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đơn hàng đã ở trạng thái '{cur_status}' (từ 'Đã xuất' trở lên), không thể hủy đơn. Vui lòng thực hiện quy trình trả hàng."
+        )
+
+    old_status = cur_status
+    now_utc = datetime.now(timezone.utc)
+    now_iso = now_utc.isoformat()
+
+    try:
+        if persisted_order is not None:
+            persisted_order.status = "CANCELLED"
+            persisted_order.cancel_reason = clean_reason
+            persisted_order.cancelled_by = current_user.username
+            persisted_order.cancelled_at = now_utc
+
+            # 1. Nhả (giảm) số lượng tồn đang giữ chỗ (reserved_stock)
+            from app.services.inventory_availability_service import release_order_stock
+            release_order_stock(db, persisted_order)
+
+            # 2. Hoàn lại tồn kho cho ProductEntity và RAW_PRODUCTS
+            if persisted_order.items_json:
+                try:
+                    items_data = json.loads(persisted_order.items_json)
+                    items_list = items_data if isinstance(items_data, list) else (items_data.get("items", []) if isinstance(items_data, dict) else [])
+                    from app.api.v1.endpoints.products import _find_product_in_raw
+                    for it in items_list:
+                        pid = it.get("product_id")
+                        base_qty = int(it.get("base_quantity", it.get("quantity", 0)))
+                        if pid and base_qty > 0:
+                            pe = db.query(ProductEntity).filter(ProductEntity.id == pid).first()
+                            if pe:
+                                pe.stock = (pe.stock or 0) + base_qty
+                            raw_p = _find_product_in_raw(pid)
+                            if raw_p:
+                                raw_p["stock"] = raw_p.get("stock", 0) + base_qty
+                except Exception:
+                    pass
+
+            # 3. Ghi vết audit log
+            log_audit_event(
+                db=db,
+                user=current_user,
+                action_type="ORDER_CANCEL",
+                entity_type="Order",
+                entity_id=persisted_order.order_code,
+                old_val={"status": old_status},
+                new_val={"status": "CANCELLED", "cancel_reason": clean_reason},
+                reason=clean_reason,
+                request=request,
+            )
+            log_audit_event(
+                db=db,
+                user=current_user,
+                action_type="INVOICE_EDIT",
+                entity_type="Invoice",
+                entity_id=persisted_order.order_code,
+                old_val={"status": old_status},
+                new_val={"status": "CANCELLED", "cancel_reason": clean_reason},
+                reason=clean_reason,
+                request=request,
+            )
+
+            db.commit()
+            db.refresh(persisted_order)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi khi xử lý hủy đơn hàng và hoàn trả tồn kho: {str(e)}"
+        )
+
+    if target is not None:
+        target["status"] = "CANCELLED"
+        target["cancel_reason"] = clean_reason
+        target["cancelled_by"] = current_user.username
+        target["cancelled_at"] = now_iso
+    elif persisted_order is not None:
+        target = {
+            "id": persisted_order.id,
+            "order_code": persisted_order.order_code,
+            "dealer_id": persisted_order.dealer_id,
+            "dealer_name": persisted_order.dealer_name,
+            "created_by": persisted_order.created_by,
+            "assigned_sale_id": persisted_order.assigned_sale_id,
+            "assigned_sale_name": persisted_order.assigned_sale_name,
+            "total_amount": persisted_order.total_amount,
+            "status": "CANCELLED",
+            "cancel_reason": clean_reason,
+            "cancelled_by": current_user.username,
+            "cancelled_at": now_iso,
+            "created_at": persisted_order.created_at.isoformat() if persisted_order.created_at else now_iso,
+        }
+        ORDERS_DB[persisted_order.id] = target
+
+    return {
+        "status": "success",
+        "message": f"Đã hủy đơn hàng {order_code} thành công.",
+        "order": target
+    }
+
+
+@router.post("/{order_code}/cancel")
+def cancel_order(
+    order_code: str,
+    data: OrderCancelRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    API Hủy đơn hàng chuyên biệt:
+    Yêu cầu bắt buộc lý do hủy, kiểm tra RBAC (sales, sales_manager, admin),
+    chặn hủy nếu đơn >= 'Đã xuất', và thực thi Database Transaction đổi trạng thái + nhả tồn giữ chỗ.
+    """
+    return _execute_order_cancellation(
+        order_code=order_code,
+        reason=data.reason,
+        current_user=current_user,
+        request=request,
+        db=db,
+    )
+
+
 @router.put("/{order_code}")
 def edit_or_cancel_invoice(
     order_code: str,
@@ -1439,8 +1694,17 @@ def edit_or_cancel_invoice(
 ):
     """
     Sửa đổi hoặc hủy hóa đơn/đơn hàng.
-    Ghi vết vào bảng audit_logs với action_type='INVOICE_EDIT'.
+    Nếu chuyển trạng thái sang CANCELLED, thực thi quy trình hủy chuẩn với Database Transaction và hoàn trả tồn kho.
     """
+    if data.status and data.status.upper() == "CANCELLED":
+        return _execute_order_cancellation(
+            order_code=order_code,
+            reason=data.reason,
+            current_user=current_user,
+            request=request,
+            db=db,
+        )
+
     target = None
     for o in ORDERS_DB.values():
         if o["order_code"].upper() == order_code.upper():
@@ -1498,7 +1762,6 @@ def edit_or_cancel_invoice(
         request=request,
     )
 
-    # Kiểm tra nếu đại lý của đơn hàng đang bị khóa -> Đơn đang dở vẫn xử lý được nhưng có cảnh báo
     dealer = DEALERS_DB.get(target.get("dealer_id"))
     warning_message = None
     if dealer and getattr(dealer, "status", "ACTIVE") == "LOCKED":
@@ -1564,29 +1827,6 @@ def update_customer_debt_limit(
 class DealerLockRequest(BaseModel):
     lock_reason: str = Field(..., min_length=1, max_length=500)
 
-
-@router.get("/dealers")
-def list_dealers(
-    current_user: UserResponse = Depends(get_current_user)
-):
-    """
-    Lấy danh sách toàn bộ đại lý kèm trạng thái giao dịch (ACTIVE / LOCKED),
-    lý do khóa, người khóa, thời điểm khóa.
-    """
-    dealers_list = []
-    for d in DEALERS_DB.values():
-        sale_name = None
-        if d.assigned_sale_id:
-            for u in USERS_DB.values():
-                if u.id == d.assigned_sale_id:
-                    sale_name = u.full_name or u.username
-                    break
-
-        d_dict = d.model_dump(mode="json")
-        d_dict["assigned_sale_name"] = sale_name
-        dealers_list.append(d_dict)
-
-    return {"dealers": sorted(dealers_list, key=lambda x: x["id"])}
 
 
 @router.post("/dealers/{dealer_id}/lock")

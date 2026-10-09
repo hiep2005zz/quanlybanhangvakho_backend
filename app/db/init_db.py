@@ -80,6 +80,9 @@ def _ensure_legacy_columns(bind=engine):
             "requires_approval": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
             "approval_status": ("VARCHAR(50) DEFAULT 'NORMAL'", "NVARCHAR(50) DEFAULT 'NORMAL'"),
             "approval_reason": ("NVARCHAR(500)", "NVARCHAR(500)"),
+            "cancel_reason": ("NVARCHAR(500)", "NVARCHAR(500)"),
+            "cancelled_by": ("VARCHAR(100)", "NVARCHAR(100)"),
+            "cancelled_at": ("DATETIME", "DATETIME"),
         },
         "categories": {
             "code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
