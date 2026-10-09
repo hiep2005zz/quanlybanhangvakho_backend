@@ -26,9 +26,9 @@ def setup_orders_data():
     # Dealer 2: DL002, TP. HCM, assigned_sale_id = 3 (user: sales)
     # Dealer 4: DL004, Đà Nẵng, assigned_sale_id = 8 (user: sales2 / Nguyễn Văn A)
     now = datetime.now(timezone.utc)
-    d1 = now - timedelta(days=10)
-    d2 = now - timedelta(days=5)
-    d3 = now - timedelta(days=1)
+    d1 = now - timedelta(days=60)
+    d2 = now - timedelta(days=55)
+    d3 = now - timedelta(days=50)
 
     DEALERS_DB[1].assigned_sale_id = 3
     DEALERS_DB[1].region = "Hà Nội"
@@ -176,8 +176,8 @@ def test_ac3_multi_criteria_filtering(setup_orders_data):
     headers = {"Authorization": f"Bearer {sm_token}"}
 
     today = date.today()
-    start_d = today - timedelta(days=12)
-    end_d = today - timedelta(days=4)
+    start_d = today - timedelta(days=62)
+    end_d = today - timedelta(days=58)
 
     # Lọc: status=CONFIRMED + region=Hà Nội + khoảng ngày [today-12, today-4]
     # Khớp duy nhất TEST_ORD_01 (Dealer 1 ở Hà Nội, 10 ngày trước, CONFIRMED, 1.000.000 đ)

@@ -457,21 +457,12 @@ def get_orders(
     """
     load_dealers_db()
 
-    # Kiểm tra tương thích với legacy tests (khi không truyền bất kỳ query param nào)
-    is_legacy_test = False
-    if not request.query_params:
-        try:
-            import sys, traceback
-            for t_frame in sys._current_frames().values():
-                for f, _ in traceback.walk_stack(t_frame):
-                    fname = f.f_code.co_filename.replace("\\", "/")
-                    if "test_sales_order_entry.py" in fname or "test_unit_conversion.py" in fname:
-                        is_legacy_test = True
-                        break
-                if is_legacy_test:
-                    break
-        except Exception:
-            pass
+    # Kiểm tra tương thích với legacy tests & clients (khi không truyền query param nào hoặc request legacy format)
+    is_legacy_test = (
+        not request.query_params
+        or request.query_params.get("format") in ("legacy", "list")
+        or request.headers.get("x-legacy-response") == "true"
+    )
 
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
     is_admin = Role.SYSTEM_ADMIN.value in user_roles or current_user.role == Role.SYSTEM_ADMIN.value

@@ -33,36 +33,52 @@ def test_password_change_invalidates_old_token_only_for_that_user():
     assert client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token_kho_1}"}).status_code == 200
     assert client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token_admin_1}"}).status_code == 200
 
-    # 3. User 'kho' thực hiện đổi mật khẩu
-    change_resp = client.post(
-        "/api/v1/auth/change-password",
-        headers={"Authorization": f"Bearer {token_kho_1}"},
-        json={
-            "current_password": "123",
-            "new_password": "NewSecretPassword123!",
-            "confirm_password": "NewSecretPassword123!"
-        }
-    )
-    assert change_resp.status_code == 200
-    token_kho_2 = change_resp.json()["access_token"]
-    assert token_kho_2 != token_kho_1
+    try:
+        # 3. User 'kho' thực hiện đổi mật khẩu
+        change_resp = client.post(
+            "/api/v1/auth/change-password",
+            headers={"Authorization": f"Bearer {token_kho_1}"},
+            json={
+                "current_password": "123",
+                "new_password": "NewSecretPassword123!",
+                "confirm_password": "NewSecretPassword123!"
+            }
+        )
+        assert change_resp.status_code == 200
+        token_kho_2 = change_resp.json()["access_token"]
+        assert token_kho_2 != token_kho_1
 
-    # 4. Token cũ của user 'kho' (token_kho_1) lập tức bị 401 Unauthorized
-    resp_revoked = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token_kho_1}"})
-    assert resp_revoked.status_code == 401
-    assert "thu hồi" in resp_revoked.json()["detail"].lower()
+        # 4. Token cũ của user 'kho' (token_kho_1) lập tức bị 401 Unauthorized
+        resp_revoked = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token_kho_1}"})
+        assert resp_revoked.status_code == 401
+        assert "thu hồi" in resp_revoked.json()["detail"].lower()
 
-    # 5. Token mới của user 'kho' (token_kho_2) hoạt động bình thường
-    resp_valid = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token_kho_2}"})
-    assert resp_valid.status_code == 200
-    assert resp_valid.json()["username"] == "kho"
+        # 5. Token mới của user 'kho' (token_kho_2) hoạt động bình thường
+        resp_valid = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token_kho_2}"})
+        assert resp_valid.status_code == 200
+        assert resp_valid.json()["username"] == "kho"
 
-    # 6. QUAN TRỌNG: Token của user 'admin' (token_admin_1) KHÔNG bị văng / không bị ảnh hưởng!
-    resp_admin_check = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token_admin_1}"})
-    assert resp_admin_check.status_code == 200
-    assert resp_admin_check.json()["username"] == "admin"
+        # 6. QUAN TRỌNG: Token của user 'admin' (token_admin_1) KHÔNG bị văng / không bị ảnh hưởng!
+        resp_admin_check = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token_admin_1}"})
+        assert resp_admin_check.status_code == 200
+        assert resp_admin_check.json()["username"] == "admin"
+    finally:
+        # 7. Trả lại mật khẩu cũ cho user 'kho' trong USERS_DB, file disk và Database
+        from app.models.user import USERS_DB, DEFAULT_HASH, save_users_db
+        from app.core.database import SessionLocal
+        from app.models.entities import UserEntity
 
-    # 7. Trả lại mật khẩu cũ cho user 'kho' trực tiếp trong USERS_DB
-    from app.models.user import USERS_DB, DEFAULT_HASH
-    USERS_DB["kho"].hashed_password = DEFAULT_HASH
-    USERS_DB["kho"].token_version = 1
+        if "kho" in USERS_DB:
+            USERS_DB["kho"].hashed_password = DEFAULT_HASH
+            USERS_DB["kho"].token_version = 1
+            save_users_db()
+
+        try:
+            with SessionLocal() as db_session:
+                db_kho = db_session.query(UserEntity).filter(UserEntity.username == "kho").first()
+                if db_kho:
+                    db_kho.hashed_password = DEFAULT_HASH
+                    db_kho.token_version = 1
+                    db_session.commit()
+        except Exception:
+            pass
