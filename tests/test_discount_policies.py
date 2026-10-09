@@ -379,4 +379,25 @@ def test_category_discount_policy_application():
         client.delete(f"/api/v1/discounts/{pol_id}", headers={"Authorization": f"Bearer {admin_token}"})
 
 
+def test_reject_overlapping_discount_tiers():
+    """
+    Kiểm tra hệ thống từ chối tạo chính sách khi các mốc sản lượng bị chồng chéo (overlap).
+    Ví dụ: Mốc 1: 10-30 sp, Mốc 2: 25-40 sp -> phải trả về lỗi 400.
+    """
+    admin_token = _admin_login()
+    payload = {
+        "code": "CK-OVERLAP-TEST",
+        "name": "Test chồng chéo số lượng",
+        "title": "Test chồng chéo số lượng",
+        "tiers": [
+            {"min_quantity": 10, "max_quantity": 30, "discount_percent": 2.5},
+            {"min_quantity": 25, "max_quantity": 40, "discount_percent": 5.0},
+        ],
+    }
+    create_res = client.post("/api/v1/discounts", json=payload, headers={"Authorization": f"Bearer {admin_token}"})
+    assert create_res.status_code == 400
+    assert "chồng chéo số lượng" in create_res.json()["detail"]
+
+
+
 

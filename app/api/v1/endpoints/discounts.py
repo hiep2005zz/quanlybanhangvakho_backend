@@ -329,12 +329,48 @@ def get_discount_policies(
     return {"items": items, "total": len(items)}
 
 
+def validate_discount_tiers(tiers: List[DiscountTierSchema]):
+    """Kiểm tra tính hợp lệ và chống chồng chéo số lượng (overlapping tiers)."""
+    if not tiers:
+        return
+    for t in tiers:
+        if t.min_quantity < 0:
+            raise HTTPException(status_code=400, detail="Số lượng tối thiểu phải lớn hơn hoặc bằng 0.")
+        if t.max_quantity is not None and t.max_quantity < t.min_quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Số lượng tối đa ({t.max_quantity}) phải lớn hơn hoặc bằng số lượng tối thiểu ({t.min_quantity}).",
+            )
+
+    sorted_tiers = sorted(tiers, key=lambda x: x.min_quantity)
+    for i in range(1, len(sorted_tiers)):
+        prev = sorted_tiers[i - 1]
+        curr = sorted_tiers[i]
+        if prev.max_quantity is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Mốc trước (từ {prev.min_quantity}+) không giới hạn số lượng tối đa, không thể khai báo thêm mốc tiếp theo.",
+            )
+        if curr.min_quantity <= prev.max_quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Bị chồng chéo số lượng sản phẩm: Mốc trước kết thúc ở {prev.max_quantity} sp, "
+                    f"nhưng mốc tiếp theo bắt đầu từ {curr.min_quantity} sp. "
+                    f"Mốc tiếp theo phải bắt đầu từ {prev.max_quantity + 1} sp trở lên."
+                ),
+            )
+
+
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_discount_policy(
     data: DiscountPolicyCreate,
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_roles(["admin", "sales_manager"])),
 ):
+    if data.tiers:
+        validate_discount_tiers(data.tiers)
+
     count = db.query(DiscountPolicyEntity).count()
     code = data.code or f"CK-SL-{count + 1:03d}"
     name = data.name or data.title or f"Chính sách chiết khấu #{count + 1}"
@@ -360,7 +396,7 @@ def create_discount_policy(
     db.add(new_policy)
     db.flush()
 
-    for t in data.tiers:
+    for t in sorted(data.tiers, key=lambda x: x.min_quantity):
         tier_entity = DiscountTierEntity(
             policy_id=new_policy.id,
             min_quantity=t.min_quantity,
@@ -411,8 +447,9 @@ def update_discount_policy(
         policy.status = data.status
 
     if data.tiers is not None:
+        validate_discount_tiers(data.tiers)
         db.query(DiscountTierEntity).filter(DiscountTierEntity.policy_id == policy_id).delete()
-        for t in data.tiers:
+        for t in sorted(data.tiers, key=lambda x: x.min_quantity):
             tier_entity = DiscountTierEntity(
                 policy_id=policy.id,
                 min_quantity=t.min_quantity,
