@@ -112,6 +112,7 @@ class ProductEntity(Base):
     stock = Column(Integer, default=0)
     cost_price = Column(Float, default=0.0)
     sell_price = Column(Float, default=0.0)
+    floor_price = Column(Float, default=0.0, nullable=True)
     base_unit = Column(Unicode(50), default="Cái")
     units_json = Column(UnicodeText, nullable=True)
     packaging_specification = Column(Unicode(255), nullable=True)

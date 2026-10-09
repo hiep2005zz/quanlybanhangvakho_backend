@@ -234,10 +234,19 @@ def init_db():
                         conn.commit()
                     except Exception as ex:
                         print(f"SQLite migration notice (price_book_items.floor_price): {ex}")
+
+            prod_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(products)")).fetchall()]
+            if prod_cols and "floor_price" not in prod_cols:
+                try:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN floor_price REAL DEFAULT 0.0;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (products.floor_price): {ex}")
         else:
             for sql_statement in [
                 "IF COL_LENGTH('users', 'avatar_url') IS NULL ALTER TABLE users ADD avatar_url NVARCHAR(500);",
                 "IF COL_LENGTH('products', 'base_unit') IS NULL ALTER TABLE products ADD base_unit NVARCHAR(50) DEFAULT N'Cái';",
+                "IF COL_LENGTH('products', 'floor_price') IS NULL ALTER TABLE products ADD floor_price FLOAT DEFAULT 0.0;",
                 "IF COL_LENGTH('products', 'units_json') IS NULL ALTER TABLE products ADD units_json NVARCHAR(MAX);",
                 "IF COL_LENGTH('inventory_transactions', 'unit_name') IS NULL ALTER TABLE inventory_transactions ADD unit_name NVARCHAR(50) DEFAULT N'Cái';",
                 "IF COL_LENGTH('inventory_transactions', 'conversion_rate') IS NULL ALTER TABLE inventory_transactions ADD conversion_rate FLOAT DEFAULT 1.0;",
