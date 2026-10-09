@@ -72,6 +72,11 @@ class OrderResponse(BaseModel):
     dealer_status: Optional[str] = "Đang hoạt động"
     dealer_lock_reason: Optional[str] = None
     region: Optional[str] = None
+    dealer_code: Optional[str] = None
+    dealer_phone: Optional[str] = None
+    dealer_address: Optional[str] = None
+    applied_policy_code: Optional[str] = None
+    applied_policy_name: Optional[str] = None
 
 class OrderListFilteredResponse(BaseModel):
     items: List[OrderResponse]
@@ -1401,6 +1406,8 @@ def get_order_detail(
                         "discount_percent",
                         "discount_rate",
                         "discount_amount",
+                        "applied_policy_code",
+                        "applied_policy_name",
                         "delivery_point",
                         "desired_delivery_date",
                         "requires_approval",
@@ -1422,7 +1429,14 @@ def get_order_detail(
             if dp_obj:
                 order_record["delivery_point"] = f"{dp_obj.label} — {dp_obj.address}"
         if not order_record.get("delivery_point"):
-            d = DEALERS_DB.get(order_record.get("dealer_id"))
+            d_id = order_record.get("dealer_id")
+            try:
+                d_id = int(d_id)
+            except (ValueError, TypeError):
+                pass
+            d = DEALERS_DB.get(d_id)
+            if not d:
+                d = next((dl for dl in DEALERS_DB.values() if str(dl.id) == str(order_record.get("dealer_id")) or dl.code == str(order_record.get("dealer_id"))), None)
             if d and getattr(d, "address", None):
                 order_record["delivery_point"] = f"Địa chỉ đại lý — {d.address}"
 
@@ -1452,7 +1466,14 @@ def get_order_detail(
         "discount_amount",
         round(subtotal_amount * discount_percent / 100, 2),
     )
-    d = DEALERS_DB.get(order_record.get("dealer_id"))
+    d_id = order_record.get("dealer_id")
+    try:
+        d_id = int(d_id)
+    except (ValueError, TypeError):
+        pass
+    d = DEALERS_DB.get(d_id)
+    if not d:
+        d = next((dl for dl in DEALERS_DB.values() if str(dl.id) == str(order_record.get("dealer_id")) or dl.code == str(order_record.get("dealer_id"))), None)
     d_status = getattr(d, "status", "Đang hoạt động") if d else "Đang hoạt động"
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
     is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
@@ -1464,8 +1485,13 @@ def get_order_detail(
         "subtotal_amount": subtotal_amount,
         "discount_percent": discount_percent,
         "discount_amount": discount_amount,
+        "applied_policy_code": order_record.get("applied_policy_code"),
+        "applied_policy_name": order_record.get("applied_policy_name"),
         "dealer_status": d_status,
         "dealer_lock_reason": d_lock_reason,
+        "dealer_code": getattr(d, "code", None) if d else None,
+        "dealer_phone": getattr(d, "phone", None) if d else None,
+        "dealer_address": getattr(d, "address", None) if d else None,
     })
     return SalesOrderResponse(**detail_response)
 
