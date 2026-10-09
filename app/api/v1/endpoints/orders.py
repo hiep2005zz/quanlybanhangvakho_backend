@@ -70,7 +70,6 @@ class OrderResponse(BaseModel):
     discount_rate: Optional[float] = 0.0
     discount_amount: float = 0.0
     dealer_status: Optional[str] = "Đang hoạt động"
-    dealer_lock_reason: Optional[str] = None
     region: Optional[str] = None
     dealer_code: Optional[str] = None
     dealer_phone: Optional[str] = None
