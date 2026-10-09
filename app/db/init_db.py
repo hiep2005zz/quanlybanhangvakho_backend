@@ -13,6 +13,7 @@ from app.models.entities import (
     MasterDeliveryPointEntity,
     CategoryEntity,
     AuditLogEntity,
+    WarehouseStockEntity,
 )
 from app.models.supplier import SupplierEntity
 from app.models.goods_receipt import (
@@ -63,6 +64,8 @@ def _ensure_legacy_columns(bind=engine):
             "locked_by": ("VARCHAR(50)", "NVARCHAR(50)"),
             "tax_code": ("VARCHAR(50)", "NVARCHAR(50)"),
             "transaction_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "warehouse_id": ("VARCHAR(50)", "NVARCHAR(50)"),
+            "warehouse_name": ("VARCHAR(255)", "NVARCHAR(255)"),
         },
         "inventory_transactions": {
             "unit_name": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
@@ -73,6 +76,11 @@ def _ensure_legacy_columns(bind=engine):
             "delivery_point_id": ("INTEGER", "INT NULL"),
             "discount_rate": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
             "discount_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+        },
+        "categories": {
+            "code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
+            "product_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
         },
     }
     inspector = inspect(bind)

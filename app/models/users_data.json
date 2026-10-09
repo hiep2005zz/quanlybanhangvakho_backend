@@ -68,9 +68,9 @@
     "full_name": "Lê Thủ Kho",
     "email": "kho@congty.vn",
     "phone": null,
-    "role": "customer",
+    "role": "warehouse",
     "roles": [
-      "customer"
+      "warehouse"
     ],
     "hashed_password": "$2b$12$icIg/t21TTrW4ojxnQOnu.5dN37KSiOR2ugi75LNsuF/uaCYXbZU6",
     "branch": "Kho Tổng Hà Nội",
