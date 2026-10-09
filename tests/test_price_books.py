@@ -344,3 +344,54 @@ def test_order_creation_floor_price_and_lock(auth_tokens):
     res_approve = client.post(f"/api/v1/orders/{order_code}/approve", headers={"Authorization": f"Bearer {sm_token}"})
     assert res_approve.status_code == 200
     assert res_approve.json()["status"] == "CONFIRMED"
+
+
+def test_create_price_book_syncs_product_sell_price_globally(auth_tokens):
+    """
+    Kiểm tra nghiệp vụ Áp dụng giá toàn hệ thống (Global Price Update):
+    Khi Bảng giá mới được lưu thành công với status=ACTIVE, Backend phải đồng bộ:
+    1. Cập nhật đè sell_price vào ProductEntity trong DB.
+    2. Cập nhật RAW_PRODUCTS cache.
+    3. Khi gọi GET /api/v1/products, giá bán của sản phẩm phải là mức giá mới nhất vừa tạo.
+    """
+    token = auth_tokens["sales_manager"]
+    now = datetime.now(timezone.utc)
+    new_sell_price = 249000.0
+
+    payload = {
+        "code": f"BG-SYNC-{int(now.timestamp())}",
+        "name": "Bảng giá Áp dụng Toàn hệ thống",
+        "customer_group": "Dai_ly_cap_1",
+        "valid_from": now.isoformat(),
+        "valid_to": (now + timedelta(days=30)).isoformat(),
+        "status": "ACTIVE",
+        "items": [
+            {
+                "product_id": 1,
+                "sale_price": new_sell_price,
+                "floor_price": 200000.0
+            }
+        ]
+    }
+
+    res = client.post("/api/v1/price-books", json=payload, headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 201
+
+    # 1. Kiểm tra trực tiếp trong SQLite Database
+    db = SessionLocal()
+    try:
+        from app.models.entities import ProductEntity
+        prod = db.query(ProductEntity).filter(ProductEntity.id == 1).first()
+        assert prod is not None
+        assert prod.sell_price == new_sell_price
+    finally:
+        db.close()
+
+    # 2. Kiểm tra API GET /api/v1/products
+    res_prods = client.get("/api/v1/products", headers={"Authorization": f"Bearer {token}"})
+    assert res_prods.status_code == 200
+    items = res_prods.json()["items"]
+    target_p = next((p for p in items if p["id"] == 1), None)
+    assert target_p is not None
+    assert target_p["sell_price"] == new_sell_price
+

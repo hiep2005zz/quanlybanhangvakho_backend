@@ -232,3 +232,41 @@ def require_roles(allowed_roles: List[str]) -> Callable[[UserResponse], UserResp
             )
         return current_user
     return role_checker
+
+
+def require_sales_role(current_user: UserResponse = Depends(get_current_user)) -> UserResponse:
+    """
+    SCRUM-56 Guard:
+    Bảo vệ các API kiểm tra tồn kho khả dụng và đặt hàng.
+    Chỉ cho phép người dùng có vai trò là "Nhân viên kinh doanh" (Role: sales / sales_manager / admin).
+    Các vai trò khác (kho/warehouse, kế toán/accountant, mua hàng/purchasing, đại lý/customer) bị CHẶN 403 Forbidden.
+    """
+    user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
+    SALES_ROLES = {"sales", "sales_manager", "admin"}
+    if not any(r in SALES_ROLES for r in user_roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh (Sales / Sale Executive) và Quản trị hệ thống (Admin)."
+        )
+    return current_user
+
+
+def require_sales_or_admin_role(current_user: UserResponse = Depends(get_current_user)) -> UserResponse:
+    """
+    Bảo vệ các API tạo đơn, kiểm tra công nợ và xem thông tin công nợ.
+    Cho phép:
+    - Nhân viên kinh doanh (Role: sales, sales_manager)
+    - Quản trị hệ thống (Role: admin)
+    - Đại lý đặt hàng (Role: customer)
+    Các vai trò khác (kho, kế toán, mua hàng) bị CHẶN với HTTP 403 Forbidden.
+    """
+    user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
+    ALLOWED = {"sales", "sales_manager", "admin", "customer"}
+    if not any(r in ALLOWED for r in user_roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh, Quản trị hệ thống và Đại lý."
+        )
+    return current_user
+
+

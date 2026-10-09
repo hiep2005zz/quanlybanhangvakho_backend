@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
-from app.api.deps import require_permission
+from app.api.deps import require_permission, require_sales_role
 from app.core.database import get_db
 from app.core.rbac import Permission
 from app.schemas.auth import UserResponse
@@ -14,9 +14,15 @@ from app.schemas.inventory import (
     StockUpdateRequest,
     InventoryResponse,
     InventoryTransaction,
+    AvailableStockResponse,
+    DealerStockSummaryResponse,
 )
 from app.api.v1.endpoints.products import RAW_PRODUCTS
 from app.services.audit_service import log_audit_event
+from app.services.inventory_availability_service import (
+    get_available_stock_info,
+    get_dealer_stock_summary,
+)
 
 router = APIRouter()
 
@@ -41,6 +47,36 @@ def get_inventory_transactions(
     Yêu cầu quyền 'inventory:read'.
     """
     return INVENTORY_TRANSACTIONS
+
+
+@router.get("/available-stock", response_model=AvailableStockResponse)
+def get_available_stock_endpoint(
+    dealer_id: int,
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_sales_role)
+):
+    """
+    SCRUM-56 / AC 1, AC 2, AC 5:
+    Lấy thông tin tồn khả dụng của sản phẩm tại kho phục vụ riêng cho đại lý.
+    Chỉ cho phép Nhân viên kinh doanh (Role: sales, sales_manager, admin).
+    """
+    return get_available_stock_info(db, dealer_id, product_id)
+
+
+@router.get("/dealer-stock-summary/{dealer_id}", response_model=DealerStockSummaryResponse)
+def get_dealer_stock_summary_endpoint(
+    dealer_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_sales_role)
+):
+    """
+    SCRUM-56 / AC 1, AC 2, AC 5:
+    Lấy danh sách tồn khả dụng của tất cả sản phẩm tại kho phục vụ riêng cho đại lý.
+    Chỉ cho phép Nhân viên kinh doanh (Role: sales, sales_manager, admin).
+    """
+    return get_dealer_stock_summary(db, dealer_id)
+
 
 
 def _resolve_unit_and_rate(product: dict, prod_entity, unit_name: Optional[str], conversion_rate: Optional[float]):
@@ -87,6 +123,14 @@ def adjust_stock(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy sản phẩm có ID {data.product_id}."
+        )
+
+    prod_status = product.get("status") if product else (prod_entity.status if prod_entity else "active")
+    prod_code = product["code"] if product else prod_entity.code
+    if prod_status == "inactive":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Sản phẩm '{prod_code}' đã ngừng kinh doanh, không thể thao tác kho."
         )
 
     chosen_unit, chosen_rate, base_unit = _resolve_unit_and_rate(product, prod_entity, data.unit_name, data.conversion_rate)
@@ -189,6 +233,14 @@ def create_stock_receipt(
             detail=f"Không tìm thấy sản phẩm có ID {data.product_id}."
         )
 
+    prod_status = product.get("status") if product else (prod_entity.status if prod_entity else "active")
+    prod_code = product["code"] if product else prod_entity.code
+    if prod_status == "inactive":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Sản phẩm '{prod_code}' đã ngừng kinh doanh, không thể thao tác kho."
+        )
+
     chosen_unit, chosen_rate, base_unit = _resolve_unit_and_rate(product, prod_entity, data.unit_name, data.conversion_rate)
     base_qty = int(round(data.quantity * chosen_rate))
 
@@ -284,6 +336,14 @@ def create_stock_issue(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy sản phẩm có ID {data.product_id}."
+        )
+
+    prod_status = product.get("status") if product else (prod_entity.status if prod_entity else "active")
+    prod_code = product["code"] if product else prod_entity.code
+    if prod_status == "inactive":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Sản phẩm '{prod_code}' đã ngừng kinh doanh, không thể thao tác kho."
         )
 
     chosen_unit, chosen_rate, base_unit = _resolve_unit_and_rate(product, prod_entity, data.unit_name, data.conversion_rate)

@@ -10,6 +10,7 @@ class UserCreate(BaseModel):
     role: Optional[str] = None
     roles: Optional[List[str]] = None
     branch: Optional[str] = "Kho Tổng Hà Nội"
+    phone: Optional[str] = None
 
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
@@ -28,6 +29,9 @@ class CustomerCreate(BaseModel):
     email: str = Field(..., min_length=5, max_length=255)
     phone: str = Field(..., min_length=9, max_length=20)
     username: Optional[str] = None
+    role: Optional[str] = None
+    roles: Optional[List[str]] = None
+    branch: Optional[str] = None
 
     @field_validator('full_name')
     @classmethod

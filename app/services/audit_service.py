@@ -31,6 +31,55 @@ def _to_json_str(val: Any) -> Optional[str]:
         return str(val)
 
 
+# Danh sách 4 nhóm nghiệp vụ DUY NHẤT được phép hiển thị trên màn hình kiểm toán trung tâm (/audit-logs):
+# 1. Tồn kho: INVENTORY_ADJUST, STOCK_RECEIPT, STOCK_ISSUE
+# 2. Giá bán: PRICE_CHANGE
+# 3. Hạn mức công nợ: DEBT_LIMIT_CHANGE
+# 4. Hoá đơn / Đơn hàng: INVOICE_CREATE, INVOICE_EDIT, INVOICE_CANCEL, ORDER_CREATE, ORDER_APPROVE, ORDER_REJECT
+SYSTEM_AUDIT_ACTION_TYPES = {
+    # 1. Tồn kho
+    "INVENTORY_ADJUST",
+    "STOCK_RECEIPT",
+    "STOCK_ISSUE",
+    # 2. Giá bán
+    "PRICE_CHANGE",
+    # 3. Hạn mức công nợ
+    "DEBT_LIMIT_CHANGE",
+    # 4. Hoá đơn / Đơn hàng
+    "INVOICE_CREATE",
+    "INVOICE_EDIT",
+    "INVOICE_CANCEL",
+    "ORDER_CREATE",
+    "ORDER_APPROVE",
+    "ORDER_REJECT",
+}
+
+# Danh sách tất cả các hành động nghiệp vụ hợp lệ được phép ghi log kiểm toán:
+# Bao gồm 4 nhóm cốt lõi + các thao tác quản lý đại lý (SCRUM-48: Phân công/chuyển giao đại lý, trạng thái đại lý) + nhập kho (GRN)
+ALLOWED_ACTION_TYPES = SYSTEM_AUDIT_ACTION_TYPES | {
+    "DEALER_ASSIGNMENT",
+    "DEALER_STATUS_CHANGE",
+    "GOODS_RECEIPT_CONFIRM",
+}
+
+ALLOWED_ENTITY_TYPES = {
+    # 1. Tồn kho
+    "Inventory",
+    "GoodsReceiptNote",
+    # 2. Tồn kho & Giá bán
+    "Product",
+    "ProductPrice",
+    "PriceBook",
+    # 3. Hạn mức công nợ & Đại lý (SCRUM-48)
+    "CustomerDebt",
+    "DealerDebtLimit",
+    "Dealer",
+    # 4. Hoá đơn / Đơn hàng
+    "Invoice",
+    "Order",
+}
+
+
 def log_audit_event(
     db: Optional[Session],
     user: Any,
@@ -45,34 +94,12 @@ def log_audit_event(
 ) -> Optional[AuditLogEntity]:
     """
     Ghi nhật ký thao tác vào bảng audit_logs:
-    - db: SQLAlchemy Session (nếu có, có thể fallback lưu in-memory)
-    - user: UserResponse hoặc UserInDB hoặc dict (chứa id / username / full_name)
-    - action_type: 'INVENTORY_ADJUST', 'PRICE_CHANGE', 'DEBT_LIMIT_CHANGE', 'INVOICE_EDIT', etc.
-    - entity_type: 'Product', 'CustomerDebt', 'Invoice', etc.
-    - entity_id: ID / Code của bản ghi bị tác động
-    - old_val: Dữ liệu hoặc giá trị trước khi sửa (dict, số, chuỗi...)
-    - new_val: Dữ liệu hoặc giá trị sau khi sửa (dict, số, chuỗi...)
-    - reason: Lý do điều chỉnh
-    - ip_address: IP thực hiện
+    Chỉ chấp nhận các tác động lên: Tồn kho, Giá bán, Hạn mức công nợ và Hoá đơn.
+    Mọi hành động khác sẽ bị từ chối và không ghi vào nhật ký.
     """
     global _MEMORY_AUDIT_ID
 
-    # 0. Chỉ kích hoạt ghi log ở các API biến động tài sản:
-    # - Nhập / Xuất / Điều chỉnh tồn kho: INVENTORY_ADJUST, STOCK_RECEIPT, STOCK_ISSUE
-    # - Thay đổi giá bán, giá vốn: PRICE_CHANGE
-    # - Thay đổi hạn mức công nợ khách hàng: DEBT_LIMIT_CHANGE
-    # - Thay đổi trạng thái / hủy hóa đơn: INVOICE_EDIT, INVOICE_CANCEL
-    ALLOWED_ACTION_TYPES = {
-        "INVENTORY_ADJUST",
-        "STOCK_RECEIPT",
-        "STOCK_ISSUE",
-        "PRICE_CHANGE",
-        "DEBT_LIMIT_CHANGE",
-        "INVOICE_EDIT",
-        "INVOICE_CANCEL",
-        "DEALER_STATUS_CHANGE",
-        "DEALER_ASSIGNMENT",
-    }
+    # Kiểm tra whitelist nghiêm ngặt 4 nhóm đối tượng
     if action_type not in ALLOWED_ACTION_TYPES:
         return None
 

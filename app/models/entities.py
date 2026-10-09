@@ -1,5 +1,7 @@
 # backend/app/models/entities.py
+from __future__ import annotations
 from datetime import datetime, timezone
+from enum import Enum
 import json
 from sqlalchemy import (
     Column,
@@ -38,7 +40,6 @@ class UserEntity(Base):
     failed_attempts = Column(Integer, default=0)
     locked_until = Column(DateTime, nullable=True)
     token_version = Column(Integer, default=1)
-    avatar_url = Column(Unicode(500), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
     @property
@@ -47,8 +48,8 @@ class UserEntity(Base):
             try:
                 res = json.loads(self.roles_json)
                 if isinstance(res, str):
-                    res = json.loads(res)
-                if isinstance(res, list):
+                    return [res]
+                elif isinstance(res, list):
                     return res
             except Exception:
                 pass
@@ -59,22 +60,46 @@ class UserEntity(Base):
         self.roles_json = json.dumps(val or [])
 
     def get_roles(self) -> list[str]:
-        r = self.roles
-        if r and len(r) > 0:
-            return r
-        return [self.role] if self.role else []
+        return self.roles
+
+    avatar_url = Column(Unicode(500), nullable=True)
+
+
+class RoleEntity(Base):
+    __tablename__ = "roles"
+
+    code = Column(String(50), primary_key=True, index=True)
+    name = Column(Unicode(100), nullable=False)
+    description = Column(Unicode(255), nullable=True)
+    user_count = Column(Integer, default=0)
+    status = Column(Unicode(50), default="Đang hoạt động")
+    permissions_json = Column(UnicodeText, nullable=True)  # JSON array string
+
+    @property
+    def permissions(self) -> list[str]:
+        if self.permissions_json:
+            try:
+                return json.loads(self.permissions_json)
+            except Exception:
+                pass
+        return []
+
+    @permissions.setter
+    def permissions(self, val: list[str]):
+        self.permissions_json = json.dumps(val or [])
 
 
 class CategoryEntity(Base):
     __tablename__ = "categories"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    name = Column(Unicode(255), nullable=False, unique=True)
-    parent_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
-    description = Column(UnicodeText, nullable=True)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    name = Column(Unicode(100), nullable=False)
+    description = Column(Unicode(255), nullable=True)
+    product_count = Column(Integer, default=0)
+    status = Column(Unicode(50), default="Đang hoạt động")
     created_at = Column(DateTime, default=get_utc_now)
 
-    sub_categories = relationship("CategoryEntity", backref="parent", remote_side=[id])
 
 class ProductEntity(Base):
     __tablename__ = "products"
@@ -87,24 +112,46 @@ class ProductEntity(Base):
     stock = Column(Integer, default=0)
     cost_price = Column(Float, default=0.0)
     sell_price = Column(Float, default=0.0)
+    floor_price = Column(Float, default=0.0, nullable=True)
     base_unit = Column(Unicode(50), default="Cái")
-    units_json = Column(UnicodeText, nullable=True)  # JSON string lưu danh sách đơn vị quy đổi [{"unit_name": "Thùng", "conversion_rate": 24}]
+    units_json = Column(UnicodeText, nullable=True)
+    packaging_specification = Column(Unicode(255), nullable=True)
+    images_json = Column(UnicodeText, nullable=True)
+    status = Column(String(50), default="active")
+    is_batch_managed = Column(Boolean, default=False)
     created_at = Column(DateTime, default=get_utc_now)
 
     category_rel = relationship("CategoryEntity", backref="products")
 
     @property
-    def units(self) -> list[dict]:
+    def units(self):
         if self.units_json:
             try:
-                return json.loads(self.units_json)
+                res = json.loads(self.units_json)
+                if isinstance(res, list):
+                    return res
             except Exception:
                 pass
         return []
 
     @units.setter
-    def units(self, val: list[dict]):
+    def units(self, val):
         self.units_json = json.dumps(val or [], ensure_ascii=False)
+
+    @property
+    def images(self):
+        if self.images_json:
+            try:
+                res = json.loads(self.images_json)
+                if isinstance(res, list):
+                    return res
+            except Exception:
+                pass
+        return []
+
+    @images.setter
+    def images(self, val):
+        self.images_json = json.dumps(val or [], ensure_ascii=False)
 
 
 class DealerEntity(Base):
@@ -113,6 +160,7 @@ class DealerEntity(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     code = Column(String(50), unique=True, index=True, nullable=False)
     name = Column(Unicode(255), nullable=False)
+    tax_code = Column(String(50), nullable=True)
     phone = Column(String(50), nullable=True)
     email = Column(String(255), nullable=True)
     address = Column(Unicode(500), nullable=True)
@@ -120,13 +168,16 @@ class DealerEntity(Base):
     assigned_sale_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     credit_limit = Column(Float, default=50000000.0)
     max_debt_days = Column(Integer, default=30)
+    overdue_days_allowed = Column(Integer, default=30, nullable=True)
     customer_group = Column(Unicode(100), default="Đại lý cấp 1")
     status = Column(Unicode(50), default="Đang hoạt động")
+    transaction_count = Column(Integer, default=0, nullable=True)
     lock_reason = Column(Unicode(500), nullable=True)
     locked_at = Column(DateTime, nullable=True)
     locked_by = Column(String(50), nullable=True)
+    warehouse_id = Column(String(50), nullable=True)
+    warehouse_name = Column(Unicode(255), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
-
 
 
 class InventoryTransactionEntity(Base):
@@ -139,14 +190,25 @@ class InventoryTransactionEntity(Base):
     quantity = Column(Integer, nullable=False)
     previous_stock = Column(Integer, nullable=False)
     new_stock = Column(Integer, nullable=False)
-    unit_name = Column(Unicode(50), nullable=True)
-    conversion_rate = Column(Float, default=1.0)
-    base_quantity = Column(Integer, nullable=True)
     performed_by = Column(Unicode(100), nullable=False)
     user_role = Column(String(50), nullable=False)
     reason = Column(UnicodeText, nullable=True)
+    unit_name = Column(Unicode(50), default="Cái")
+    conversion_rate = Column(Float, default=1.0)
+    base_quantity = Column(Float, default=0.0)
     created_at = Column(DateTime, default=get_utc_now)
 
+
+class OrderStatus(str, Enum):
+    DRAFT = "DRAFT"                        # Nháp
+    PENDING_APPROVAL = "PENDING_APPROVAL"  # Chờ duyệt
+    APPROVED = "CONFIRMED"                 # Đã duyệt
+    PICKING = "PICKING"                    # Đang soạn hàng
+    EXPORTED = "EXPORTED"                  # Đã xuất
+    DELIVERED = "DELIVERED"                # Đã giao
+    CLOSED = "CLOSED"                      # Đóng
+    CANCELLED = "CANCELLED"                # Huỷ
+    REJECTED = "REJECTED"                  # Bị từ chối
 
 class OrderEntity(Base):
     __tablename__ = "orders"
@@ -164,6 +226,14 @@ class OrderEntity(Base):
     items_json = Column(UnicodeText, nullable=True)  # JSON order items
     created_at = Column(DateTime, default=get_utc_now)
     delivery_point_id = Column(Integer, ForeignKey("dealer_delivery_points.id"), nullable=True)
+    discount_rate = Column(Float, default=0.0)
+    discount_amount = Column(Float, default=0.0)
+    requires_approval = Column(Boolean, default=False, nullable=True)
+    approval_status = Column(String(50), default="NORMAL", nullable=True)
+    approval_reason = Column(Unicode(500), nullable=True)
+    cancel_reason = Column(Unicode(500), nullable=True)
+    cancelled_by = Column(String(100), nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
 
 class AuditLogEntity(Base):
     __tablename__ = "audit_logs"
@@ -206,3 +276,22 @@ class MasterDeliveryPointEntity(Base):
     route_note = Column(Unicode(500), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, nullable=False, default=get_utc_now)
+
+
+class WarehouseStockEntity(Base):
+    __tablename__ = "warehouse_stocks"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    warehouse_id = Column(String(50), nullable=False, index=True)
+    warehouse_name = Column(Unicode(255), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
+    actual_stock = Column(Integer, default=0, nullable=False)
+    reserved_stock = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+    product_rel = relationship("ProductEntity", backref="warehouse_stocks")
+
+    @property
+    def available_stock(self) -> int:
+        return max(0, (self.actual_stock or 0) - (self.reserved_stock or 0))

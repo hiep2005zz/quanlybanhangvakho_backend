@@ -13,7 +13,7 @@ from app.core.rbac import (
     SPECIFIC_WAREHOUSES,
 )
 from app.core.security import get_password_hash
-from app.models.user import USERS_DB, UserInDB, get_next_user_id, save_users_db
+from app.models.user import USERS_DB, UserInDB, get_next_user_id, save_users_db, normalize_phone, is_phone_taken
 from app.models.dealer import sync_dealer_for_user
 from app.schemas.auth import UserResponse
 from app.schemas.user import UserCreate, UserUpdate, UserItemResponse, UserListResponse, CustomerCreate, CustomerCreateResponse
@@ -169,11 +169,19 @@ def create_user(
                 detail=f"Email '{clean_email}' đã được sử dụng bởi người dùng khác."
             )
 
+    clean_phone = normalize_phone(getattr(data, "phone", None))
+    if clean_phone and is_phone_taken(clean_phone):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Số điện thoại này đã có trên hệ thống vui lòng đổi số khác"
+        )
+
     new_user = UserInDB(
         id=get_next_user_id(),
         username=clean_username,
         full_name=data.full_name.strip(),
         email=clean_email,
+        phone=clean_phone if clean_phone else (data.phone.strip() if getattr(data, "phone", None) else None),
         role=primary_role,
         roles=chosen_roles,
         hashed_password=get_password_hash(data.password),
@@ -207,7 +215,12 @@ def create_customer(
     - Lưu số điện thoại liên hệ để quản lý thuận tiện.
     """
     clean_email = data.email.strip().lower()
-    clean_phone = data.phone.strip()
+    clean_phone = normalize_phone(data.phone)
+    if clean_phone and is_phone_taken(clean_phone):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Số điện thoại này đã có trên hệ thống vui lòng đổi số khác"
+        )
 
     # Kiểm tra trùng email
     for existing in USERS_DB.values():
@@ -242,28 +255,70 @@ def create_customer(
 
     temp_password = generate_temporary_password()
 
+    # Xác định vai trò gán cho tài khoản
+    chosen_roles = [Role.CUSTOMER.value]
+    if data.roles:
+        clean_roles = [r.strip() for r in data.roles if r and r.strip()]
+        if clean_roles:
+            chosen_roles = clean_roles
+    elif data.role and data.role.strip():
+        chosen_roles = [data.role.strip()]
+
+    # Validate roles nếu truyền vào
+    valid_roles = {r.value for r in Role}
+    for r in chosen_roles:
+        if r not in valid_roles:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Vai trò '{r}' không hợp lệ. Vui lòng chọn trong các vai trò hệ thống."
+            )
+
+    # Nếu có vai trò chính thức khác customer, loại bỏ customer
+    clean_official_roles = [r for r in chosen_roles if r != Role.CUSTOMER.value]
+    if clean_official_roles:
+        chosen_roles = clean_official_roles
+
+    primary_role = chosen_roles[0]
+
+    # Chi nhánh / Kho
+    assigned_branch = (data.branch or "").strip()
+    if not assigned_branch:
+        if Role.CUSTOMER.value in chosen_roles:
+            assigned_branch = "Chưa phân công"
+        else:
+            assigned_branch = "Kho Tổng Hà Nội"
+
+    # Ràng buộc vai trò kho
+    if is_warehouse_role(chosen_roles):
+        if not is_specific_warehouse(assigned_branch):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Người dùng có vai trò Kho bắt buộc phải gắn với ít nhất 1 kho cụ thể (Ví dụ: {', '.join(SPECIFIC_WAREHOUSES)})."
+            )
+
     new_user = UserInDB(
         id=get_next_user_id(),
         username=clean_username,
         full_name=data.full_name.strip(),
         email=clean_email,
         phone=clean_phone,
-        role=Role.CUSTOMER.value,
-        roles=[Role.CUSTOMER.value],
+        role=primary_role,
+        roles=chosen_roles,
         hashed_password=get_password_hash(temp_password),
-        branch="Chưa phân công",
+        branch=assigned_branch,
         is_active=True,
     )
     USERS_DB[clean_username] = new_user
     save_users_db()
 
-    # Sync dealer since role is always customer here
+    # Sync dealer if role is customer
+    is_customer = Role.CUSTOMER.value in chosen_roles
     sync_dealer_for_user(
         user_id=new_user.id,
         full_name=new_user.full_name,
         email=new_user.email,
         phone=new_user.phone,
-        is_customer=True
+        is_customer=is_customer
     )
 
     email_sent = send_customer_credentials(
@@ -401,7 +456,14 @@ def update_user(
         user.email = clean_email
 
     if data.phone is not None:
-        user.phone = data.phone.strip()
+        raw_phone = data.phone.strip()
+        clean_phone = normalize_phone(raw_phone)
+        if clean_phone and is_phone_taken(clean_phone, exclude_username=target_username):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Số điện thoại này đã có trên hệ thống vui lòng đổi số khác"
+            )
+        user.phone = clean_phone if clean_phone else (raw_phone if raw_phone else None)
 
     if data.branch is not None:
         user.branch = data.branch.strip()

@@ -1,15 +1,18 @@
 # backend/app/models/dealer.py
+from __future__ import annotations
 """
 Data model and in-memory store for Dealers/Customers.
 Stores assigned_sale_id pointing to users.id.
 """
-from typing import Optional, List
+from typing import Optional, List, Union
+from datetime import datetime
 from pydantic import BaseModel
 
 class Dealer(BaseModel):
     id: int
     code: str
     name: str
+    tax_code: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
@@ -17,11 +20,15 @@ class Dealer(BaseModel):
     assigned_sale_id: Optional[int] = None  # user id of the sales staff responsible
     credit_limit: float = 50000000.0        # Hạn mức công nợ mặc định (VNĐ)
     max_debt_days: int = 30                 # Số ngày nợ tối đa cho phép
+    overdue_days_allowed: int = 30          # Số ngày nợ quá hạn cho phép
     customer_group: Optional[str] = "Đại lý cấp 1"
-    status: str = "ACTIVE"                  # ACTIVE | LOCKED
+    status: str = "Đang hoạt động"          # Đang hoạt động | Tạm ngừng | Đã khóa
     lock_reason: Optional[str] = None
-    locked_at: Optional[str] = None
+    locked_at: Optional[Union[str, datetime]] = None
     locked_by: Optional[str] = None
+    transaction_count: Optional[int] = 0
+    warehouse_id: Optional[str] = None
+    warehouse_name: Optional[str] = None
 # Initial seed data for dealers
 # Sales user: id=3 (username: 'sales', full_name: 'Trần Bán Hàng')
 DEALERS_DB: dict[int, Dealer] = {
@@ -72,7 +79,7 @@ DEALERS_DB: dict[int, Dealer] = {
         email="anphat@daily.vn",
         address="66 Nguyễn Huệ, Đà Nẵng",
         region="Đà Nẵng",
-        assigned_sale_id=None,  # Chưa chỉ định nhân viên kinh doanh phụ trách
+        assigned_sale_id=8,  # Nhân viên kinh doanh phụ trách: Nguyễn Văn A
         credit_limit=50000000.0,
         customer_group="khach_le",
         status="Tạm ngừng",
@@ -85,9 +92,22 @@ DEALERS_DB: dict[int, Dealer] = {
         email="khachle@gmail.com",
         address="Số 10 Tràng Thi, Hoàn Kiếm, Hà Nội",
         region="Hà Nội",
-        assigned_sale_id=3,
+        assigned_sale_id=8,  # Nhân viên kinh doanh phụ trách: Nguyễn Văn A
         credit_limit=20000000.0,
         customer_group="khach_le",
+        status="Đang hoạt động",
+    ),
+    7: Dealer(
+        id=7,
+        code="DL007",
+        name="Vũ Mua Hàng",
+        phone="0911223377",
+        email="muahang@congty.vn",
+        address="12 Hàng Buồm, Hà Nội",
+        region="Hà Nội",
+        assigned_sale_id=None,
+        credit_limit=50000000.0,
+        customer_group="Đại lý cấp 1",
         status="Đang hoạt động",
     ),
 }
@@ -115,6 +135,7 @@ def save_dealers_db():
 
                 db_dealer.code = d.code
                 db_dealer.name = d.name
+                db_dealer.tax_code = getattr(d, "tax_code", None)
                 db_dealer.phone = d.phone
                 db_dealer.email = d.email
                 db_dealer.address = d.address
@@ -122,12 +143,30 @@ def save_dealers_db():
                 db_dealer.assigned_sale_id = d.assigned_sale_id
                 db_dealer.credit_limit = getattr(d, "credit_limit", getattr(db_dealer, "credit_limit", 0))
                 db_dealer.max_debt_days = getattr(d, "max_debt_days", getattr(db_dealer, "max_debt_days", 30))
+                if hasattr(db_dealer, "overdue_days_allowed"):
+                    db_dealer.overdue_days_allowed = getattr(d, "overdue_days_allowed", getattr(d, "max_debt_days", 30))
                 db_dealer.customer_group = getattr(d, "customer_group", getattr(db_dealer, "customer_group", "Đại lý cấp 1"))
+                if hasattr(db_dealer, "transaction_count"):
+                    db_dealer.transaction_count = getattr(d, "transaction_count", 0) or 0
                 if hasattr(db_dealer, "status"):
-                    db_dealer.status = getattr(d, "status", "ACTIVE")
+                    db_dealer.status = getattr(d, "status", "Đang hoạt động")
                     db_dealer.lock_reason = getattr(d, "lock_reason", None)
-                    db_dealer.locked_at = getattr(d, "locked_at", None)
+                    locked_at_val = getattr(d, "locked_at", None)
+                    if locked_at_val:
+                        if isinstance(locked_at_val, str):
+                            try:
+                                db_dealer.locked_at = datetime.fromisoformat(locked_at_val.replace("Z", "+00:00"))
+                            except Exception:
+                                db_dealer.locked_at = None
+                        elif isinstance(locked_at_val, datetime):
+                            db_dealer.locked_at = locked_at_val
+                    else:
+                        db_dealer.locked_at = None
                     db_dealer.locked_by = getattr(d, "locked_by", None)
+                if hasattr(db_dealer, "warehouse_id"):
+                    db_dealer.warehouse_id = getattr(d, "warehouse_id", None)
+                if hasattr(db_dealer, "warehouse_name"):
+                    db_dealer.warehouse_name = getattr(d, "warehouse_name", None)
 
             if DEALERS_DB:
                 existing_ids = list(DEALERS_DB.keys())
@@ -163,6 +202,7 @@ def load_dealers_db():
                         id=entity.id,
                         code=entity.code,
                         name=entity.name,
+                        tax_code=getattr(entity, "tax_code", None),
                         phone=entity.phone,
                         email=entity.email,
                         address=entity.address,
@@ -170,11 +210,15 @@ def load_dealers_db():
                         assigned_sale_id=entity.assigned_sale_id,
                         credit_limit=float(entity.credit_limit) if getattr(entity, "credit_limit", None) is not None else 50000000.0,
                         max_debt_days=int(entity.max_debt_days) if getattr(entity, "max_debt_days", None) is not None else 30,
+                        overdue_days_allowed=int(getattr(entity, "overdue_days_allowed", None) or getattr(entity, "max_debt_days", None) or 30),
                         customer_group=getattr(entity, "customer_group", None) or "Đại lý cấp 1",
                         status="Đang hoạt động" if ("ho?t" in str(getattr(entity, "status", "")) or "Ðang" in str(getattr(entity, "status", ""))) else (getattr(entity, "status", "Đang hoạt động") or "Đang hoạt động"),
                         lock_reason=getattr(entity, "lock_reason", None),
-                        locked_at=getattr(entity, "locked_at", None),
+                        locked_at=entity.locked_at.isoformat() if hasattr(getattr(entity, "locked_at", None), "isoformat") else getattr(entity, "locked_at", None),
                         locked_by=getattr(entity, "locked_by", None),
+                        transaction_count=int(getattr(entity, "transaction_count", 0) or 0),
+                        warehouse_id=getattr(entity, "warehouse_id", None),
+                        warehouse_name=getattr(entity, "warehouse_name", None),
                     )
                     DEALERS_DB[entity.id] = d
                 loaded_from_sql = True

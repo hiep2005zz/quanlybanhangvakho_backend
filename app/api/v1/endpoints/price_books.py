@@ -179,6 +179,7 @@ def create_price_book(
         db.add(new_pb)
         db.flush()
 
+        updated_products_map = {}
         for item in data.items:
             sale_val = item.sale_price if item.sale_price is not None else (item.price or 0.0)
             floor_val = item.floor_price if item.floor_price is not None else (item.min_price or 0.0)
@@ -192,8 +193,62 @@ def create_price_book(
             )
             db.add(pb_item)
 
+            # NGHIỆP VỤ ÁP DỤNG GIÁ TOÀN HỆ THỐNG (GLOBAL PRICE UPDATE):
+            # Cập nhật đè giá niêm yết và giá sàn mới nhất vào bảng ProductEntity trong cùng Transaction
+            prod = db.query(ProductEntity).filter(ProductEntity.id == item.product_id).first()
+            if prod:
+                if sale_val > 0 or new_pb.status == "ACTIVE":
+                    prod.sell_price = float(sale_val)
+                if floor_val > 0 or new_pb.status == "ACTIVE":
+                    prod.floor_price = float(floor_val)
+                updated_products_map[item.product_id] = {
+                    "sell_price": float(sale_val),
+                    "floor_price": float(floor_val),
+                }
+
         db.commit()
         db.refresh(new_pb)
+
+        # Đồng bộ in-memory cache RAW_PRODUCTS sau khi commit DB thành công
+        if updated_products_map:
+            from app.api.v1.endpoints.products import RAW_PRODUCTS
+            for p in RAW_PRODUCTS:
+                p_id = p.get("id")
+                if p_id in updated_products_map:
+                    vals = updated_products_map[p_id]
+                    if vals.get("sell_price") is not None and (vals["sell_price"] > 0 or new_pb.status == "ACTIVE"):
+                        p["sell_price"] = vals["sell_price"]
+                    if vals.get("floor_price") is not None and (vals["floor_price"] > 0 or new_pb.status == "ACTIVE"):
+                        p["floor_price"] = vals["floor_price"]
+                    if p.get("cost_price") is not None and p.get("sell_price", 0) > 0:
+                        p["profit_per_unit"] = p["sell_price"] - p["cost_price"]
+                        p["profit_margin"] = round(((p["sell_price"] - p["cost_price"]) / p["sell_price"]) * 100, 1)
+
+        # Ghi log Audit Event
+        try:
+            from app.services.audit_service import log_audit_event
+            log_audit_event(
+                db=db,
+                user=current_user,
+                action_type="PRICE_BOOK_CREATE",
+                entity_type="PriceBook",
+                entity_id=new_pb.code,
+                old_val=None,
+                new_val={
+                    "code": new_pb.code,
+                    "name": new_pb.name,
+                    "customer_group": new_pb.customer_group,
+                    "items_count": len(data.items),
+                    "applied_to_products": list(updated_products_map.keys()),
+                },
+                reason=f"Tạo mới bảng giá {new_pb.name} và đồng bộ giá toàn hệ thống ({len(data.items)} sản phẩm)",
+            )
+        except Exception:
+            pass
+
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as ex:
         db.rollback()
         raise ex
@@ -360,6 +415,7 @@ def update_price_book(
     if data.note is not None:
         pb.note = data.note
 
+    updated_products_map = {}
     if data.items is not None:
         # Xóa items cũ và thêm items mới
         db.query(PriceBookItemEntity).filter(PriceBookItemEntity.price_book_id == id).delete()
@@ -376,8 +432,51 @@ def update_price_book(
             )
             db.add(pb_item)
 
+            # Đồng bộ giá toàn hệ thống (cả giá niêm yết và giá sàn)
+            prod = db.query(ProductEntity).filter(ProductEntity.id == item.product_id).first()
+            if prod:
+                if sale_val > 0 or pb.status == "ACTIVE":
+                    prod.sell_price = float(sale_val)
+                if floor_val > 0 or pb.status == "ACTIVE":
+                    prod.floor_price = float(floor_val)
+                updated_products_map[item.product_id] = {
+                    "sell_price": float(sale_val),
+                    "floor_price": float(floor_val),
+                }
+
     db.commit()
     db.refresh(pb)
+
+    # Đồng bộ in-memory cache RAW_PRODUCTS sau khi commit DB
+    if data.items is not None and updated_products_map:
+        from app.api.v1.endpoints.products import RAW_PRODUCTS
+        for p in RAW_PRODUCTS:
+            p_id = p.get("id")
+            if p_id in updated_products_map:
+                vals = updated_products_map[p_id]
+                if vals.get("sell_price") is not None and (vals["sell_price"] > 0 or pb.status == "ACTIVE"):
+                    p["sell_price"] = vals["sell_price"]
+                if vals.get("floor_price") is not None and (vals["floor_price"] > 0 or pb.status == "ACTIVE"):
+                    p["floor_price"] = vals["floor_price"]
+                if p.get("cost_price") is not None and p.get("sell_price", 0) > 0:
+                    p["profit_per_unit"] = p["sell_price"] - p["cost_price"]
+                    p["profit_margin"] = round(((p["sell_price"] - p["cost_price"]) / p["sell_price"]) * 100, 1)
+
+    if data.items is not None:
+        try:
+            from app.services.audit_service import log_audit_event
+            log_audit_event(
+                db=db,
+                user=current_user,
+                action_type="PRICE_CHANGE",
+                entity_type="PriceBook",
+                entity_id=pb.code,
+                old_val=None,
+                new_val={"items_count": len(data.items), "name": pb.name, "customer_group": pb.customer_group},
+                reason=f"Cập nhật bảng giá {pb.name} ({len(data.items)} sản phẩm)",
+            )
+        except Exception:
+            pass
 
     return _build_price_book_response(pb, db)
 

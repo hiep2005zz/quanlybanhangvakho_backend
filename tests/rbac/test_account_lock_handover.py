@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from app.main import app
 from app.models.user import USERS_DB
-from app.models.dealer import DEALERS_DB, save_dealers_db
+from app.models.dealer import DEALERS_DB
 
 client = TestClient(app)
 
@@ -52,7 +52,7 @@ def test_ac1_lock_user_session_revoked_and_cannot_login():
     sales_token = get_token("sales")
 
     for did, d in DEALERS_DB.items():
-        d.assigned_sale_id = 3 if did in [1, 2, 3] else (2 if did == 4 else None)
+        d.assigned_sale_id = 3 if did in [1, 2, 3] else 8
 
 
     # Phiên của sales trước khi khóa hoạt động bình thường
@@ -96,7 +96,7 @@ def test_ac3_dealers_marked_needing_handover_and_block_orders():
     admin_token = get_token("admin")
 
     for did, d in DEALERS_DB.items():
-        d.assigned_sale_id = 3 if did in [1, 2, 3] else (2 if did == 4 else None)
+        d.assigned_sale_id = 3 if did in [1, 2, 3] else 8
 
     # Đảm bảo tài khoản sales ở trạng thái LOCKED để kiểm tra quy trình bàn giao
 
@@ -175,12 +175,13 @@ def test_ac3_dealers_marked_needing_handover_and_block_orders():
     assert unlock_resp.json()["is_active"] is True
     assert unlock_resp.json()["lock_reason"] is None
 
-    # Trả lại đại lý cho sales (id=3)
+    # Trả lại đại lý cho sales (id=3) và các đại lý khác cho sales 8
     DEALERS_DB[1].assigned_sale_id = 3
     DEALERS_DB[2].assigned_sale_id = 3
     DEALERS_DB[3].assigned_sale_id = 3
-    DEALERS_DB[4].assigned_sale_id = None
-    save_dealers_db()
+    DEALERS_DB[4].assigned_sale_id = 8
+    if 5 in DEALERS_DB:
+        DEALERS_DB[5].assigned_sale_id = 8
 
 
 def test_tc01_handover_role_and_region_restrictions():
@@ -225,6 +226,7 @@ def test_tc01_handover_role_and_region_restrictions():
     DEALERS_DB[1].assigned_sale_id = 3
     DEALERS_DB[2].assigned_sale_id = 3
     DEALERS_DB[3].assigned_sale_id = 3
-    DEALERS_DB[4].assigned_sale_id = None
-    save_dealers_db()
+    DEALERS_DB[4].assigned_sale_id = 8
+    if 5 in DEALERS_DB:
+        DEALERS_DB[5].assigned_sale_id = 8
 

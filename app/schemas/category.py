@@ -1,5 +1,5 @@
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 class CategoryBase(BaseModel):
     name: str
@@ -14,11 +14,9 @@ class CategoryUpdate(CategoryBase):
 
 class CategoryResponse(CategoryBase):
     id: int
-    
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class CategoryTreeResponse(CategoryResponse):
     sub_categories: List['CategoryTreeResponse'] = []
 
-CategoryTreeResponse.update_forward_refs()
+CategoryTreeResponse.model_rebuild()
