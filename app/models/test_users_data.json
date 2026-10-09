@@ -9,7 +9,7 @@
     "roles": [
       "admin"
     ],
-    "hashed_password": "$2b$12$hHFWUsxiHnfVjzUezYzVMOUOdIya57m3ql/TjX6fK62Z6Szg.jh3G",
+    "hashed_password": "$2b$12$icIg/t21TTrW4ojxnQOnu.5dN37KSiOR2ugi75LNsuF/uaCYXbZU6",
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
@@ -30,7 +30,7 @@
     "roles": [
       "sales_manager"
     ],
-    "hashed_password": "$2b$12$hHFWUsxiHnfVjzUezYzVMOUOdIya57m3ql/TjX6fK62Z6Szg.jh3G",
+    "hashed_password": "$2b$12$icIg/t21TTrW4ojxnQOnu.5dN37KSiOR2ugi75LNsuF/uaCYXbZU6",
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
@@ -51,7 +51,7 @@
     "roles": [
       "sales"
     ],
-    "hashed_password": "$2b$12$hHFWUsxiHnfVjzUezYzVMOUOdIya57m3ql/TjX6fK62Z6Szg.jh3G",
+    "hashed_password": "$2b$12$icIg/t21TTrW4ojxnQOnu.5dN37KSiOR2ugi75LNsuF/uaCYXbZU6",
     "branch": "Khu vực Miền Bắc",
     "is_active": true,
     "status": "ACTIVE",
@@ -68,11 +68,11 @@
     "full_name": "Lê Thủ Kho",
     "email": "kho@congty.vn",
     "phone": null,
-    "role": "warehouse",
+    "role": "customer",
     "roles": [
-      "warehouse"
+      "customer"
     ],
-    "hashed_password": "$2b$12$hHFWUsxiHnfVjzUezYzVMOUOdIya57m3ql/TjX6fK62Z6Szg.jh3G",
+    "hashed_password": "$2b$12$icIg/t21TTrW4ojxnQOnu.5dN37KSiOR2ugi75LNsuF/uaCYXbZU6",
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -93,7 +93,7 @@
     "roles": [
       "warehouse_manager"
     ],
-    "hashed_password": "$2b$12$hHFWUsxiHnfVjzUezYzVMOUOdIya57m3ql/TjX6fK62Z6Szg.jh3G",
+    "hashed_password": "$2b$12$icIg/t21TTrW4ojxnQOnu.5dN37KSiOR2ugi75LNsuF/uaCYXbZU6",
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -114,7 +114,7 @@
     "roles": [
       "accountant"
     ],
-    "hashed_password": "$2b$12$hHFWUsxiHnfVjzUezYzVMOUOdIya57m3ql/TjX6fK62Z6Szg.jh3G",
+    "hashed_password": "$2b$12$icIg/t21TTrW4ojxnQOnu.5dN37KSiOR2ugi75LNsuF/uaCYXbZU6",
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",
@@ -131,11 +131,11 @@
     "full_name": "Vũ Mua Hàng",
     "email": "muahang@congty.vn",
     "phone": null,
-    "role": "purchasing",
+    "role": "customer",
     "roles": [
-      "purchasing"
+      "customer"
     ],
-    "hashed_password": "$2b$12$hHFWUsxiHnfVjzUezYzVMOUOdIya57m3ql/TjX6fK62Z6Szg.jh3G",
+    "hashed_password": "$2b$12$icIg/t21TTrW4ojxnQOnu.5dN37KSiOR2ugi75LNsuF/uaCYXbZU6",
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",
@@ -198,7 +198,7 @@
     "roles": [
       "customer"
     ],
-    "hashed_password": "$2b$12$EZzxSdAP1o9ptAWlzMAhMO4Yfu9FgmkYR4FrRQ2e.ooOt6QL3Rhcq",
+    "hashed_password": "$2b$12$d8s80EnmvpMatyW/tl8KlOOfqubBYZCnC.UzEncaFFsGTZqWxE/0m",
     "branch": "Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -230,18 +230,18 @@
     "token_version": 1,
     "avatar_url": null
   },
-  "nguyenvana": {
+  "hhh": {
     "id": 1001,
-    "username": "nguyenvana",
-    "full_name": "Nguyenvana",
-    "email": "nguyenvana@congty.vn",
-    "phone": null,
-    "role": "sales",
+    "username": "hhh",
+    "full_name": "hhh",
+    "email": "klqdoanhv1@gmail.com",
+    "phone": "0987654322",
+    "role": "customer",
     "roles": [
-      "sales"
+      "customer"
     ],
-    "hashed_password": "$2b$12$hHFWUsxiHnfVjzUezYzVMOUOdIya57m3ql/TjX6fK62Z6Szg.jh3G",
-    "branch": "Kho Tổng Hà Nội",
+    "hashed_password": "$2b$12$beGxuYgW/7PnX1nL7q7KjOvtpq1x6GMjFU5259o12lV/KDwEEdkVS",
+    "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
     "lock_reason": null,
