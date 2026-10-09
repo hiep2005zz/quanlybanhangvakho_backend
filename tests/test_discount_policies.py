@@ -15,6 +15,21 @@ def _admin_login() -> str:
     assert res.status_code == 200
     return res.json()["access_token"]
 
+@pytest.fixture(autouse=True)
+def reset_test_stock():
+    from app.core.database import SessionLocal
+    from app.models.entities import WarehouseStockEntity
+    db = SessionLocal()
+    try:
+        stocks = db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id == 1).all()
+        for s in stocks:
+            s.actual_stock = 1000.0
+            s.reserved_stock = 0.0
+        db.commit()
+    finally:
+        db.close()
+    yield
+
 def test_get_discount_policies():
     token = _login()
     res = client.get("/api/v1/discounts", headers={"Authorization": f"Bearer {token}"})

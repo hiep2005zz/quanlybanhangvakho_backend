@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_permission
@@ -200,6 +201,27 @@ def get_products(
     db_products = db.query(ProductEntity).all()
     db_prod_map = {p.id: p for p in db_products}
 
+    # Tự động lấy bảng giá mới nhất map theo product_id để fallback nếu sản phẩm chưa có giá
+    pb_price_map = {}
+    try:
+        from app.models.price_book import PriceBookItemEntity, PriceBookEntity
+        latest_pb_items = (
+            db.query(PriceBookItemEntity)
+            .join(PriceBookEntity, PriceBookItemEntity.price_book_id == PriceBookEntity.id)
+            .order_by(PriceBookItemEntity.id.desc())
+            .all()
+        )
+        for pb_item in latest_pb_items:
+            if pb_item.product_id not in pb_price_map:
+                s_val = pb_item.sale_price if pb_item.sale_price is not None else pb_item.price
+                f_val = pb_item.floor_price if pb_item.floor_price is not None else pb_item.min_price
+                pb_price_map[pb_item.product_id] = {
+                    "sell_price": float(s_val or 0.0),
+                    "floor_price": float(f_val or 0.0),
+                }
+    except Exception:
+        pass
+
     sanitized_items: list[ProductItem] = []
     total_stock = 0
     total_sell_val = 0.0
@@ -216,8 +238,42 @@ def get_products(
         units_converted = [UnitConversionItem(unit_name=u["unit_name"], conversion_rate=float(u["conversion_rate"])) for u in units_raw]
 
         stock = p["stock"]
-        sell_price = p["sell_price"]
-        cost_price = p["cost_price"]
+        sell_price = p.get("sell_price", 0.0)
+        floor_price = p.get("floor_price", 0.0)
+        cost_price = p.get("cost_price", 0.0)
+
+        if db_p:
+            if db_p.sell_price is not None and db_p.sell_price > 0:
+                sell_price = float(db_p.sell_price)
+                p["sell_price"] = sell_price
+            if db_p.floor_price is not None and db_p.floor_price > 0:
+                floor_price = float(db_p.floor_price)
+                p["floor_price"] = floor_price
+            if db_p.cost_price is not None and db_p.cost_price > 0:
+                cost_price = float(db_p.cost_price)
+                p["cost_price"] = cost_price
+            if db_p.stock is not None:
+                stock = int(db_p.stock)
+                p["stock"] = stock
+            if db_p.code:
+                p["code"] = db_p.code
+            if db_p.name:
+                p["name"] = db_p.name
+
+        # Tự động đồng bộ từ bảng giá mới nhất nếu sản phẩm chưa có giá niêm yết hoặc giá sàn
+        pid = p["id"]
+        if pid in pb_price_map:
+            pb_vals = pb_price_map[pid]
+            if (sell_price == 0 or sell_price is None) and pb_vals["sell_price"] > 0:
+                sell_price = pb_vals["sell_price"]
+                p["sell_price"] = sell_price
+                if db_p:
+                    db_p.sell_price = sell_price
+            if (floor_price == 0 or floor_price is None) and pb_vals["floor_price"] > 0:
+                floor_price = pb_vals["floor_price"]
+                p["floor_price"] = floor_price
+                if db_p:
+                    db_p.floor_price = floor_price
 
         total_stock += stock
         total_sell_val += sell_price * stock
@@ -244,6 +300,7 @@ def get_products(
                 category_id=cat_id,
                 stock=stock,
                 sell_price=sell_price,
+                floor_price=floor_price,
                 base_unit=base_unit,
                 units=units_converted,
                 cost_price=cost_price,
@@ -265,6 +322,7 @@ def get_products(
                 category_id=cat_id,
                 stock=stock,
                 sell_price=sell_price,
+                floor_price=floor_price,
                 base_unit=base_unit,
                 units=units_converted,
                 cost_price=None,
@@ -276,6 +334,101 @@ def get_products(
                 is_batch_managed=is_batch_val,
                 transaction_count=_get_product_transaction_count(p["id"], db),
             ))
+
+    # Xử lý các sản phẩm có trong Database nhưng chưa có trong in-memory RAW_PRODUCTS
+    raw_ids = {item["id"] for item in RAW_PRODUCTS}
+    for db_p in db_products:
+        if db_p.id not in raw_ids:
+            base_u = getattr(db_p, "base_unit", None) or "Cái"
+            units_raw = getattr(db_p, "units", None) or []
+            units_converted = [UnitConversionItem(unit_name=u["unit_name"], conversion_rate=float(u["conversion_rate"])) for u in units_raw]
+            stock = int(db_p.stock or 0)
+            sell_price = float(db_p.sell_price or 0.0)
+            floor_price = float(db_p.floor_price or 0.0)
+            cost_price = float(db_p.cost_price or 0.0)
+
+            if db_p.id in pb_price_map:
+                pb_vals = pb_price_map[db_p.id]
+                if sell_price == 0 and pb_vals["sell_price"] > 0:
+                    sell_price = pb_vals["sell_price"]
+                    db_p.sell_price = sell_price
+                if floor_price == 0 and pb_vals["floor_price"] > 0:
+                    floor_price = pb_vals["floor_price"]
+                    db_p.floor_price = floor_price
+
+            total_stock += stock
+            total_sell_val += sell_price * stock
+            cat_name = db_p.category or "Chưa phân loại"
+            cat_id = db_p.category_id
+            images_list = getattr(db_p, "images", None) or []
+            packaging_spec = getattr(db_p, "packaging_specification", None) or ""
+            status_val = getattr(db_p, "status", None) or "active"
+            is_batch_val = bool(getattr(db_p, "is_batch_managed", False))
+
+            RAW_PRODUCTS.append({
+                "id": db_p.id,
+                "code": db_p.code,
+                "name": db_p.name,
+                "category": cat_name,
+                "category_id": cat_id,
+                "base_unit": base_u,
+                "units": units_raw,
+                "packaging_specification": packaging_spec,
+                "images": images_list,
+                "status": status_val,
+                "stock": stock,
+                "cost_price": cost_price,
+                "sell_price": sell_price,
+                "floor_price": floor_price,
+                "is_batch_managed": is_batch_val,
+            })
+
+            if can_view_cost:
+                profit_unit = sell_price - cost_price
+                margin = round((profit_unit / sell_price) * 100, 2) if sell_price > 0 else 0.0
+                total_cost_val += cost_price * stock
+                sanitized_items.append(ProductItem(
+                    id=db_p.id,
+                    code=db_p.code,
+                    name=db_p.name,
+                    category=cat_name,
+                    category_id=cat_id,
+                    stock=stock,
+                    sell_price=sell_price,
+                    floor_price=floor_price,
+                    base_unit=base_u,
+                    units=units_converted,
+                    cost_price=cost_price,
+                    profit_margin=margin,
+                    profit_per_unit=profit_unit,
+                    images=images_list,
+                    packaging_specification=packaging_spec,
+                    status=status_val,
+                    is_batch_managed=is_batch_val,
+                    transaction_count=_get_product_transaction_count(db_p.id, db),
+                ))
+            else:
+                sanitized_items.append(ProductItem(
+                    id=db_p.id,
+                    code=db_p.code,
+                    name=db_p.name,
+                    category=cat_name,
+                    category_id=cat_id,
+                    stock=stock,
+                    sell_price=sell_price,
+                    floor_price=floor_price,
+                    base_unit=base_u,
+                    units=units_converted,
+                    cost_price=None,
+                    profit_margin=None,
+                    profit_per_unit=None,
+                    images=images_list,
+                    packaging_specification=packaging_spec,
+                    status=status_val,
+                    is_batch_managed=is_batch_val,
+                    transaction_count=_get_product_transaction_count(db_p.id, db),
+                ))
+
     if can_view_cost:
         gross_profit = total_sell_val - total_cost_val
         avg_margin = round((gross_profit / total_sell_val) * 100, 2) if total_sell_val > 0 else 0.0
@@ -398,6 +551,9 @@ def update_product_details(
     if payload.sell_price is not None:
         target["sell_price"] = payload.sell_price
 
+    if payload.floor_price is not None:
+        target["floor_price"] = payload.floor_price
+
     if payload.cost_price is not None and can_view_cost:
         target["cost_price"] = payload.cost_price
 
@@ -418,6 +574,8 @@ def update_product_details(
             if target.get("category_id"):
                 db_prod.category_id = target["category_id"]
             db_prod.sell_price = target["sell_price"]
+            if payload.floor_price is not None:
+                db_prod.floor_price = target["floor_price"]
             if can_view_cost and target.get("cost_price") is not None:
                 db_prod.cost_price = target["cost_price"]
             if payload.base_unit is not None:
@@ -444,6 +602,7 @@ def update_product_details(
 
     cost = target.get("cost_price", 0.0)
     sell = target.get("sell_price", 0.0)
+    floor = target.get("floor_price", 0.0)
     profit_unit = sell - cost if can_view_cost else None
     margin = round((profit_unit / sell) * 100, 2) if (can_view_cost and sell > 0) else None
 
@@ -460,6 +619,7 @@ def update_product_details(
         status=target.get("status", "active"),
         stock=target.get("stock", 0),
         sell_price=sell,
+        floor_price=floor,
         cost_price=cost if can_view_cost else None,
         profit_margin=margin,
         profit_per_unit=profit_unit,
@@ -525,67 +685,126 @@ def update_product_price(
     """
     Thay đổi giá bán niêm yết hoặc giá vốn nhập kho.
     Ghi vết vào bảng audit_logs với action_type='PRICE_CHANGE'.
+    Đảm bảo commit vào Database và đồng bộ realtime.
     """
-    for p in RAW_PRODUCTS:
-        if p["id"] == product_id:
-            old_val = {}
-            new_val = {}
-            if data.sell_price is not None and data.sell_price != p["sell_price"]:
-                old_val["sell_price"] = p["sell_price"]
-                p["sell_price"] = data.sell_price
-                new_val["sell_price"] = data.sell_price
-            if data.cost_price is not None and data.cost_price != p["cost_price"]:
-                old_val["cost_price"] = p["cost_price"]
-                p["cost_price"] = data.cost_price
-                new_val["cost_price"] = data.cost_price
+    from app.models.entities import ProductEntity
 
-            if not new_val:
-                return {
-                    "status": "success",
-                    "message": "Giá sản phẩm không thay đổi.",
-                    "product": p,
-                }
+    db_p = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
+    p = _find_product_in_raw(product_id)
 
-            # Đồng bộ thay đổi vào DB nếu tồn tại bản ghi ProductEntity
-            from app.models.entities import ProductEntity
-            try:
-                db_p = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
-                if db_p:
-                    if "sell_price" in new_val:
-                        db_p.sell_price = data.sell_price
-                    if "cost_price" in new_val:
-                        db_p.cost_price = data.cost_price
-                    db.commit()
-            except Exception as e:
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-                print(f"Warning syncing product price to DB: {e}")
+    if not db_p and not p:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy sản phẩm")
 
-            # Cập nhật margin và profit_per_unit trong RAW_PRODUCTS
-            if p.get("cost_price") and p.get("sell_price") and p["sell_price"] > 0:
-                p["profit_per_unit"] = p["sell_price"] - p["cost_price"]
-                p["profit_margin"] = round(((p["sell_price"] - p["cost_price"]) / p["sell_price"]) * 100, 1)
+    old_val = {}
+    new_val = {}
 
-            log_audit_event(
-                db=db,
-                user=current_user,
-                action_type="PRICE_CHANGE",
-                entity_type="Product",
-                entity_id=p["code"],
-                old_val=old_val,
-                new_val=new_val,
-                reason=data.reason,
-                request=request,
-            )
+    current_sell = float(db_p.sell_price if db_p and db_p.sell_price is not None else (p.get("sell_price") if p else 0.0))
+    current_floor = float(db_p.floor_price if db_p and db_p.floor_price is not None else (p.get("floor_price") if p else 0.0))
+    current_cost = float(db_p.cost_price if db_p and db_p.cost_price is not None else (p.get("cost_price") if p else 0.0))
 
-            return {
-                "status": "success",
-                "message": f"Đã cập nhật giá cho sản phẩm {p['name']}.",
-                "product": p
-            }
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy sản phẩm")
+    if data.sell_price is not None and data.sell_price != current_sell:
+        old_val["sell_price"] = current_sell
+        new_val["sell_price"] = float(data.sell_price)
+    if data.floor_price is not None and data.floor_price != current_floor:
+        old_val["floor_price"] = current_floor
+        new_val["floor_price"] = float(data.floor_price)
+    if data.cost_price is not None and data.cost_price != current_cost:
+        old_val["cost_price"] = current_cost
+        new_val["cost_price"] = float(data.cost_price)
+
+    if not new_val:
+        return {
+            "status": "success",
+            "message": "Giá sản phẩm không thay đổi.",
+            "product": p or {
+                "id": db_p.id,
+                "code": db_p.code,
+                "name": db_p.name,
+                "sell_price": db_p.sell_price,
+                "floor_price": getattr(db_p, "floor_price", 0.0) or 0.0,
+                "cost_price": db_p.cost_price,
+            },
+        }
+
+    # 1. Cập nhật hoặc tạo mới trong DB
+    if not db_p and p:
+        db_p = ProductEntity(
+            id=p["id"],
+            code=p["code"],
+            name=p["name"],
+            category=p.get("category", "Thời trang"),
+            category_id=p.get("category_id"),
+            base_unit=p.get("base_unit", "Cái"),
+            stock=p.get("stock", 0),
+            sell_price=new_val.get("sell_price", current_sell),
+            floor_price=new_val.get("floor_price", current_floor),
+            cost_price=new_val.get("cost_price", current_cost),
+            status=p.get("status", "active"),
+        )
+        db.add(db_p)
+    elif db_p:
+        if "sell_price" in new_val:
+            db_p.sell_price = new_val["sell_price"]
+        if "floor_price" in new_val:
+            db_p.floor_price = new_val["floor_price"]
+        if "cost_price" in new_val:
+            db_p.cost_price = new_val["cost_price"]
+
+    db.commit()
+    if db_p:
+        db.refresh(db_p)
+
+    # 2. Đồng bộ in-memory RAW_PRODUCTS
+    if not p and db_p:
+        p = {
+            "id": db_p.id,
+            "code": db_p.code,
+            "name": db_p.name,
+            "category": db_p.category or "Thời trang",
+            "category_id": db_p.category_id,
+            "stock": db_p.stock or 0,
+            "cost_price": db_p.cost_price or 0.0,
+            "sell_price": db_p.sell_price or 0.0,
+            "floor_price": db_p.floor_price or 0.0,
+            "base_unit": db_p.base_unit or "Cái",
+            "units": [],
+        }
+        RAW_PRODUCTS.append(p)
+    elif p and db_p:
+        p["sell_price"] = db_p.sell_price
+        p["floor_price"] = getattr(db_p, "floor_price", 0.0) or 0.0
+        p["cost_price"] = db_p.cost_price
+
+    if p and p.get("cost_price") is not None and p.get("sell_price") and p["sell_price"] > 0:
+        p["profit_per_unit"] = p["sell_price"] - p["cost_price"]
+        p["profit_margin"] = round(((p["sell_price"] - p["cost_price"]) / p["sell_price"]) * 100, 1)
+
+    # 3. Ghi audit log
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action_type="PRICE_CHANGE",
+        entity_type="Product",
+        entity_id=db_p.code if db_p else p["code"],
+        old_val=old_val,
+        new_val=new_val,
+        reason=data.reason or "Điều chỉnh giá sản phẩm",
+        request=request,
+    )
+
+    prod_name = db_p.name if db_p else p["name"]
+    return {
+        "status": "success",
+        "message": f"Đã cập nhật giá cho sản phẩm {prod_name}.",
+        "product": p or {
+            "id": db_p.id,
+            "code": db_p.code,
+            "name": db_p.name,
+            "sell_price": db_p.sell_price,
+            "floor_price": getattr(db_p, "floor_price", 0.0) or 0.0,
+            "cost_price": db_p.cost_price,
+        }
+    }
 
 
 @router.get("/check-sku")
@@ -635,9 +854,13 @@ def create_product(
 
     can_view_cost = current_user.can_view_cost or (Permission.COST_READ.value in current_user.permissions)
     cost = payload.cost_price if (can_view_cost and payload.cost_price is not None) else 0.0
-
-    new_id = max([p["id"] for p in RAW_PRODUCTS], default=0) + 1
+    from app.models.entities import ProductEntity
+    from sqlalchemy import func
+    max_db_id = db.query(func.max(ProductEntity.id)).scalar() or 0
+    max_raw_id = max([p["id"] for p in RAW_PRODUCTS], default=0)
+    new_id = max(max_db_id, max_raw_id) + 1
     units_list = [u.dict() for u in payload.units] if payload.units else []
+    floor_val = payload.floor_price or 0.0
     new_product_dict = {
         "id": new_id,
         "code": clean_sku,
@@ -652,6 +875,7 @@ def create_product(
         "stock": 0,
         "cost_price": cost,
         "sell_price": payload.sell_price or 0.0,
+        "floor_price": floor_val,
     }
 
     # Lưu vào in-memory RAW_PRODUCTS
@@ -671,6 +895,7 @@ def create_product(
             stock=0,
             cost_price=cost,
             sell_price=payload.sell_price or 0.0,
+            floor_price=floor_val,
         )
         db.add(db_prod)
         db.commit()
@@ -709,6 +934,7 @@ def create_product(
         status=payload.status or "active",
         stock=0,
         sell_price=clean_sell_price,
+        floor_price=floor_val,
         cost_price=cost if can_view_cost else None,
         profit_margin=margin,
         profit_per_unit=profit_unit,
