@@ -24,6 +24,10 @@ from app.models.goods_receipt import (
     ProductBatchEntity,
     InventoryLedgerEntity,
 )
+from app.models.warehouse import (
+    WarehouseLocationEntity,
+    LocationStockEntity,
+)
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
 from app.core.security import get_password_hash
@@ -80,6 +84,11 @@ def _ensure_legacy_columns(bind=engine):
         "categories": {
             "code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
             "product_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
+        },
+        "warehouses": {
+            "manager_name": ("VARCHAR(100)", "NVARCHAR(100)"),
+            "phone": ("VARCHAR(50)", "NVARCHAR(50)"),
             "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
         },
     }
@@ -458,13 +467,64 @@ def init_db():
         if db.query(WarehouseEntity).count() == 0:
             print("Seeding initial warehouses...")
             initial_warehouses = [
-                WarehouseEntity(id=1, code="KHO_HN", name="Kho Tổng Hà Nội", address="Lô CN1 KCN Từ Liêm, Bắc Từ Liêm, Hà Nội", is_active=True),
-                WarehouseEntity(id=2, code="KHO_DN", name="Kho Chi Nhánh Đà Nẵng", address="KCN Hòa Khánh, Liên Chiểu, Đà Nẵng", is_active=True),
-                WarehouseEntity(id=3, code="KHO_HCM", name="Kho Chi Nhánh TP. Hồ Chí Minh", address="Khu chế xuất Tân Thuận, Quận 7, TP. HCM", is_active=True),
+                WarehouseEntity(id=1, code="KHO_HN", name="Kho Tổng Hà Nội", address="Lô CN1 KCN Từ Liêm, Bắc Từ Liêm, Hà Nội", manager_name="Nguyễn Văn Kho", phone="0901234567", status="Đang hoạt động", is_active=True),
+                WarehouseEntity(id=2, code="KHO_DN", name="Kho Chi Nhánh Đà Nẵng", address="KCN Hòa Khánh, Liên Chiểu, Đà Nẵng", manager_name="Lê Thị Vận Chuyển", phone="0912345678", status="Đang hoạt động", is_active=True),
+                WarehouseEntity(id=3, code="KHO_HCM", name="Kho Chi Nhánh TP. Hồ Chí Minh", address="Khu chế xuất Tân Thuận, Quận 7, TP. HCM", manager_name="Phạm Văn Thủ Kho", phone="0987654321", status="Đang hoạt động", is_active=True),
             ]
             db.add_all(initial_warehouses)
             db.commit()
             print("Warehouses seeded successfully.")
+        else:
+            # Cập nhật thông tin người quản lý và số điện thoại nếu còn thiếu
+            wh1 = db.query(WarehouseEntity).filter(WarehouseEntity.id == 1).first()
+            if wh1 and not wh1.manager_name:
+                wh1.manager_name = "Nguyễn Văn Kho"
+                wh1.phone = "0901234567"
+                wh1.status = "Đang hoạt động"
+            wh2 = db.query(WarehouseEntity).filter(WarehouseEntity.id == 2).first()
+            if wh2 and not wh2.manager_name:
+                wh2.manager_name = "Lê Thị Vận Chuyển"
+                wh2.phone = "0912345678"
+                wh2.status = "Đang hoạt động"
+            wh3 = db.query(WarehouseEntity).filter(WarehouseEntity.id == 3).first()
+            if wh3 and not wh3.manager_name:
+                wh3.manager_name = "Phạm Văn Thủ Kho"
+                wh3.phone = "0987654321"
+                wh3.status = "Đang hoạt động"
+            db.commit()
+
+        # 7.1 Seed Warehouse Locations (Khu vực / Dãy / Tầng / Ô chứa) nếu chưa có
+        if db.query(WarehouseLocationEntity).count() == 0:
+            print("Seeding initial warehouse locations...")
+            initial_locs = [
+                WarehouseLocationEntity(id=1, warehouse_id=1, location_code="HN-KA-D1-T1", location_name="Khu A - Dãy 1 - Tầng 1 (Ô 01)", zone="Khu A - Thời trang", aisle="Dãy 1", rack="Tầng 1", bin="Ô 01", max_capacity=500.0, is_active=True, status="Đang sử dụng", note="Chuyên áo sơ mi và polo"),
+                WarehouseLocationEntity(id=2, warehouse_id=1, location_code="HN-KA-D1-T2", location_name="Khu A - Dãy 1 - Tầng 2 (Ô 02)", zone="Khu A - Thời trang", aisle="Dãy 1", rack="Tầng 2", bin="Ô 02", max_capacity=500.0, is_active=True, status="Đang sử dụng", note="Dự phòng áo sơ mi"),
+                WarehouseLocationEntity(id=3, warehouse_id=1, location_code="HN-KB-D2-T1", location_name="Khu B - Dãy 2 - Tầng 1 (Ô 01)", zone="Khu B - Quần âu", aisle="Dãy 2", rack="Tầng 1", bin="Ô 01", max_capacity=800.0, is_active=True, status="Đang sử dụng", note="Quần tây và kaki"),
+                WarehouseLocationEntity(id=4, warehouse_id=1, location_code="HN-KB-D2-T2", location_name="Khu B - Dãy 2 - Tầng 2 (Ô 02)", zone="Khu B - Quần âu", aisle="Dãy 2", rack="Tầng 2", bin="Ô 02", max_capacity=800.0, is_active=True, status="Đang sử dụng", note="Hàng xuất buôn"),
+                WarehouseLocationEntity(id=5, warehouse_id=2, location_code="DN-K1-D1-T1", location_name="Khu 1 - Dãy 1 - Tầng 1", zone="Khu Miền Trung", aisle="Dãy 1", rack="Tầng 1", bin="Ô 01", max_capacity=600.0, is_active=True, status="Đang sử dụng", note="Kho trung chuyển Đà Nẵng"),
+                WarehouseLocationEntity(id=6, warehouse_id=3, location_code="HCM-KA-D1-T1", location_name="Khu A - Dãy 1 - Tầng 1", zone="Khu Nam Bộ", aisle="Dãy 1", rack="Tầng 1", bin="Ô 01", max_capacity=1000.0, is_active=True, status="Đang sử dụng", note="Kho phân phối Miền Nam"),
+            ]
+            db.add_all(initial_locs)
+            db.commit()
+            print("Warehouse locations seeded successfully.")
+
+        # 7.2 Seed Location Stocks nếu chưa có
+        if db.query(LocationStockEntity).count() == 0:
+            print("Seeding initial location stocks...")
+            initial_stocks = [
+                # SP1 nằm ở cả Tầng 1 và Tầng 2 của Kho Hà Nội
+                LocationStockEntity(warehouse_id=1, location_id=1, product_id=1, quantity=70),
+                LocationStockEntity(warehouse_id=1, location_id=2, product_id=1, quantity=30),
+                # SP2 nằm ở Khu B
+                LocationStockEntity(warehouse_id=1, location_id=3, product_id=2, quantity=45),
+                # SP3 nằm ở Dãy 2 Tầng 2
+                LocationStockEntity(warehouse_id=1, location_id=4, product_id=3, quantity=55),
+                # SP3 tại HCM
+                LocationStockEntity(warehouse_id=3, location_id=6, product_id=3, quantity=40),
+            ]
+            db.add_all(initial_stocks)
+            db.commit()
+            print("Location stocks seeded successfully.")
 
         # 8. Seed Units of Measure nếu chưa có
         if db.query(UnitOfMeasureEntity).count() == 0:

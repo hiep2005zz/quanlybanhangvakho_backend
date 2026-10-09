@@ -47,6 +47,17 @@ def test_dealer_api_endpoints():
     print(f"[5] Filter customer group OK: {len(group_res.json()['items'])} items")
 
     # 6. Transactions list
+    from app.api.v1.endpoints.orders import ORDERS_DB
+    ORDERS_DB[1] = {
+        'id': 1,
+        'order_code': 'DH-2026-0001',
+        'dealer_id': 1,
+        'dealer_name': 'Công Ty Cổ Phần Phân Phối Tổng Hợp Sao Mai Toàn Cầu',
+        'created_by': 'sales',
+        'total_amount': 35800000.0,
+        'status': 'COMPLETED',
+        'items': [{'product_id': 1, 'quantity': 10, 'price': 250000.0}]
+    }
     tx_res = client.get('/api/v1/dealers/1/transactions', headers=headers)
     assert tx_res.status_code == 200
     tx_data = tx_res.json()

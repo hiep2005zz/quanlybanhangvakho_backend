@@ -37,6 +37,8 @@ class DealerCreateRequest(BaseModel):
     customer_group: Optional[str] = "Đại lý cấp 1"
     status: Optional[str] = "Đang hoạt động"
     transaction_count: Optional[int] = None
+    warehouse_id: Optional[str] = None
+    warehouse_name: Optional[str] = None
 
 
 class DealerUpdateRequest(BaseModel):
@@ -53,6 +55,8 @@ class DealerUpdateRequest(BaseModel):
     customer_group: Optional[str] = None
     status: Optional[str] = None
     transaction_count: Optional[int] = None
+    warehouse_id: Optional[str] = None
+    warehouse_name: Optional[str] = None
 
 
 def get_sale_name(assigned_sale_id: Optional[int]) -> Optional[str]:
@@ -366,6 +370,8 @@ def search_dealers(
             "transaction_count": 0,
             "has_transactions": False,
             "applied_price_book": applied_pb,
+            "warehouse_id": getattr(customer_dealer, "warehouse_id", None),
+            "warehouse_name": getattr(customer_dealer, "warehouse_name", None),
         }
         return {
             "items": [single_item],
@@ -522,6 +528,8 @@ def search_dealers(
             "transaction_count": transaction_count,
             "has_transactions": transaction_count > 0,
             "applied_price_book": applied_pb,
+            "warehouse_id": getattr(dealer, "warehouse_id", None),
+            "warehouse_name": getattr(dealer, "warehouse_name", None),
         })
 
     # Phân trang
@@ -819,6 +827,8 @@ def create_dealer(
         customer_group=payload.customer_group or "Đại lý cấp 1",
         status=payload.status or "Đang hoạt động",
         transaction_count=tx_cnt,
+        warehouse_id=payload.warehouse_id,
+        warehouse_name=payload.warehouse_name,
     )
 
     DEALERS_DB[new_id] = new_dealer
@@ -843,6 +853,8 @@ def create_dealer(
         "transaction_count": tx_cnt,
         "has_transactions": tx_cnt > 0,
         "applied_price_book": applied_pb,
+        "warehouse_id": new_dealer.warehouse_id,
+        "warehouse_name": new_dealer.warehouse_name,
     }
 
 
@@ -928,8 +940,27 @@ def update_dealer_profile(
                 detail="Số lượng giao dịch phải lớn hơn hoặc bằng 0.",
             )
         dealer.transaction_count = payload.transaction_count
+    if payload.warehouse_id is not None:
+        dealer.warehouse_id = payload.warehouse_id
+    if payload.warehouse_name is not None:
+        dealer.warehouse_name = payload.warehouse_name
 
     save_dealers_db()
+
+    # Đồng bộ vào database DealerEntity nếu có
+    try:
+        from app.models.entities import DealerEntity
+        db_dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer.id).first()
+        if db_dealer:
+            if payload.name: db_dealer.name = dealer.name
+            if payload.phone: db_dealer.phone = dealer.phone
+            if payload.email: db_dealer.email = dealer.email
+            if payload.address: db_dealer.address = dealer.address
+            if payload.warehouse_id is not None: db_dealer.warehouse_id = dealer.warehouse_id
+            if payload.warehouse_name is not None: db_dealer.warehouse_name = dealer.warehouse_name
+            db.commit()
+    except Exception:
+        pass
 
     try:
         log_audit_event(
@@ -946,6 +977,8 @@ def update_dealer_profile(
                 "customer_group": dealer.customer_group,
                 "status": dealer.status,
                 "transaction_count": getattr(dealer, "transaction_count", 0),
+                "warehouse_id": getattr(dealer, "warehouse_id", None),
+                "warehouse_name": getattr(dealer, "warehouse_name", None),
             },
             reason="Cập nhật hồ sơ đại lý",
             request=request,
@@ -973,6 +1006,8 @@ def update_dealer_profile(
         "transaction_count": tx_count,
         "has_transactions": tx_count > 0,
         "applied_price_book": get_applied_price_book_info(dealer.customer_group),
+        "warehouse_id": getattr(dealer, "warehouse_id", None),
+        "warehouse_name": getattr(dealer, "warehouse_name", None),
     }
 
 
@@ -1374,6 +1409,8 @@ def get_dealers(
             "transaction_count": 0,
             "has_transactions": False,
             "applied_price_book": get_applied_price_book_info(getattr(customer_dealer, "customer_group", "Đại lý cấp 1")),
+            "warehouse_id": getattr(customer_dealer, "warehouse_id", None),
+            "warehouse_name": getattr(customer_dealer, "warehouse_name", None),
         }]
 
     from app.api.v1.endpoints.orders import ORDERS_DB
@@ -1402,5 +1439,7 @@ def get_dealers(
             "transaction_count": tx_count,
             "has_transactions": tx_count > 0,
             "applied_price_book": applied_pb,
+            "warehouse_id": getattr(d, "warehouse_id", None),
+            "warehouse_name": getattr(d, "warehouse_name", None),
         })
     return res

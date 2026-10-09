@@ -27,8 +27,12 @@ class WarehouseEntity(Base):
     code = Column(String(50), unique=True, index=True, nullable=False)
     name = Column(Unicode(255), nullable=False)
     address = Column(Unicode(500), nullable=True)
+    manager_name = Column(Unicode(100), nullable=True)
+    phone = Column(String(50), nullable=True)
+    status = Column(Unicode(50), default="Đang hoạt động", nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=get_utc_now)
+
 
 
 class UnitOfMeasureEntity(Base):

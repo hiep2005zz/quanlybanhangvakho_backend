@@ -16,7 +16,9 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "2": {
     "id": 2,
@@ -35,7 +37,9 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "3": {
     "id": 3,
@@ -54,15 +58,17 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "4": {
     "id": 4,
     "code": "DL004",
-    "name": "Công Ty TNHH Bán Lẻ An Phát",
+    "name": "Lê Thủ Kho",
     "tax_code": null,
     "phone": "0945678901",
-    "email": "anphat@daily.vn",
+    "email": "kho@congty.vn",
     "address": "66 Nguyễn Huệ, Đà Nẵng",
     "region": "Đà Nẵng",
     "assigned_sale_id": 2,
@@ -73,7 +79,9 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "5": {
     "id": 5,
@@ -92,6 +100,8 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   }
 }
