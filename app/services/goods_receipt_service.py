@@ -548,7 +548,26 @@ def confirm_goods_receipt(
             )
             db.add(inv_tx)
 
-        # 5. Ghi Audit Log cho hệ thống
+            # 5. Ghi Audit Log cho sản phẩm (STOCK_RECEIPT) để đi vào Lịch sử sản phẩm
+            log_audit_event(
+                db=db,
+                user=current_user,
+                action_type="STOCK_RECEIPT",
+                entity_type="Product",
+                entity_id=prod.code,
+                old_val={"stock": prev_stock},
+                new_val={
+                    "stock": new_stock,
+                    "added_quantity": item.base_quantity,
+                    "unit": item.unit_name,
+                    "batch_number": item.batch_number,
+                    "expiry_date": item.expiry_date.isoformat() if item.expiry_date else None,
+                },
+                reason=f"Nhập kho từ NCC theo phiếu {receipt.code}: +{item.quantity} {item.unit_name} (=+{item.base_quantity} {prod.base_unit})",
+                request=request,
+            )
+
+        # 6. Ghi Audit Log cho hệ thống (GoodsReceiptNote)
         log_audit_event(
             db=db,
             user=current_user,

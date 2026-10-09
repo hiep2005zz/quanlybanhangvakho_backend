@@ -249,7 +249,7 @@ def get_products(
             if db_p.floor_price is not None and db_p.floor_price > 0:
                 floor_price = float(db_p.floor_price)
                 p["floor_price"] = floor_price
-            if db_p.cost_price is not None:
+            if db_p.cost_price is not None and db_p.cost_price > 0:
                 cost_price = float(db_p.cost_price)
                 p["cost_price"] = cost_price
             if db_p.stock is not None:
