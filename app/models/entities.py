@@ -58,9 +58,16 @@ class UserEntity(Base):
     def roles(self, val: list[str]):
         self.roles_json = json.dumps(val or [])
 
+    def get_roles(self) -> list[str]:
+        return self.roles
+
     @property
     def avatar_url(self) -> str | None:
         return None
+
+    @avatar_url.setter
+    def avatar_url(self, val: str | None):
+        pass
 
 
 class RoleEntity(Base):
@@ -115,6 +122,7 @@ class ProductEntity(Base):
     packaging_specification = Column(Unicode(255), nullable=True)
     images_json = Column(UnicodeText, nullable=True)
     status = Column(String(50), default="active")
+    is_batch_managed = Column(Boolean, default=False, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
     category_rel = relationship("CategoryEntity", backref="products")

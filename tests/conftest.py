@@ -31,6 +31,17 @@ if DEV_USERS_JSON.exists():
     shutil.copyfile(DEV_USERS_JSON, TEST_USERS_JSON)
 app.models.user.DB_FILE_PATH = str(TEST_USERS_JSON)
 
+from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
+import app.core.database
+app.core.database.engine = create_engine(
+    app.core.database.settings.DATABASE_URL,
+    echo=False,
+    poolclass=NullPool,
+    connect_args={"check_same_thread": False} if "sqlite" in str(app.core.database.settings.DATABASE_URL) else {}
+)
+app.core.database.SessionLocal.configure(bind=app.core.database.engine)
+
 from app.db.init_db import init_db
 init_db()
 from app.core.database import SessionLocal
@@ -63,6 +74,15 @@ def reset_test_state():
         ).delete(synchronize_session=False)
         from app.api.v1.endpoints.products import RAW_PRODUCTS
         RAW_PRODUCTS[:] = [p for p in RAW_PRODUCTS if p.get("code") not in ["SP_CONFIRM_NEW_99", "SP_TEST_NEW_01", "SP_TEST_02", "SP_TEST_03", "SP_TEST_04", "SP_TRUNG_01"]]
+
+        prod1 = db.query(ProductEntity).filter(ProductEntity.id == 1).first()
+        if prod1:
+            prod1.base_unit = "Cái"
+            prod1.units_json = json.dumps([{"unit_name": "Lốc", "conversion_rate": 6.0}, {"unit_name": "Thùng", "conversion_rate": 24.0}], ensure_ascii=False)
+        prod2 = db.query(ProductEntity).filter(ProductEntity.id == 2).first()
+        if prod2:
+            prod2.base_unit = "Chiếc"
+            prod2.units_json = json.dumps([{"unit_name": "Kiện", "conversion_rate": 10.0}], ensure_ascii=False)
 
         # Xóa các bảng giá test phát sinh (id > 3)
         from app.models.price_book import PriceBookEntity, PriceBookItemEntity
@@ -117,8 +137,19 @@ def reset_test_state():
         
         from app.models.entities import AuditLogEntity, InventoryTransactionEntity
         from sqlalchemy import func
-        max_audit_id = db.query(func.max(AuditLogEntity.id)).scalar() or 0
-        max_inv_id = db.query(func.max(InventoryTransactionEntity.id)).scalar() or 0
+        from app.models.entities import ProductEntity, WarehouseStockEntity
+        p1 = db.query(ProductEntity).filter(ProductEntity.id == 1).first()
+        if p1:
+            p1.base_unit = "Cái"
+            p1.units_json = json.dumps([{"unit_name": "Lốc", "conversion_rate": 6.0}, {"unit_name": "Thùng", "conversion_rate": 24.0}], ensure_ascii=False)
+        p2 = db.query(ProductEntity).filter(ProductEntity.id == 2).first()
+        if p2:
+            p2.base_unit = "Chiếc"
+            p2.units_json = json.dumps([{"unit_name": "Kiện", "conversion_rate": 10.0}], ensure_ascii=False)
+        for ws in db.query(WarehouseStockEntity).all():
+            ws.reserved_stock = 0
+            if ws.actual_stock is None or ws.actual_stock < 150:
+                ws.actual_stock = 150
         db.commit()
     finally:
         db.close()
@@ -162,14 +193,20 @@ def reset_test_state():
 
         # Khôi phục ĐVT chuẩn cho SP001 và SP002 trong DB nếu bị test đổi
         prod1 = cleanup_db.query(ProductEntity).filter(ProductEntity.id == 1).first()
-        if prod1 and str(prod1.base_unit).lower() == "lon":
+        if prod1:
             prod1.base_unit = "Cái"
             prod1.units_json = json.dumps([{"unit_name": "Lốc", "conversion_rate": 6.0}, {"unit_name": "Thùng", "conversion_rate": 24.0}], ensure_ascii=False)
 
         prod2 = cleanup_db.query(ProductEntity).filter(ProductEntity.id == 2).first()
-        if prod2 and str(prod2.base_unit).lower() == "lon":
+        if prod2:
             prod2.base_unit = "Chiếc"
             prod2.units_json = json.dumps([{"unit_name": "Kiện", "conversion_rate": 10.0}], ensure_ascii=False)
+        from app.models.entities import WarehouseStockEntity
+        for ws in cleanup_db.query(WarehouseStockEntity).all():
+            ws.reserved_stock = 0
+            if ws.actual_stock is None or ws.actual_stock < 150:
+                ws.actual_stock = 150
+        cleanup_db.commit()
 
         from app.models.entities import DealerEntity
         for did, sid in original_dealer_sales.items():
