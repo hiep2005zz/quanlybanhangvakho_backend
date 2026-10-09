@@ -246,7 +246,20 @@ def require_sales_role(current_user: UserResponse = Depends(get_current_user)) -
     if not any(r in SALES_ROLES for r in user_roles):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh (Sales / Sale Executive)."
+            detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh (Sales / Sale Executive) và Quản trị hệ thống (Admin)."
         )
     return current_user
+
+
+def require_sales_or_admin_role(current_user: UserResponse = Depends(get_current_user)) -> UserResponse:
+    """
+    AC 4 Guard:
+    Bảo vệ các API tạo đơn, kiểm tra công nợ và xem thông tin công nợ.
+    Chỉ cho phép:
+    - Nhân viên kinh doanh (Role: Sales / Sale Executive: sales, sales_manager)
+    - Quản trị hệ thống (Role: Admin: admin)
+    Các vai trò khác bị CHẶN ngay lập tức với HTTP 403 Forbidden.
+    """
+    return require_sales_role(current_user)
+
 

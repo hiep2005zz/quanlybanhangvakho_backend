@@ -65,6 +65,7 @@ def _ensure_legacy_columns(bind=engine):
         },
         "dealers": {
             "max_debt_days": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
+            "overdue_days_allowed": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
             "locked_by": ("VARCHAR(50)", "NVARCHAR(50)"),
             "tax_code": ("VARCHAR(50)", "NVARCHAR(50)"),
             "transaction_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
@@ -620,5 +621,4 @@ def init_db():
         db.close()
 
 if __name__ == "__main__":
-    init_db()
     init_db()

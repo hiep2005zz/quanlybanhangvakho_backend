@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from app.api.deps import get_current_user, require_permission, require_roles
+from app.api.deps import get_current_user, require_permission, require_roles, require_sales_or_admin_role
 from app.core.database import get_db
 from app.core.rbac import Permission, Role
 from app.schemas.auth import UserResponse
@@ -198,6 +198,72 @@ def _is_dealer_locked(d) -> bool:
         or "lock" in st_str
     )
 
+class DealerCreditInfoResponse(BaseModel):
+    dealer_id: int
+    dealer_code: str
+    dealer_name: str
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    customer_group: Optional[str] = None
+    status: Optional[str] = "Đang hoạt động"
+    credit_limit: float
+    overdue_days_allowed: int
+    max_debt_days: int
+    current_debt: float
+    remaining_credit: float
+    max_debt_age: int
+    is_overdue: bool
+    is_over_limit: bool
+
+def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
+    """
+    Tính toán chi tiết công nợ hiện tại, tuổi nợ và trạng thái nợ quá hạn của đại lý.
+    """
+    current_debt = 0.0
+    max_debt_age = 0
+    now = datetime.now(timezone.utc)
+    for o in orders_db.values():
+        if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
+            current_debt += float(o.get("total_amount", 0.0) or 0.0)
+            created_at_val = o.get("created_at")
+            if created_at_val:
+                try:
+                    if isinstance(created_at_val, str):
+                        order_date = datetime.fromisoformat(created_at_val.replace("Z", "+00:00"))
+                    elif isinstance(created_at_val, datetime):
+                        order_date = created_at_val if created_at_val.tzinfo else created_at_val.replace(tzinfo=timezone.utc)
+                    else:
+                        order_date = now
+                    days_old = max(0, (now - order_date).days)
+                    if days_old > max_debt_age:
+                        max_debt_age = days_old
+                except Exception:
+                    pass
+
+    credit_limit = float(getattr(dealer, "credit_limit", 50000000.0) or 50000000.0)
+    allowed_days = int(getattr(dealer, "overdue_days_allowed", getattr(dealer, "max_debt_days", 30)) or 30)
+    remaining_credit = max(0.0, credit_limit - current_debt)
+    is_overdue = max_debt_age > allowed_days
+    is_over_limit = current_debt > credit_limit
+
+    return {
+        "dealer_id": dealer.id,
+        "dealer_code": dealer.code,
+        "dealer_name": dealer.name,
+        "phone": getattr(dealer, "phone", None),
+        "address": getattr(dealer, "address", None),
+        "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
+        "status": getattr(dealer, "status", "Đang hoạt động"),
+        "credit_limit": credit_limit,
+        "overdue_days_allowed": allowed_days,
+        "max_debt_days": allowed_days,
+        "current_debt": current_debt,
+        "remaining_credit": remaining_credit,
+        "max_debt_age": max_debt_age,
+        "is_overdue": is_overdue,
+        "is_over_limit": is_over_limit,
+    }
+
 def _get_customer_dealer(current_user: UserResponse):
     customer_dealer = DEALERS_DB.get(current_user.id)
     if not customer_dealer:
@@ -232,8 +298,10 @@ def get_order_dealers(
             )
         dealers = [dealer for dealer in dealers if dealer.assigned_sale_id == assigned_user.id]
 
-    return [
-        {
+    res = []
+    for dealer in sorted(dealers, key=lambda item: item.name.lower()):
+        debt_info = calculate_dealer_debt_summary(dealer, ORDERS_DB)
+        res.append({
             "id": dealer.id,
             "code": dealer.code,
             "name": dealer.name,
@@ -241,9 +309,44 @@ def get_order_dealers(
             "address": dealer.address,
             "status": getattr(dealer, "status", "Đang hoạt động"),
             "lock_reason": getattr(dealer, "lock_reason", None),
-        }
-        for dealer in sorted(dealers, key=lambda item: item.name.lower())
-    ]
+            "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
+            "credit_limit": debt_info["credit_limit"],
+            "overdue_days_allowed": debt_info["overdue_days_allowed"],
+            "max_debt_days": debt_info["max_debt_days"],
+            "current_debt": debt_info["current_debt"],
+            "remaining_credit": debt_info["remaining_credit"],
+            "max_debt_age": debt_info["max_debt_age"],
+            "is_overdue": debt_info["is_overdue"],
+            "is_over_limit": debt_info["is_over_limit"],
+        })
+    return res
+
+@router.get("/dealers/{dealer_id}/credit-info", response_model=DealerCreditInfoResponse)
+def get_order_dealer_credit_info(
+    dealer_id: int,
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "customer"]))
+):
+    """
+    AC 4 & AC 1: API lấy thông tin công nợ chi tiết của Đại lý phục vụ kiểm soát khi lên đơn.
+    Bảo vệ quyền truy cập: Chỉ cho phép Nhân viên kinh doanh (Sales), Quản trị hệ thống (Admin).
+    """
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+    load_dealers_db()
+    dealer = DEALERS_DB.get(dealer_id)
+    if not dealer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đại lý có ID {dealer_id}."
+        )
+    if is_customer:
+        customer_dealer = _get_customer_dealer(current_user)
+        if not customer_dealer or customer_dealer.id != dealer_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tài khoản đại lý chỉ được phép xem thông tin công nợ của chính mình."
+            )
+    return calculate_dealer_debt_summary(dealer, ORDERS_DB)
 
 @router.get("", response_model=List[OrderResponse])
 def get_orders(
@@ -415,7 +518,7 @@ def create_order(
     data: OrderCreate,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.ORDER_WRITE.value))
+    current_user: UserResponse = Depends(require_sales_or_admin_role)
 ):
     global NEXT_ORDER_ID
     load_dealers_db()
@@ -502,42 +605,23 @@ def create_order(
         )
 
     # 3. Kiểm tra hạn mức công nợ và số ngày nợ tối đa
-    current_debt = 0.0
-    max_debt_age = 0
-    now = datetime.now(timezone.utc)
-    for o in ORDERS_DB.values():
-        if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
-            current_debt += o.get("total_amount", 0.0)
-            created_at_str = o.get("created_at")
-            if created_at_str:
-                try:
-                    order_date = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-                    days_old = (now - order_date).days
-                    if days_old > max_debt_age:
-                        max_debt_age = days_old
-                except Exception:
-                    pass
-    
+    debt_summary = calculate_dealer_debt_summary(dealer, ORDERS_DB)
+    current_debt = debt_summary["current_debt"]
+    credit_limit = debt_summary["credit_limit"]
+    overdue_days_allowed = debt_summary["overdue_days_allowed"]
+    max_debt_age = debt_summary["max_debt_age"]
+    is_overdue = debt_summary["is_overdue"]
+
+    # TIÊU CHÍ 3 (Khoản nợ quá hạn - Block hoàn toàn):
+    # Đại lý có khoản quá hạn quá số ngày cho phép thì chặn tạo đơn hoàn toàn
+    if is_overdue:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đại lý '{dealer.name}' có khoản nợ quá hạn ({max_debt_age} ngày, vượt quá {overdue_days_allowed} ngày cho phép). Hệ thống chặn tạo đơn hàng mới."
+        )
+
     order_total = sum(item.quantity * item.price for item in data.items)
-    
-    over_limit = (current_debt + order_total) > getattr(dealer, "credit_limit", 50000000.0)
-    over_days = max_debt_age > getattr(dealer, "max_debt_days", 30)
-    
-    if over_limit and over_days:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Đại lý đã vượt hạn mức công nợ và có công nợ quá hạn. Không thể xuất hàng."
-        )
-    elif over_limit:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Đại lý đã vượt hạn mức công nợ. Không thể xuất hàng."
-        )
-    elif over_days:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Đại lý có công nợ quá hạn. Không thể xuất hàng."
-        )
+    over_limit = (current_debt + order_total) > credit_limit
 
     # 4. Tạo đơn hàng và tính base_quantity
     from app.api.v1.endpoints.products import RAW_PRODUCTS, _find_product_in_raw
@@ -704,6 +788,14 @@ def create_order(
 
     discount_amount = round(subtotal_amount * effective_pct / 100, 2)
     final_total_amount = subtotal_amount - discount_amount
+
+    # TIÊU CHÍ 2 (Vượt hạn mức): Tổng đơn cộng công nợ hiện tại vượt hạn mức thì đơn bị đánh dấu cần duyệt
+    if (current_debt + final_total_amount) > credit_limit or over_limit:
+        requires_approval = True
+        approval_reasons.append(
+            f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
+        )
+
     order_id = _allocate_order_id(db)
 
     order_code = f"ORD{order_id:05d}"
@@ -736,6 +828,9 @@ def create_order(
                 delivery_point_id=selected_delivery_point_id,
                 discount_rate=effective_pct,
                 discount_amount=discount_amount,
+                requires_approval=requires_approval,
+                approval_status="PENDING_APPROVAL" if requires_approval else "NORMAL",
+                approval_reason=approval_reason,
                 items_json=json.dumps({
                     "items": processed_items,
                     "delivery_point": delivery_point_str,
@@ -809,7 +904,7 @@ def create_sales_entry_order(
     data: OrderCreate,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.ORDER_WRITE.value)),
+    current_user: UserResponse = Depends(require_sales_or_admin_role),
 ):
     """Create and persist orders from the sales-entry workflow."""
     if not data.items:
@@ -889,6 +984,28 @@ def create_sales_entry_order(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Đại lý '{dealer.name}' hiện đang bị KHÓA giao dịch. Không thể tạo đơn hàng mới."
+        )
+
+    # AC 4: Kiểm tra phân quyền truy cập tính năng tạo đơn bán hàng
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    if not any(r in ["admin", "sales_manager", "sales"] for r in user_roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh (Sales / Sale Executive) và Quản trị hệ thống (Admin)."
+        )
+
+    # AC 3: Kiểm tra nợ quá hạn (Block hoàn toàn)
+    debt_summary = calculate_dealer_debt_summary(dealer, ORDERS_DB)
+    current_debt = debt_summary["current_debt"]
+    credit_limit = debt_summary["credit_limit"]
+    overdue_days_allowed = debt_summary["overdue_days_allowed"]
+    max_debt_age = debt_summary["max_debt_age"]
+    is_overdue = debt_summary["is_overdue"]
+
+    if is_overdue:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đại lý '{dealer.name}' có khoản nợ quá hạn ({max_debt_age} ngày, vượt quá {overdue_days_allowed} ngày cho phép). Hệ thống chặn tạo đơn hàng mới."
         )
 
     product_by_id = {product["id"]: product for product in RAW_PRODUCTS}
@@ -1010,6 +1127,14 @@ def create_sales_entry_order(
 
     discount_amount = round(subtotal_amount * effective_pct / 100, 2)
     final_total_amount = subtotal_amount - discount_amount
+
+    # TIÊU CHÍ 2 (Vượt hạn mức): Tổng đơn cộng công nợ hiện tại vượt hạn mức thì đơn bị đánh dấu cần duyệt
+    if (current_debt + final_total_amount) > credit_limit:
+        requires_approval = True
+        approval_reasons.append(
+            f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
+        )
+
     order_status = "PENDING_APPROVAL" if requires_approval else "CONFIRMED"
     approval_reason = " | ".join(approval_reasons) if approval_reasons else None
 
@@ -1025,6 +1150,9 @@ def create_sales_entry_order(
         discount_rate=effective_pct,
         discount_amount=discount_amount,
         status=order_status,
+        requires_approval=requires_approval,
+        approval_status="PENDING_APPROVAL" if requires_approval else "NORMAL",
+        approval_reason=approval_reason,
         note=data.note,
         delivery_point_id=selected_dp_id,
         items_json=json.dumps({

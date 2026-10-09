@@ -34,6 +34,7 @@ class DealerCreateRequest(BaseModel):
     region: Optional[str] = None
     assigned_sale_id: Optional[int] = None
     credit_limit: Optional[float] = 50000000.0
+    overdue_days_allowed: Optional[int] = 30
     customer_group: Optional[str] = "Đại lý cấp 1"
     status: Optional[str] = "Đang hoạt động"
     transaction_count: Optional[int] = None
@@ -52,11 +53,30 @@ class DealerUpdateRequest(BaseModel):
     assigned_sale_id: Optional[int] = None
     credit_limit: Optional[float] = None
     max_debt_days: Optional[int] = None
+    overdue_days_allowed: Optional[int] = None
     customer_group: Optional[str] = None
     status: Optional[str] = None
     transaction_count: Optional[int] = None
     warehouse_id: Optional[str] = None
     warehouse_name: Optional[str] = None
+
+
+class DealerCreditInfoResponse(BaseModel):
+    dealer_id: int
+    dealer_code: str
+    dealer_name: str
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    customer_group: Optional[str] = None
+    status: Optional[str] = "Đang hoạt động"
+    credit_limit: float
+    overdue_days_allowed: int
+    max_debt_days: int
+    current_debt: float
+    remaining_credit: float
+    max_debt_age: int
+    is_overdue: bool
+    is_over_limit: bool
 
 
 def get_sale_name(assigned_sale_id: Optional[int]) -> Optional[str]:
@@ -824,6 +844,8 @@ def create_dealer(
         region=reg,
         assigned_sale_id=assigned_sale,
         credit_limit=payload.credit_limit or 50000000.0,
+        max_debt_days=payload.overdue_days_allowed or 30,
+        overdue_days_allowed=payload.overdue_days_allowed or 30,
         customer_group=payload.customer_group or "Đại lý cấp 1",
         status=payload.status or "Đang hoạt động",
         transaction_count=tx_cnt,
@@ -856,6 +878,35 @@ def create_dealer(
         "warehouse_id": new_dealer.warehouse_id,
         "warehouse_name": new_dealer.warehouse_name,
     }
+
+
+@router.get("/{dealer_id}/credit-info", response_model=DealerCreditInfoResponse)
+def get_dealer_credit_info_detail(
+    dealer_id: int,
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "customer"]))
+):
+    """
+    AC 4 & AC 1: API lấy thông tin công nợ chi tiết của Đại lý phục vụ kiểm soát khi lên đơn.
+    Bảo vệ quyền truy cập: Chỉ cho phép Nhân viên kinh doanh (Sales), Quản trị hệ thống (Admin).
+    """
+    from app.api.v1.endpoints.orders import ORDERS_DB, calculate_dealer_debt_summary
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+    load_dealers_db()
+    dealer = DEALERS_DB.get(dealer_id)
+    if not dealer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đại lý có ID {dealer_id}."
+        )
+    if is_customer:
+        customer_dealer = DEALERS_DB.get(current_user.id)
+        if not customer_dealer or customer_dealer.id != dealer_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tài khoản đại lý chỉ được phép xem thông tin công nợ của chính mình."
+            )
+    return calculate_dealer_debt_summary(dealer, ORDERS_DB)
 
 
 @router.put("/{dealer_id}")
@@ -931,8 +982,12 @@ def update_dealer_profile(
             dealer.status = payload.status.strip()
     if payload.credit_limit is not None:
         dealer.credit_limit = payload.credit_limit
-    if payload.max_debt_days is not None:
+    if payload.overdue_days_allowed is not None:
+        dealer.overdue_days_allowed = payload.overdue_days_allowed
+        dealer.max_debt_days = payload.overdue_days_allowed
+    elif payload.max_debt_days is not None:
         dealer.max_debt_days = payload.max_debt_days
+        dealer.overdue_days_allowed = payload.max_debt_days
     if payload.transaction_count is not None:
         if payload.transaction_count < 0:
             raise HTTPException(
