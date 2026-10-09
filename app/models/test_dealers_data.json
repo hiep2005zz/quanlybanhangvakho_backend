@@ -11,12 +11,15 @@
     "assigned_sale_id": 3,
     "credit_limit": 100000000.0,
     "max_debt_days": 30,
+    "overdue_days_allowed": 30,
     "customer_group": "dai_ly_cap_1",
     "status": "Đang hoạt động",
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "2": {
     "id": 2,
@@ -30,12 +33,15 @@
     "assigned_sale_id": 3,
     "credit_limit": 50000000.0,
     "max_debt_days": 30,
+    "overdue_days_allowed": 30,
     "customer_group": "dai_ly_cap_2",
     "status": "Đang hoạt động",
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "3": {
     "id": 3,
@@ -49,12 +55,15 @@
     "assigned_sale_id": 3,
     "credit_limit": 50000000.0,
     "max_debt_days": 30,
+    "overdue_days_allowed": 30,
     "customer_group": "Khách sỉ",
     "status": "Đang hoạt động",
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "4": {
     "id": 4,
@@ -68,12 +77,15 @@
     "assigned_sale_id": 2,
     "credit_limit": 50000000.0,
     "max_debt_days": 30,
+    "overdue_days_allowed": 30,
     "customer_group": "khach_le",
     "status": "Tạm ngừng",
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "5": {
     "id": 5,
@@ -87,11 +99,14 @@
     "assigned_sale_id": null,
     "credit_limit": 20000000.0,
     "max_debt_days": 30,
+    "overdue_days_allowed": 30,
     "customer_group": "khach_le",
     "status": "Đang hoạt động",
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0
+    "transaction_count": 0,
+    "warehouse_id": null,
+    "warehouse_name": null
   }
 }
