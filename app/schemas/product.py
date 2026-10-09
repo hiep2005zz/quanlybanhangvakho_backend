@@ -4,8 +4,9 @@ from pydantic import BaseModel, Field
 
 class PriceUpdateRequest(BaseModel):
     sell_price: Optional[float] = Field(None, ge=0)
+    floor_price: Optional[float] = Field(None, ge=0)
     cost_price: Optional[float] = Field(None, ge=0)
-    reason: Optional[str] = "Điều chỉnh giá niêm yết/giá vốn"
+    reason: Optional[str] = "Điều chỉnh giá niêm yết/giá sàn/giá vốn"
 
 class UnitConversionItem(BaseModel):
     unit_name: str = Field(..., min_length=1, max_length=50)
@@ -24,6 +25,7 @@ class ProductCreateRequest(BaseModel):
     units: Optional[List[UnitConversionItem]] = []
     packaging_specification: Optional[str] = None
     sell_price: Optional[float] = Field(0.0, ge=0)
+    floor_price: Optional[float] = Field(0.0, ge=0)
     cost_price: Optional[float] = Field(None, ge=0)
     images: Optional[List[str]] = []
     status: Optional[str] = "active"
@@ -38,6 +40,7 @@ class ProductUpdateRequest(BaseModel):
     units: Optional[List[UnitConversionItem]] = None
     packaging_specification: Optional[str] = None
     sell_price: Optional[float] = Field(None, ge=0)
+    floor_price: Optional[float] = Field(None, ge=0)
     cost_price: Optional[float] = Field(None, ge=0)
     images: Optional[List[str]] = None
     status: Optional[str] = None
@@ -51,6 +54,7 @@ class ProductItem(BaseModel):
     category_id: Optional[int] = None
     stock: int
     sell_price: float
+    floor_price: Optional[float] = 0.0
     base_unit: str = "Cái"
     units: List[UnitConversionItem] = []
     packaging_specification: Optional[str] = None
