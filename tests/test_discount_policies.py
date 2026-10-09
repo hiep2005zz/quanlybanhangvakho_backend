@@ -19,12 +19,32 @@ def _admin_login() -> str:
 def ensure_stock():
     from app.core.database import SessionLocal
     from app.models.entities import WarehouseStockEntity
+    from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
     db = SessionLocal()
     try:
         stocks = db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id == 1).all()
         for s in stocks:
             s.actual_stock = 1000
             s.reserved_stock = 0
+
+        p = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.code == "CK-SL-001").first()
+        if not p:
+            p = DiscountPolicyEntity(
+                code="CK-SL-001",
+                name="Chiết khấu sản lượng toàn hệ thống",
+                title="Tất cả sản phẩm",
+                category="ALL",
+                target_dealer_type="ALL",
+                target_group="all",
+                is_active=True,
+                status="active",
+                start_date="2026-01-01",
+                end_date="2026-12-31",
+            )
+            db.add(p)
+            db.flush()
+            t = DiscountTierEntity(policy_id=p.id, min_quantity=100, max_quantity=499, discount_percent=5.0)
+            db.add(t)
         db.commit()
     finally:
         db.close()
@@ -319,5 +339,44 @@ def test_discount_policy_rbac_permissions():
         headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert del_res.status_code == 200
+
+
+def test_category_discount_policy_application():
+    """
+    Kiểm tra chính sách chiết khấu áp dụng cho 1 nhóm hàng (Category):
+    Tạo chính sách cho nhóm 'Áo Nam', khi đặt sản phẩm thuộc 'Áo Nam' (Product 1)
+    với số lượng đủ bậc sẽ được hưởng chiết khấu chính sách.
+    """
+    admin_token = _admin_login()
+    payload = {
+        "code": "CK-CAT-AONAM",
+        "name": "Nhóm hàng: Áo Nam",
+        "title": "Nhóm hàng: Áo Nam",
+        "category": "Áo Nam",
+        "target_dealer_type": "ALL",
+        "is_active": True,
+        "tiers": [
+            {"min_quantity": 50, "max_quantity": 99, "discount_percent": 6.0},
+            {"min_quantity": 100, "max_quantity": 499, "discount_percent": 12.0},
+        ],
+    }
+    create_res = client.post("/api/v1/discounts", json=payload, headers={"Authorization": f"Bearer {admin_token}"})
+    assert create_res.status_code == 201
+    pol_id = create_res.json()["id"]
+
+    try:
+        # Product 1 (Áo thun Polo) thuộc Áo Nam
+        calc_res = client.post(
+            "/api/v1/discounts/calculate",
+            json={"product_id": 1, "quantity": 105, "base_price": 100000.0},
+            headers={"Authorization": f"Bearer {admin_token}"}
+        )
+        assert calc_res.status_code == 200
+        data = calc_res.json()
+        assert data["discount_percent"] == 12.0
+        assert data["applied_policy_code"] == "CK-CAT-AONAM"
+    finally:
+        client.delete(f"/api/v1/discounts/{pol_id}", headers={"Authorization": f"Bearer {admin_token}"})
+
 
 

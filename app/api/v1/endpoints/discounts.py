@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db, SessionLocal
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
+from app.models.entities import ProductEntity
 from app.api.deps import get_current_user, require_roles
 from app.schemas.auth import UserResponse
 
@@ -210,21 +211,73 @@ def resolve_best_discount(
                 if "cấp 2" not in dealer_group_str and "cap_2" not in dealer_group_str and "cap 2" not in dealer_group_str:
                     continue
 
-        # Xác định số lượng áp dụng: theo sản phẩm cụ thể hay tổng đơn
-        pol_title = policy.get("title") or policy.get("name") or ""
-        pol_cat = policy.get("category") or "ALL"
+        # Xác định số lượng và giá trị áp dụng
+        pol_title = str(policy.get("title") or policy.get("name") or "")
+        pol_cat = str(policy.get("category") or "ALL")
 
         qty_to_check = total_quantity
-        # Nếu chính sách gắn với 1 sản phẩm cụ thể
-        if pol_cat != "ALL" and pol_title != "Tất cả sản phẩm":
+        subtotal_to_discount = subtotal_amount
+
+        # 1. Trường hợp chính sách áp dụng cho 1 Nhóm hàng (Category)
+        is_category_policy = (
+            (pol_cat not in ["ALL", "all", "PRODUCT", "product"] and pol_cat != "")
+            or "nhóm hàng:" in pol_title.lower()
+            or "nhóm:" in pol_title.lower()
+        )
+        if is_category_policy and pol_cat not in ["ALL", "all"]:
+            cat_name = pol_cat
+            if "nhóm hàng:" in pol_title.lower():
+                cat_name = pol_title.split(":", 1)[-1].strip()
+            elif "nhóm:" in pol_title.lower():
+                cat_name = pol_title.split(":", 1)[-1].strip()
+
+            cat_qty = 0
+            cat_subtotal = 0.0
+            from app.api.v1.endpoints.products import RAW_PRODUCTS
+
+            for it in items:
+                it_cat = it.get("category")
+                if not it_cat and db is not None:
+                    p_id = it.get("product_id")
+                    if p_id:
+                        p_ent = db.query(ProductEntity).filter(ProductEntity.id == p_id).first()
+                        if p_ent:
+                            it_cat = p_ent.category
+                if not it_cat:
+                    p_id = it.get("product_id")
+                    p_code = it.get("product_code")
+                    for raw_p in RAW_PRODUCTS:
+                        if (p_id and raw_p.get("id") == p_id) or (p_code and raw_p.get("code") == p_code):
+                            it_cat = raw_p.get("category")
+                            break
+
+                if it_cat and (it_cat.lower().strip() == cat_name.lower().strip() or cat_name.lower().strip() in it_cat.lower().strip()):
+                    it_qty = it.get("quantity", 0)
+                    it_price = it.get("price", 0.0)
+                    cat_qty += it_qty
+                    cat_subtotal += it_qty * it_price
+
+            if cat_qty > 0:
+                qty_to_check = cat_qty
+                subtotal_to_discount = cat_subtotal
+            else:
+                qty_to_check = 0
+
+        # 2. Trường hợp chính sách áp dụng cho 1 Sản phẩm cụ thể
+        elif pol_title and pol_title != "Tất cả sản phẩm" and "nhóm" not in pol_title.lower() and pol_cat != "ALL":
             matched_qty = 0
+            matched_subtotal = 0.0
             for it in items:
                 prod_name = it.get("product_name") or ""
                 prod_code = it.get("product_code") or ""
                 if (prod_code and prod_code in pol_title) or (prod_name and prod_name in pol_title):
-                    matched_qty += it.get("quantity", 0)
+                    it_qty = it.get("quantity", 0)
+                    it_price = it.get("price", 0.0)
+                    matched_qty += it_qty
+                    matched_subtotal += it_qty * it_price
             if matched_qty > 0:
                 qty_to_check = matched_qty
+                subtotal_to_discount = matched_subtotal
             else:
                 qty_to_check = 0
 
@@ -235,7 +288,7 @@ def resolve_best_discount(
             tier_pct = float(tier.get("discount_percent", 0.0))
 
             if qty_to_check >= min_q and (max_q is None or qty_to_check <= max_q):
-                tier_amount = round(subtotal_amount * tier_pct / 100.0, 2)
+                tier_amount = round(subtotal_to_discount * tier_pct / 100.0, 2)
                 # Best price rule: Ưu tiên chính sách đem lại mức giảm tiền cao nhất
                 if tier_amount > best_match["discount_amount"] or (
                     tier_amount == best_match["discount_amount"] and tier_pct > best_match["discount_percent"]
