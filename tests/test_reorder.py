@@ -58,6 +58,10 @@ def setup_test_data():
             p4.status = "active"
             p4.sell_price = 650000.0
 
+        for p in RAW_PRODUCTS:
+            if p.get("id") in [1, 2, 3, 4]:
+                p["status"] = "active"
+
         # Đảm bảo Đại lý 1 và Đại lý 2 tồn tại
         d1 = db.query(DealerEntity).filter(DealerEntity.id == 1).first()
         if not d1:
@@ -72,6 +76,19 @@ def setup_test_data():
             db.add(d2)
         else:
             d2.status = "Đang hoạt động"
+
+        # Đảm bảo tồn kho WH01 dồi dào để không bị chặn bởi tồn giữ chỗ của các đơn test khác
+        from app.models.entities import WarehouseStockEntity
+        for pid in [1, 2, 3, 4]:
+            ws = db.query(WarehouseStockEntity).filter(
+                WarehouseStockEntity.warehouse_id == "WH01",
+                WarehouseStockEntity.product_id == pid
+            ).first()
+            if not ws:
+                ws = WarehouseStockEntity(warehouse_id="WH01", warehouse_name="Kho Tổng Hà Nội", product_id=pid, actual_stock=1000)
+                db.add(ws)
+            else:
+                ws.actual_stock = 1000
 
         db.commit()
 

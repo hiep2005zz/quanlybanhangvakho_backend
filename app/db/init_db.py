@@ -61,6 +61,7 @@ def _ensure_legacy_columns(bind=engine):
         },
         "dealers": {
             "max_debt_days": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
+            "overdue_days_allowed": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
             "locked_by": ("VARCHAR(50)", "NVARCHAR(50)"),
             "tax_code": ("VARCHAR(50)", "NVARCHAR(50)"),
             "transaction_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
@@ -76,6 +77,9 @@ def _ensure_legacy_columns(bind=engine):
             "delivery_point_id": ("INTEGER", "INT NULL"),
             "discount_rate": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
             "discount_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "requires_approval": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
+            "approval_status": ("VARCHAR(50) DEFAULT 'NORMAL'", "NVARCHAR(50) DEFAULT 'NORMAL'"),
+            "approval_reason": ("NVARCHAR(500)", "NVARCHAR(500)"),
         },
         "categories": {
             "code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),

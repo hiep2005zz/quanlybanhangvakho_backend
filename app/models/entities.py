@@ -164,6 +164,7 @@ class DealerEntity(Base):
     assigned_sale_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     credit_limit = Column(Float, default=50000000.0)
     max_debt_days = Column(Integer, default=30)
+    overdue_days_allowed = Column(Integer, default=30, nullable=True)
     customer_group = Column(Unicode(100), default="Đại lý cấp 1")
     status = Column(Unicode(50), default="Đang hoạt động")
     transaction_count = Column(Integer, default=0, nullable=True)
@@ -212,6 +213,9 @@ class OrderEntity(Base):
     delivery_point_id = Column(Integer, ForeignKey("dealer_delivery_points.id"), nullable=True)
     discount_rate = Column(Float, default=0.0)
     discount_amount = Column(Float, default=0.0)
+    requires_approval = Column(Boolean, default=False, nullable=True)
+    approval_status = Column(String(50), default="NORMAL", nullable=True)
+    approval_reason = Column(Unicode(500), nullable=True)
 
 class AuditLogEntity(Base):
     __tablename__ = "audit_logs"
