@@ -424,6 +424,8 @@ def update_product_details(
                 db_prod.base_unit = target["base_unit"]
             if payload.units is not None:
                 db_prod.units = target["units"]
+            if payload.status is not None:
+                db_prod.status = target["status"]
             db.commit()
     except Exception as db_err:
         db.rollback()
