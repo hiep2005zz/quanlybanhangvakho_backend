@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from app.api.deps import get_current_user, require_permission, require_roles
+from app.api.deps import get_current_user, require_permission, require_roles, require_sales_or_admin_role
 from app.core.database import get_db
 from app.core.rbac import Permission, Role
 from app.schemas.auth import UserResponse
@@ -120,6 +120,72 @@ def _is_dealer_locked(d) -> bool:
         or "lock" in st_str
     )
 
+class DealerCreditInfoResponse(BaseModel):
+    dealer_id: int
+    dealer_code: str
+    dealer_name: str
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    customer_group: Optional[str] = None
+    status: Optional[str] = "Đang hoạt động"
+    credit_limit: float
+    overdue_days_allowed: int
+    max_debt_days: int
+    current_debt: float
+    remaining_credit: float
+    max_debt_age: int
+    is_overdue: bool
+    is_over_limit: bool
+
+def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
+    """
+    Tính toán chi tiết công nợ hiện tại, tuổi nợ và trạng thái nợ quá hạn của đại lý.
+    """
+    current_debt = 0.0
+    max_debt_age = 0
+    now = datetime.now(timezone.utc)
+    for o in orders_db.values():
+        if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
+            current_debt += float(o.get("total_amount", 0.0) or 0.0)
+            created_at_val = o.get("created_at")
+            if created_at_val:
+                try:
+                    if isinstance(created_at_val, str):
+                        order_date = datetime.fromisoformat(created_at_val.replace("Z", "+00:00"))
+                    elif isinstance(created_at_val, datetime):
+                        order_date = created_at_val if created_at_val.tzinfo else created_at_val.replace(tzinfo=timezone.utc)
+                    else:
+                        order_date = now
+                    days_old = max(0, (now - order_date).days)
+                    if days_old > max_debt_age:
+                        max_debt_age = days_old
+                except Exception:
+                    pass
+
+    credit_limit = float(getattr(dealer, "credit_limit", 50000000.0) or 50000000.0)
+    allowed_days = int(getattr(dealer, "overdue_days_allowed", getattr(dealer, "max_debt_days", 30)) or 30)
+    remaining_credit = max(0.0, credit_limit - current_debt)
+    is_overdue = max_debt_age > allowed_days
+    is_over_limit = current_debt > credit_limit
+
+    return {
+        "dealer_id": dealer.id,
+        "dealer_code": dealer.code,
+        "dealer_name": dealer.name,
+        "phone": getattr(dealer, "phone", None),
+        "address": getattr(dealer, "address", None),
+        "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
+        "status": getattr(dealer, "status", "Đang hoạt động"),
+        "credit_limit": credit_limit,
+        "overdue_days_allowed": allowed_days,
+        "max_debt_days": allowed_days,
+        "current_debt": current_debt,
+        "remaining_credit": remaining_credit,
+        "max_debt_age": max_debt_age,
+        "is_overdue": is_overdue,
+        "is_over_limit": is_over_limit,
+    }
+
 def _get_customer_dealer(current_user: UserResponse):
     customer_dealer = DEALERS_DB.get(current_user.id)
     if not customer_dealer:
@@ -154,8 +220,10 @@ def get_order_dealers(
             )
         dealers = [dealer for dealer in dealers if dealer.assigned_sale_id == assigned_user.id]
 
-    return [
-        {
+    res = []
+    for dealer in sorted(dealers, key=lambda item: item.name.lower()):
+        debt_info = calculate_dealer_debt_summary(dealer, ORDERS_DB)
+        res.append({
             "id": dealer.id,
             "code": dealer.code,
             "name": dealer.name,
@@ -164,9 +232,44 @@ def get_order_dealers(
             "assigned_sale_id": getattr(dealer, "assigned_sale_id", None),
             "status": getattr(dealer, "status", "Đang hoạt động"),
             "lock_reason": getattr(dealer, "lock_reason", None),
-        }
-        for dealer in sorted(dealers, key=lambda item: item.name.lower())
-    ]
+            "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
+            "credit_limit": debt_info["credit_limit"],
+            "overdue_days_allowed": debt_info["overdue_days_allowed"],
+            "max_debt_days": debt_info["max_debt_days"],
+            "current_debt": debt_info["current_debt"],
+            "remaining_credit": debt_info["remaining_credit"],
+            "max_debt_age": debt_info["max_debt_age"],
+            "is_overdue": debt_info["is_overdue"],
+            "is_over_limit": debt_info["is_over_limit"],
+        })
+    return res
+
+@router.get("/dealers/{dealer_id}/credit-info", response_model=DealerCreditInfoResponse)
+def get_order_dealer_credit_info(
+    dealer_id: int,
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "customer"]))
+):
+    """
+    AC 4 & AC 1: API lấy thông tin công nợ chi tiết của Đại lý phục vụ kiểm soát khi lên đơn.
+    Bảo vệ quyền truy cập: Chỉ cho phép Nhân viên kinh doanh (Sales), Quản trị hệ thống (Admin).
+    """
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+    load_dealers_db()
+    dealer = DEALERS_DB.get(dealer_id)
+    if not dealer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đại lý có ID {dealer_id}."
+        )
+    if is_customer:
+        customer_dealer = _get_customer_dealer(current_user)
+        if not customer_dealer or customer_dealer.id != dealer_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tài khoản đại lý chỉ được phép xem thông tin công nợ của chính mình."
+            )
+    return calculate_dealer_debt_summary(dealer, ORDERS_DB)
 
 
 class PurchaseHistoryItem(BaseModel):
@@ -474,6 +577,10 @@ def get_orders(
             disc_amt = getattr(order, "discount_amount", 0.0) or 0.0
             sub_amt = (order.total_amount or 0.0) + disc_amt
             items_parsed = None
+            appr_reason = None
+            req_appr = False
+            appr_by = None
+            appr_at = None
             if order.items_json:
                 try:
                     ij = json.loads(order.items_json)
@@ -481,8 +588,28 @@ def get_orders(
                     disc_rate = ij.get("discount_percent", ij.get("discount_rate", disc_rate))
                     disc_amt = ij.get("discount_amount", disc_amt)
                     sub_amt = ij.get("subtotal_amount", sub_amt)
+                    appr_reason = ij.get("approval_reason")
+                    req_appr = ij.get("requires_approval", False)
+                    appr_by = ij.get("approved_by")
+                    appr_at = ij.get("approved_at")
                 except Exception:
                     pass
+
+            in_mem = ORDERS_DB.get(order.id, {})
+            if not appr_reason and in_mem:
+                appr_reason = in_mem.get("approval_reason")
+                req_appr = in_mem.get("requires_approval", req_appr)
+                appr_by = in_mem.get("approved_by", appr_by)
+                appr_at = in_mem.get("approved_at", appr_at)
+
+            if order.status in ("PENDING_APPROVAL", "PENDING"):
+                req_appr = True
+                if not appr_reason:
+                    if disc_rate > 0:
+                        appr_reason = f"Chiết khấu ({disc_rate}%) vượt hạn mức chính sách cần duyệt"
+                    else:
+                        appr_reason = "Bán dưới giá sàn cần quản lý duyệt"
+
             resp_item = OrderResponse(
                 id=order.id,
                 order_code=order.order_code,
@@ -497,6 +624,10 @@ def get_orders(
                 discount_rate=disc_rate,
                 discount_amount=disc_amt,
                 status=order.status,
+                requires_approval=req_appr,
+                approval_reason=appr_reason,
+                approved_by=appr_by,
+                approved_at=appr_at,
                 items=items_parsed or items,
                 created_at=order.created_at.isoformat() if order.created_at else "",
             )
@@ -512,6 +643,10 @@ def get_orders(
                 "assigned_sale_name": order.assigned_sale_name,
                 "total_amount": order.total_amount,
                 "status": order.status,
+                "requires_approval": req_appr,
+                "approval_reason": appr_reason,
+                "approved_by": appr_by,
+                "approved_at": appr_at,
                 "created_at": order.created_at.isoformat() if order.created_at else "",
                 "items": items,
                 "delivery_point_id": order.delivery_point_id,
@@ -550,7 +685,7 @@ def create_order(
     data: OrderCreate,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.ORDER_WRITE.value))
+    current_user: UserResponse = Depends(require_sales_or_admin_role)
 ):
     global NEXT_ORDER_ID
     load_dealers_db()
@@ -637,42 +772,23 @@ def create_order(
         )
 
     # 3. Kiểm tra hạn mức công nợ và số ngày nợ tối đa
-    current_debt = 0.0
-    max_debt_age = 0
-    now = datetime.now(timezone.utc)
-    for o in ORDERS_DB.values():
-        if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
-            current_debt += o.get("total_amount", 0.0)
-            created_at_str = o.get("created_at")
-            if created_at_str:
-                try:
-                    order_date = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-                    days_old = (now - order_date).days
-                    if days_old > max_debt_age:
-                        max_debt_age = days_old
-                except Exception:
-                    pass
-    
+    debt_summary = calculate_dealer_debt_summary(dealer, ORDERS_DB)
+    current_debt = debt_summary["current_debt"]
+    credit_limit = debt_summary["credit_limit"]
+    overdue_days_allowed = debt_summary["overdue_days_allowed"]
+    max_debt_age = debt_summary["max_debt_age"]
+    is_overdue = debt_summary["is_overdue"]
+
+    # TIÊU CHÍ 3 (Khoản nợ quá hạn - Block hoàn toàn):
+    # Đại lý có khoản quá hạn quá số ngày cho phép thì chặn tạo đơn hoàn toàn
+    if is_overdue:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đại lý '{dealer.name}' có khoản nợ quá hạn ({max_debt_age} ngày, vượt quá {overdue_days_allowed} ngày cho phép). Hệ thống chặn tạo đơn hàng mới."
+        )
+
     order_total = sum(item.quantity * item.price for item in data.items)
-    
-    over_limit = (current_debt + order_total) > getattr(dealer, "credit_limit", 50000000.0)
-    over_days = max_debt_age > getattr(dealer, "max_debt_days", 30)
-    
-    if over_limit and over_days:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Đại lý đã vượt hạn mức công nợ và có công nợ quá hạn. Không thể xuất hàng."
-        )
-    elif over_limit:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Đại lý đã vượt hạn mức công nợ. Không thể xuất hàng."
-        )
-    elif over_days:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Đại lý có công nợ quá hạn. Không thể xuất hàng."
-        )
+    over_limit = (current_debt + order_total) > credit_limit
 
     # 4. Tạo đơn hàng và tính base_quantity
     from app.api.v1.endpoints.products import RAW_PRODUCTS, _find_product_in_raw
@@ -724,6 +840,7 @@ def create_order(
 
         processed_items.append({
             "product_id": item.product_id,
+            "product_code": prod_code,
             "product_name": raw_p.get("name") if raw_p else (prod_entity.name if prod_entity else f"SP #{item.product_id}"),
             "quantity": item.quantity,
             "price": item.price,
@@ -732,6 +849,14 @@ def create_order(
             "conversion_rate": chosen_rate,
             "base_quantity": base_quantity,
         })
+
+    # SCRUM-56 / AC 3 & AC 4: Kiểm tra tồn khả dụng & giữ chỗ tồn kho (Database Row-Level Locking)
+    from app.services.inventory_availability_service import validate_and_reserve_order_stock
+    validate_and_reserve_order_stock(
+        db=db,
+        dealer_id=dealer.id,
+        items=processed_items,
+    )
 
     # AC: Kiểm tra bảng giá áp dụng cho nhóm khách hàng của Đại lý
     cust_group = getattr(dealer, "customer_group", None) or "dai_ly_cap_1"
@@ -830,6 +955,14 @@ def create_order(
 
     discount_amount = round(subtotal_amount * effective_pct / 100, 2)
     final_total_amount = subtotal_amount - discount_amount
+
+    # TIÊU CHÍ 2 (Vượt hạn mức): Tổng đơn cộng công nợ hiện tại vượt hạn mức thì đơn bị đánh dấu cần duyệt
+    if (current_debt + final_total_amount) > credit_limit or over_limit:
+        requires_approval = True
+        approval_reasons.append(
+            f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
+        )
+
     order_id = _allocate_order_id(db)
 
     order_code = f"ORD{order_id:05d}"
@@ -862,6 +995,9 @@ def create_order(
                 delivery_point_id=selected_delivery_point_id,
                 discount_rate=effective_pct,
                 discount_amount=discount_amount,
+                requires_approval=requires_approval,
+                approval_status="PENDING_APPROVAL" if requires_approval else "NORMAL",
+                approval_reason=approval_reason,
                 items_json=json.dumps({
                     "items": processed_items,
                     "delivery_point": delivery_point_str,
@@ -873,6 +1009,8 @@ def create_order(
                     "discount_amount": discount_amount,
                     "applied_policy_code": best_disc.get("applied_policy_code"),
                     "applied_policy_name": best_disc.get("applied_policy_name"),
+                    "requires_approval": requires_approval,
+                    "approval_reason": approval_reason,
                 }, ensure_ascii=False),
                 created_at=datetime.fromisoformat(now_str),
             )
@@ -933,7 +1071,7 @@ def create_sales_entry_order(
     data: OrderCreate,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.ORDER_WRITE.value)),
+    current_user: UserResponse = Depends(require_sales_or_admin_role),
 ):
     """Create and persist orders from the sales-entry workflow."""
     if not data.items:
@@ -1015,6 +1153,28 @@ def create_sales_entry_order(
             detail=f"Đại lý '{dealer.name}' hiện đang bị KHÓA giao dịch. Không thể tạo đơn hàng mới."
         )
 
+    # AC 4: Kiểm tra phân quyền truy cập tính năng tạo đơn bán hàng
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    if not any(r in ["admin", "sales_manager", "sales"] for r in user_roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh (Sales / Sale Executive) và Quản trị hệ thống (Admin)."
+        )
+
+    # AC 3: Kiểm tra nợ quá hạn (Block hoàn toàn)
+    debt_summary = calculate_dealer_debt_summary(dealer, ORDERS_DB)
+    current_debt = debt_summary["current_debt"]
+    credit_limit = debt_summary["credit_limit"]
+    overdue_days_allowed = debt_summary["overdue_days_allowed"]
+    max_debt_age = debt_summary["max_debt_age"]
+    is_overdue = debt_summary["is_overdue"]
+
+    if is_overdue:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đại lý '{dealer.name}' có khoản nợ quá hạn ({max_debt_age} ngày, vượt quá {overdue_days_allowed} ngày cho phép). Hệ thống chặn tạo đơn hàng mới."
+        )
+
     product_by_id = {product["id"]: product for product in RAW_PRODUCTS}
     from app.models.entities import ProductEntity
 
@@ -1076,6 +1236,21 @@ def create_sales_entry_order(
             "base_quantity": int(round(item.quantity * expected_rate)),
         })
 
+    # SCRUM-56 / AC 3 & AC 4: Kiểm tra tồn khả dụng & giữ chỗ tồn kho (Database Row-Level Locking)
+    from app.services.inventory_availability_service import validate_and_reserve_order_stock
+    validate_and_reserve_order_stock(
+        db=db,
+        dealer_id=dealer.id,
+        items=priced_items,
+    )
+    for pi in priced_items:
+        raw_p = product_by_id.get(pi["product_id"])
+        if raw_p:
+            raw_p["stock"] = max(0, raw_p.get("stock", 0) - pi["base_quantity"])
+        entity_p = products_by_id.get(pi["product_id"])
+        if entity_p:
+            entity_p.stock = max(0, (entity_p.stock or 0) - pi["base_quantity"])
+
     delivery_point = data.delivery_point.strip()
     selected_dp_id = data.delivery_point_id
     if selected_dp_id and not delivery_point:
@@ -1119,6 +1294,14 @@ def create_sales_entry_order(
 
     discount_amount = round(subtotal_amount * effective_pct / 100, 2)
     final_total_amount = subtotal_amount - discount_amount
+
+    # TIÊU CHÍ 2 (Vượt hạn mức): Tổng đơn cộng công nợ hiện tại vượt hạn mức thì đơn bị đánh dấu cần duyệt
+    if (current_debt + final_total_amount) > credit_limit:
+        requires_approval = True
+        approval_reasons.append(
+            f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
+        )
+
     order_status = "PENDING_APPROVAL" if requires_approval else "CONFIRMED"
     approval_reason = " | ".join(approval_reasons) if approval_reasons else None
 
@@ -1134,6 +1317,9 @@ def create_sales_entry_order(
         discount_rate=effective_pct,
         discount_amount=discount_amount,
         status=order_status,
+        requires_approval=requires_approval,
+        approval_status="PENDING_APPROVAL" if requires_approval else "NORMAL",
+        approval_reason=approval_reason,
         note=data.note,
         delivery_point_id=selected_dp_id,
         items_json=json.dumps({
@@ -1228,55 +1414,69 @@ def get_order_detail(
         ),
         None,
     )
-    if order_record is None or not order_record.get("items"):
-        entity = db.query(OrderEntity).filter(
-            func.upper(OrderEntity.order_code) == order_code.upper()
-        ).first()
-        if entity is None and order_record is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Không tìm thấy đơn hàng có mã {order_code}.",
-            )
+    entity = db.query(OrderEntity).filter(
+        func.upper(OrderEntity.order_code) == order_code.upper()
+    ).first()
 
-        if entity is not None:
-            if order_record is None:
-                order_record = {
-                    "id": entity.id,
-                    "order_code": entity.order_code,
-                    "dealer_id": entity.dealer_id,
-                    "dealer_name": entity.dealer_name,
-                    "created_by": entity.created_by,
-                    "assigned_sale_id": entity.assigned_sale_id,
-                    "assigned_sale_name": entity.assigned_sale_name,
-                    "total_amount": entity.total_amount,
-                    "status": entity.status,
-                    "created_at": entity.created_at.isoformat() if entity.created_at else "",
-                    "note": entity.note,
-                    "delivery_point_id": entity.delivery_point_id,
-                }
-            if entity.items_json and not order_record.get("items"):
-                try:
-                    stored_details = json.loads(entity.items_json)
-                    if isinstance(stored_details, list):
+    if entity is None and order_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đơn hàng có mã {order_code}.",
+        )
+
+    if entity is not None:
+        if order_record is None:
+            order_record = {
+                "id": entity.id,
+                "order_code": entity.order_code,
+                "dealer_id": entity.dealer_id,
+                "dealer_name": entity.dealer_name,
+                "created_by": entity.created_by,
+                "assigned_sale_id": entity.assigned_sale_id,
+                "assigned_sale_name": entity.assigned_sale_name,
+                "total_amount": entity.total_amount,
+                "status": entity.status,
+                "created_at": entity.created_at.isoformat() if entity.created_at else "",
+                "note": entity.note,
+                "delivery_point_id": entity.delivery_point_id,
+            }
+        else:
+            if entity.created_by:
+                order_record["created_by"] = entity.created_by
+            if entity.assigned_sale_name:
+                order_record["assigned_sale_name"] = entity.assigned_sale_name
+            if entity.status:
+                order_record["status"] = entity.status
+            if entity.total_amount is not None:
+                order_record["total_amount"] = entity.total_amount
+
+        if entity.items_json:
+            try:
+                stored_details = json.loads(entity.items_json)
+                if isinstance(stored_details, list):
+                    if not order_record.get("items"):
                         order_record["items"] = stored_details
-                    elif isinstance(stored_details, dict):
+                elif isinstance(stored_details, dict):
+                    if not order_record.get("items"):
                         order_record["items"] = stored_details.get("items", [])
-                        for field in (
-                            "subtotal_amount",
-                            "discount_percent",
-                            "discount_rate",
-                            "discount_amount",
-                            "delivery_point",
-                            "desired_delivery_date",
-                        ):
-                            if field in stored_details and not order_record.get(field):
-                                order_record[field] = stored_details[field]
-                        if "discount_rate" not in order_record and "discount_percent" in order_record:
-                            order_record["discount_rate"] = order_record["discount_percent"]
-                        if "note" in stored_details and not order_record.get("note"):
-                            order_record["note"] = stored_details["note"]
-                except Exception:
-                    pass
+                    for field in (
+                        "subtotal_amount",
+                        "discount_percent",
+                        "discount_rate",
+                        "discount_amount",
+                        "delivery_point",
+                        "desired_delivery_date",
+                        "requires_approval",
+                        "approval_reason",
+                    ):
+                        if field in stored_details and (order_record.get(field) is None or order_record.get(field) == ""):
+                            order_record[field] = stored_details[field]
+                    if "discount_rate" not in order_record and "discount_percent" in order_record:
+                        order_record["discount_rate"] = order_record["discount_percent"]
+                    if "note" in stored_details and not order_record.get("note"):
+                        order_record["note"] = stored_details["note"]
+            except Exception:
+                pass
 
     # Đảm bảo delivery_point có giá trị hiển thị rõ ràng
     if not order_record.get("delivery_point"):
@@ -1363,6 +1563,21 @@ def approve_order(
     target["approved_by"] = current_user.username
     target["approved_at"] = datetime.now(timezone.utc).isoformat()
 
+    db_order = db.query(OrderEntity).filter(
+        (OrderEntity.order_code == target["order_code"]) | (OrderEntity.id == target.get("id"))
+    ).first()
+    if db_order:
+        db_order.status = "CONFIRMED"
+        try:
+            p_dict = json.loads(db_order.items_json) if db_order.items_json else {}
+            p_dict["requires_approval"] = False
+            p_dict["approved_by"] = current_user.username
+            p_dict["approved_at"] = target["approved_at"]
+            db_order.items_json = json.dumps(p_dict, ensure_ascii=False)
+        except Exception:
+            pass
+        db.commit()
+
     log_audit_event(
         db=db,
         user=current_user,
@@ -1428,6 +1643,20 @@ def reject_order(
                 if pe:
                     pe.stock = (pe.stock or 0) + base_qty
         if db:
+            db_order = db.query(OrderEntity).filter(
+                (OrderEntity.order_code == target["order_code"]) | (OrderEntity.id == target.get("id"))
+            ).first()
+            if db_order:
+                db_order.status = "REJECTED"
+                try:
+                    p_dict = json.loads(db_order.items_json) if db_order.items_json else {}
+                    p_dict["requires_approval"] = False
+                    p_dict["approval_reason"] = target["approval_reason"]
+                    db_order.items_json = json.dumps(p_dict, ensure_ascii=False)
+                except Exception:
+                    pass
+                from app.services.inventory_availability_service import release_order_stock
+                release_order_stock(db, db_order)
             db.commit()
 
     log_audit_event(

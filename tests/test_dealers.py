@@ -385,7 +385,6 @@ def test_dealer_transaction_count_constraint():
     )
     assert res_stop.status_code == 200
     assert res_stop.json()["status"] == "Ngừng giao dịch"
->>>>>>> origin/lambai
 
 
 def test_accountant_lock_unlock_and_dealer_isolation():

@@ -85,6 +85,22 @@ RAW_PRODUCTS = [
             {"unit_name": "Hộp", "conversion_rate": 5.0},
         ],
     },
+    {
+        "id": 60,
+        "code": "SP-BEER",
+        "name": "Bia Tiger Crystal Lon 330ml",
+        "category": "Đồ uống",
+        "stock": 100,
+        "cost_price": 14000.0,
+        "sell_price": 19000.0,
+        "base_unit": "Lon",
+        "packaging_specification": "24 lon / thùng",
+        "is_batch_managed": True,
+        "units": [
+            {"unit_name": "Lốc", "conversion_rate": 6.0},
+            {"unit_name": "Thùng", "conversion_rate": 24.0},
+        ],
+    },
 ]
 
 
@@ -214,6 +230,7 @@ def get_products(
         cat_id = db_p.category_id if (db_p and db_p.category_id is not None) else p.get("category_id")
         p["category"] = cat_name
         p["category_id"] = cat_id
+        is_batch_val = bool(db_p.is_batch_managed) if (db_p and getattr(db_p, "is_batch_managed", None) is not None) else bool(p.get("is_batch_managed", False))
 
         if can_view_cost:
             profit_unit = sell_price - cost_price
@@ -235,6 +252,7 @@ def get_products(
                 images=images,
                 packaging_specification=packaging_spec,
                 status=status_val,
+                is_batch_managed=is_batch_val,
                 transaction_count=_get_product_transaction_count(p["id"], db),
             ))
         else:
@@ -255,6 +273,7 @@ def get_products(
                 images=images,
                 packaging_specification=packaging_spec,
                 status=status_val,
+                is_batch_managed=is_batch_val,
                 transaction_count=_get_product_transaction_count(p["id"], db),
             ))
     if can_view_cost:
@@ -370,6 +389,9 @@ def update_product_details(
     if payload.base_unit is not None:
         target["base_unit"] = payload.base_unit
 
+    if payload.units is not None:
+        target["units"] = [u.dict() for u in payload.units]
+
     if payload.packaging_specification is not None:
         target["packaging_specification"] = payload.packaging_specification
 
@@ -398,6 +420,10 @@ def update_product_details(
             db_prod.sell_price = target["sell_price"]
             if can_view_cost and target.get("cost_price") is not None:
                 db_prod.cost_price = target["cost_price"]
+            if payload.base_unit is not None:
+                db_prod.base_unit = target["base_unit"]
+            if payload.units is not None:
+                db_prod.units = target["units"]
             db.commit()
     except Exception as db_err:
         db.rollback()
@@ -428,6 +454,7 @@ def update_product_details(
         category=target["category"],
         category_id=target.get("category_id"),
         base_unit=target.get("base_unit", "Cái"),
+        units=[UnitConversionItem(**u) for u in target.get("units", [])],
         packaging_specification=target.get("packaging_specification"),
         images=target.get("images", []),
         status=target.get("status", "active"),
@@ -610,6 +637,7 @@ def create_product(
     cost = payload.cost_price if (can_view_cost and payload.cost_price is not None) else 0.0
 
     new_id = max([p["id"] for p in RAW_PRODUCTS], default=0) + 1
+    units_list = [u.dict() for u in payload.units] if payload.units else []
     new_product_dict = {
         "id": new_id,
         "code": clean_sku,
@@ -617,12 +645,13 @@ def create_product(
         "category": payload.category or "Thời trang",
         "category_id": payload.category_id,
         "base_unit": payload.base_unit or "Cái",
+        "units": units_list,
         "packaging_specification": payload.packaging_specification or "",
         "images": payload.images or [],
         "status": payload.status or "active",
         "stock": 0,
         "cost_price": cost,
-        "sell_price": payload.sell_price,
+        "sell_price": payload.sell_price or 0.0,
     }
 
     # Lưu vào in-memory RAW_PRODUCTS
@@ -637,9 +666,11 @@ def create_product(
             name=payload.name.strip(),
             category=payload.category or "Thời trang",
             category_id=payload.category_id,
+            base_unit=payload.base_unit or "Cái",
+            units_json=json.dumps(units_list, ensure_ascii=False),
             stock=0,
             cost_price=cost,
-            sell_price=payload.sell_price,
+            sell_price=payload.sell_price or 0.0,
         )
         db.add(db_prod)
         db.commit()
@@ -661,8 +692,9 @@ def create_product(
         request=request,
     )
 
-    profit_unit = payload.sell_price - cost if can_view_cost else None
-    margin = round((profit_unit / payload.sell_price) * 100, 2) if (can_view_cost and payload.sell_price > 0) else None
+    clean_sell_price = payload.sell_price or 0.0
+    profit_unit = clean_sell_price - cost if can_view_cost else None
+    margin = round((profit_unit / clean_sell_price) * 100, 2) if (can_view_cost and clean_sell_price > 0) else None
 
     return ProductItem(
         id=new_id,
@@ -671,11 +703,12 @@ def create_product(
         category=payload.category or "Thời trang",
         category_id=payload.category_id,
         base_unit=payload.base_unit or "Cái",
+        units=[UnitConversionItem(**u) for u in units_list],
         packaging_specification=payload.packaging_specification,
         images=payload.images or [],
         status=payload.status or "active",
         stock=0,
-        sell_price=payload.sell_price,
+        sell_price=clean_sell_price,
         cost_price=cost if can_view_cost else None,
         profit_margin=margin,
         profit_per_unit=profit_unit,

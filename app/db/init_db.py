@@ -13,8 +13,19 @@ from app.models.entities import (
     MasterDeliveryPointEntity,
     CategoryEntity,
     AuditLogEntity,
+    WarehouseStockEntity,
+)
+from app.models.supplier import SupplierEntity
+from app.models.goods_receipt import (
+    WarehouseEntity,
+    UnitOfMeasureEntity,
+    GoodsReceiptNoteEntity,
+    GoodsReceiptNoteItemEntity,
+    ProductBatchEntity,
+    InventoryLedgerEntity,
 )
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
+from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 
@@ -46,12 +57,16 @@ def _ensure_legacy_columns(bind=engine):
             "packaging_specification": ("VARCHAR(255)", "NVARCHAR(255)"),
             "images_json": ("TEXT", "NVARCHAR(MAX)"),
             "status": ("VARCHAR(50) DEFAULT 'active'", "NVARCHAR(50) DEFAULT 'active'"),
+            "is_batch_managed": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
         },
         "dealers": {
             "max_debt_days": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
+            "overdue_days_allowed": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
             "locked_by": ("VARCHAR(50)", "NVARCHAR(50)"),
             "tax_code": ("VARCHAR(50)", "NVARCHAR(50)"),
             "transaction_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "warehouse_id": ("VARCHAR(50)", "NVARCHAR(50)"),
+            "warehouse_name": ("VARCHAR(255)", "NVARCHAR(255)"),
         },
         "inventory_transactions": {
             "unit_name": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
@@ -62,6 +77,14 @@ def _ensure_legacy_columns(bind=engine):
             "delivery_point_id": ("INTEGER", "INT NULL"),
             "discount_rate": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
             "discount_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "requires_approval": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
+            "approval_status": ("VARCHAR(50) DEFAULT 'NORMAL'", "NVARCHAR(50) DEFAULT 'NORMAL'"),
+            "approval_reason": ("NVARCHAR(500)", "NVARCHAR(500)"),
+        },
+        "categories": {
+            "code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
+            "product_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
         },
     }
     inspector = inspect(bind)
@@ -423,6 +446,111 @@ def init_db():
 
             db.commit()
             print("Price books seeded successfully.")
+
+        # 6. Seed Suppliers nếu chưa có
+        if db.query(SupplierEntity).count() == 0:
+            print("Seeding initial suppliers...")
+            initial_suppliers = [
+                SupplierEntity(id=1, code="NCC001", name="Công ty Cổ phần Nước Giải Khát Sabeco", tax_code="0300588569", contact_person="Nguyễn Văn Cung", payment_terms="Gối đầu 30 ngày", is_active=True),
+                SupplierEntity(id=2, code="NCC002", name="Công ty TNHH May Mặc An Phước", tax_code="0301438927", contact_person="Trần Thị May", payment_terms="Thanh toán ngay khi giao", is_active=True),
+            ]
+            db.add_all(initial_suppliers)
+            db.commit()
+            print("Suppliers seeded successfully.")
+
+        # 7. Seed Warehouses nếu chưa có
+        if db.query(WarehouseEntity).count() == 0:
+            print("Seeding initial warehouses...")
+            initial_warehouses = [
+                WarehouseEntity(id=1, code="KHO_HN", name="Kho Tổng Hà Nội", address="Lô CN1 KCN Từ Liêm, Bắc Từ Liêm, Hà Nội", is_active=True),
+                WarehouseEntity(id=2, code="KHO_DN", name="Kho Chi Nhánh Đà Nẵng", address="KCN Hòa Khánh, Liên Chiểu, Đà Nẵng", is_active=True),
+                WarehouseEntity(id=3, code="KHO_HCM", name="Kho Chi Nhánh TP. Hồ Chí Minh", address="Khu chế xuất Tân Thuận, Quận 7, TP. HCM", is_active=True),
+            ]
+            db.add_all(initial_warehouses)
+            db.commit()
+            print("Warehouses seeded successfully.")
+
+        # 8. Seed Units of Measure nếu chưa có
+        if db.query(UnitOfMeasureEntity).count() == 0:
+            print("Seeding initial units of measure...")
+            initial_uoms = [
+                UnitOfMeasureEntity(id=1, code="CAI", name="Cái", description="Đơn vị cơ sở cái"),
+                UnitOfMeasureEntity(id=2, code="LON", name="Lon", description="Đơn vị cơ sở lon"),
+                UnitOfMeasureEntity(id=3, code="LOC", name="Lốc", description="Quy cách lốc 6 cái/lon"),
+                UnitOfMeasureEntity(id=4, code="THUNG", name="Thùng", description="Quy cách thùng 24 cái/lon"),
+                UnitOfMeasureEntity(id=5, code="CHIEC", name="Chiếc", description="Đơn vị chiếc"),
+                UnitOfMeasureEntity(id=6, code="KIEN", name="Kiện", description="Quy cách kiện 10 chiếc"),
+                UnitOfMeasureEntity(id=7, code="HOP", name="Hộp", description="Đơn vị hộp"),
+                UnitOfMeasureEntity(id=8, code="KG", name="Kg", description="Đơn vị kilogam"),
+            ]
+            db.add_all(initial_uoms)
+            db.commit()
+            print("Units of measure seeded successfully.")
+
+        # 9. Seed Discount Policies nếu chưa có
+        if db.query(DiscountPolicyEntity).count() == 0:
+            print("Seeding initial discount policies...")
+            default_policy = DiscountPolicyEntity(
+                code="CK-SL-001",
+                name="Chiết khấu sản lượng toàn hệ thống",
+                title="Tất cả sản phẩm",
+                category="ALL",
+                target_dealer_type="ALL",
+                target_group="all",
+                description="Giảm giá theo sản lượng đặt hàng áp dụng toàn hệ thống",
+                start_date="2026-01-01",
+                end_date="2026-12-31",
+                is_active=True,
+                status="active",
+                created_by="admin",
+            )
+            db.add(default_policy)
+            db.flush()
+
+            tier1 = DiscountTierEntity(
+                policy_id=default_policy.id,
+                min_quantity=100,
+                max_quantity=499,
+                discount_percent=5.0,
+            )
+            tier2 = DiscountTierEntity(
+                policy_id=default_policy.id,
+                min_quantity=500,
+                max_quantity=999,
+                discount_percent=10.0,
+            )
+            tier3 = DiscountTierEntity(
+                policy_id=default_policy.id,
+                min_quantity=1000,
+                max_quantity=None,
+                discount_percent=15.0,
+            )
+            db.add_all([tier1, tier2, tier3])
+
+            policy_cap1 = DiscountPolicyEntity(
+                code="CK-CAP1",
+                name="Chính sách chiết khấu - Đại lý Cấp 1",
+                title="Chính sách chiết khấu - Đại lý Cấp 1",
+                category="ALL",
+                target_dealer_type="agent_tier_1",
+                target_group="agent_tier_1",
+                description="Áp dụng cho đơn hàng đạt mốc sản lượng",
+                start_date="2026-10-01",
+                end_date="2026-12-31",
+                is_active=True,
+                status="active",
+                created_by="admin",
+            )
+            db.add(policy_cap1)
+            db.flush()
+
+            t1 = DiscountTierEntity(policy_id=policy_cap1.id, min_quantity=100, max_quantity=499, discount_percent=5.0)
+            t2 = DiscountTierEntity(policy_id=policy_cap1.id, min_quantity=500, max_quantity=999, discount_percent=8.0)
+            t3 = DiscountTierEntity(policy_id=policy_cap1.id, min_quantity=1000, max_quantity=None, discount_percent=12.0)
+            db.add_all([t1, t2, t3])
+
+            db.commit()
+            print("Discount policies seeded successfully.")
 
         from app.models.dealer import load_dealers_db
         load_dealers_db()

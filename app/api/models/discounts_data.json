@@ -1,5 +1,30 @@
 [
   {
+    "id": 2,
+    "code": "CK-SL-002",
+    "name": "SP-BEER - Bia Tiger Crystal Lon 330ml",
+    "title": "SP-BEER - Bia Tiger Crystal Lon 330ml",
+    "category": "ALL",
+    "target_dealer_type": "agent_tier_1",
+    "target_group": "all",
+    "description": "",
+    "start_date": "2026-10-08",
+    "end_date": null,
+    "is_active": true,
+    "status": "active",
+    "tiers": [
+      {
+        "id": null,
+        "min_quantity": 100,
+        "max_quantity": 499,
+        "discount_percent": 5.0
+      }
+    ],
+    "created_by": "admin",
+    "created_at": "2026-10-08T13:10:29.033366+00:00",
+    "updated_at": "2026-10-08T13:10:29.033366+00:00"
+  },
+  {
     "id": 1,
     "code": "CK-SL-001",
     "name": "Chiết khấu sản lượng toàn hệ thống",
