@@ -41,6 +41,7 @@ SYSTEM_AUDIT_ACTION_TYPES = {
     "INVENTORY_ADJUST",
     "STOCK_RECEIPT",
     "STOCK_ISSUE",
+    "GOODS_RECEIPT_CONFIRM",
     # 2. Giá bán
     "PRICE_CHANGE",
     # 3. Hạn mức công nợ

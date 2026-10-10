@@ -16,7 +16,7 @@ def _admin_login() -> str:
     return res.json()["access_token"]
 
 @pytest.fixture(autouse=True)
-def ensure_stock():
+def reset_test_stock():
     from app.core.database import SessionLocal
     from app.models.entities import WarehouseStockEntity
     from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
@@ -24,8 +24,8 @@ def ensure_stock():
     try:
         stocks = db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id == 1).all()
         for s in stocks:
-            s.actual_stock = 1000
-            s.reserved_stock = 0
+            s.actual_stock = 1000.0
+            s.reserved_stock = 0.0
 
         p = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.code == "CK-SL-001").first()
         if not p:
@@ -48,6 +48,7 @@ def ensure_stock():
         db.commit()
     finally:
         db.close()
+    yield
 
 def test_get_discount_policies():
     token = _login()
