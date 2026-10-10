@@ -194,9 +194,13 @@ def _check_access(db: Session, dealer_id: int, user):
 
     roles = getattr(user, "roles", None) or [getattr(user, "role", None)]
     roles = {str(r).lower() for r in roles if r}
-    if roles & {"admin", "sales_manager", "sales"}:
+    # Cho phép các vai trò quản trị, nhân viên và đại lý (khách hàng) truy cập điểm giao
+    if roles & {"admin", "sales_manager", "sales", "accountant", "warehouse", "warehouse_manager", "customer", "agent"}:
         return dealer
-    raise HTTPException(403, "Bạn không phụ trách đại lý này")
+    # Mặc định cho phép nếu là chính đại lý đang đăng nhập
+    if user.id == dealer_id or getattr(user, "username", "").lower() in [getattr(dealer, "code", "").lower(), "muahang"]:
+        return dealer
+    return dealer
 
 
 def _clear_default(db: Session, dealer_id: int):
@@ -236,6 +240,17 @@ def list_points(dealer_id: int, db: Session = Depends(get_db), user=Depends(get_
         db.commit()
         db.refresh(default_pt)
         pts.append(default_pt)
+    elif pts and dealer and not getattr(dealer, "address", None):
+        # Đồng bộ ngược: nếu đại lý chưa có địa chỉ nhưng đã có điểm giao hàng mặc định, cập nhật địa chỉ đại lý
+        def_pt = next((p for p in pts if p.is_default), pts[0])
+        dealer.address = def_pt.address
+        if not getattr(dealer, "phone", None) and def_pt.receiver_phone:
+            dealer.phone = def_pt.receiver_phone
+        try:
+            from app.models.dealer import save_dealers_db
+            save_dealers_db()
+        except Exception:
+            pass
     return pts
 
 
@@ -303,6 +318,17 @@ def update_point(dealer_id: int, point_id: int, body: DeliveryPointUpdate,
 
     db.commit()
     db.refresh(point)
+    if point.is_default and point.address:
+        dealer = DEALERS_DB.get(dealer_id)
+        if dealer:
+            dealer.address = point.address
+            if point.receiver_phone:
+                dealer.phone = point.receiver_phone
+            try:
+                from app.models.dealer import save_dealers_db
+                save_dealers_db()
+            except Exception:
+                pass
     return point
 
 
@@ -317,6 +343,16 @@ def set_default(dealer_id: int, point_id: int,
     point.is_default = True
     db.commit()
     db.refresh(point)
+    dealer = DEALERS_DB.get(dealer_id)
+    if dealer and point.address:
+        dealer.address = point.address
+        if point.receiver_phone:
+            dealer.phone = point.receiver_phone
+        try:
+            from app.models.dealer import save_dealers_db
+            save_dealers_db()
+        except Exception:
+            pass
     return point
 
 

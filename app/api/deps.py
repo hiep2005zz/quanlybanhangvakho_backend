@@ -261,7 +261,7 @@ def require_sales_or_admin_role(current_user: UserResponse = Depends(get_current
     Các vai trò khác (kho, kế toán, mua hàng) bị CHẶN với HTTP 403 Forbidden.
     """
     user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
-    ALLOWED = {"sales", "sales_manager", "admin", "customer"}
+    ALLOWED = {"sales", "sales_manager", "admin", "customer", "agent"}
     if not any(r in ALLOWED for r in user_roles):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

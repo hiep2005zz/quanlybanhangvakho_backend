@@ -532,8 +532,8 @@ def create_order(
 
     # Lỗi tạo đơn chéo / tài khoản đại lý bị khóa:
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
-    if is_customer or current_user.role == "customer":
+    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+    if is_customer:
         customer_dealer = _get_customer_dealer(current_user)
         if customer_dealer:
             if _is_dealer_locked(customer_dealer):
@@ -541,11 +541,9 @@ def create_order(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Đại lý '{customer_dealer.name}' hiện đang bị KHÓA giao dịch. Không thể tạo đơn hàng mới."
                 )
-            if dealer.id != customer_dealer.id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Tài khoản đại lý chỉ được phép tạo đơn hàng cho chính mình."
-                )
+            # Bắt buộc gán dealer_id theo đúng tài khoản đại lý đang đăng nhập (chống gian lận đặt hộ)
+            data.dealer_id = customer_dealer.id
+            dealer = customer_dealer
         else:
             is_own = (dealer.id == current_user.id) or \
                      (dealer.email and dealer.email == current_user.email) or \
@@ -556,6 +554,7 @@ def create_order(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Tài khoản đại lý chỉ được phép tạo đơn hàng cho chính mình."
                 )
+            data.dealer_id = dealer.id
 
     selected_delivery_point_id = None
     if data.delivery_point_id is not None:
@@ -780,10 +779,11 @@ def create_order(
             )
 
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
-    if is_customer or current_user.role == "customer" or "customer" in user_roles:
+    is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
+    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
+    if is_customer:
         requires_approval = True
-        approval_reasons.append("Đơn hàng do Đại lý tạo từ cổng đặt hàng (Cần quản lý duyệt)")
+        approval_reasons.append("Đơn hàng do Đại lý tự đặt từ Cổng Đại lý (Chờ nhân viên phụ trách xác nhận)")
 
     discount_amount = round(subtotal_amount * effective_pct / 100, 2)
     final_total_amount = subtotal_amount - discount_amount
@@ -799,7 +799,9 @@ def create_order(
 
     order_code = f"ORD{order_id:05d}"
     now_str = datetime.now(timezone.utc).isoformat()
-    order_status = "PENDING_APPROVAL" if requires_approval else "CONFIRMED"
+    # Nếu là Customer (Đại lý tự đặt): Status BẮT BUỘC bị ép thành "PENDING_APPROVAL" (Chờ duyệt).
+    # Nếu là Sales hoặc Admin: Giữ nguyên logic hiện tại (nếu cần duyệt thì PENDING_APPROVAL, ngược lại CONFIRMED).
+    order_status = "PENDING_APPROVAL" if (is_customer or requires_approval) else "CONFIRMED"
     approval_reason = " | ".join(approval_reasons) if approval_reasons else None
 
     delivery_point_str = data.delivery_point
@@ -1119,10 +1121,11 @@ def create_sales_entry_order(
             )
 
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
-    if is_customer or current_user.role == "customer" or "customer" in user_roles:
+    is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
+    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
+    if is_customer:
         requires_approval = True
-        approval_reasons.append("Đơn hàng do Đại lý tạo từ cổng đặt hàng (Cần quản lý duyệt)")
+        approval_reasons.append("Đơn hàng do Đại lý tự đặt từ Cổng Đại lý (Chờ nhân viên phụ trách xác nhận)")
 
     discount_amount = round(subtotal_amount * effective_pct / 100, 2)
     final_total_amount = subtotal_amount - discount_amount
@@ -1134,7 +1137,7 @@ def create_sales_entry_order(
             f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
         )
 
-    order_status = "PENDING_APPROVAL" if requires_approval else "CONFIRMED"
+    order_status = "PENDING_APPROVAL" if (is_customer or requires_approval) else "CONFIRMED"
     approval_reason = " | ".join(approval_reasons) if approval_reasons else None
 
     created_at = datetime.now(timezone.utc)
