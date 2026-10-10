@@ -1,6 +1,7 @@
 # backend/app/models/entities.py
 from __future__ import annotations
 from datetime import datetime, timezone
+from enum import Enum
 import json
 from sqlalchemy import (
     Column,
@@ -61,13 +62,7 @@ class UserEntity(Base):
     def get_roles(self) -> list[str]:
         return self.roles
 
-    @property
-    def avatar_url(self) -> str | None:
-        return getattr(self, "_avatar_url", None)
-
-    @avatar_url.setter
-    def avatar_url(self, val: str | None):
-        self._avatar_url = val
+    avatar_url = Column(Unicode(500), nullable=True)
 
 
 class RoleEntity(Base):
@@ -117,12 +112,14 @@ class ProductEntity(Base):
     stock = Column(Integer, default=0)
     cost_price = Column(Float, default=0.0)
     sell_price = Column(Float, default=0.0)
+    floor_price = Column(Float, default=0.0, nullable=True)
     base_unit = Column(Unicode(50), default="Cái")
     units_json = Column(UnicodeText, nullable=True)
     packaging_specification = Column(Unicode(255), nullable=True)
     images_json = Column(UnicodeText, nullable=True)
     is_batch_managed = Column(Boolean, default=False)
     status = Column(String(50), default="active")
+    is_batch_managed = Column(Boolean, default=False)
     created_at = Column(DateTime, default=get_utc_now)
 
     category_rel = relationship("CategoryEntity", backref="products")
@@ -203,6 +200,17 @@ class InventoryTransactionEntity(Base):
     created_at = Column(DateTime, default=get_utc_now)
 
 
+class OrderStatus(str, Enum):
+    DRAFT = "DRAFT"                        # Nháp
+    PENDING_APPROVAL = "PENDING_APPROVAL"  # Chờ duyệt
+    APPROVED = "CONFIRMED"                 # Đã duyệt
+    PICKING = "PICKING"                    # Đang soạn hàng
+    EXPORTED = "EXPORTED"                  # Đã xuất
+    DELIVERED = "DELIVERED"                # Đã giao
+    CLOSED = "CLOSED"                      # Đóng
+    CANCELLED = "CANCELLED"                # Huỷ
+    REJECTED = "REJECTED"                  # Bị từ chối
+
 class OrderEntity(Base):
     __tablename__ = "orders"
 
@@ -224,6 +232,9 @@ class OrderEntity(Base):
     requires_approval = Column(Boolean, default=False, nullable=True)
     approval_status = Column(String(50), default="NORMAL", nullable=True)
     approval_reason = Column(Unicode(500), nullable=True)
+    cancel_reason = Column(Unicode(500), nullable=True)
+    cancelled_by = Column(String(100), nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
 
 class AuditLogEntity(Base):
     __tablename__ = "audit_logs"
