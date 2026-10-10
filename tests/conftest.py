@@ -70,7 +70,7 @@ def reset_test_state():
         # Xóa các sản phẩm test được tạo trong lúc test
         from app.models.entities import ProductEntity
         db.query(ProductEntity).filter(
-            ((ProductEntity.code.like("SP\\_%", escape="\\")) | (ProductEntity.code == "SSOJSH"))
+            ((ProductEntity.code.like(r"SP\_%", escape="\\")) | (ProductEntity.code == "SSOJSH"))
             & (~ProductEntity.code.in_(["SP001", "SP002", "SP003", "SP004", "SP005"]))
         ).delete(synchronize_session=False)
         from app.api.v1.endpoints.products import RAW_PRODUCTS
