@@ -626,6 +626,35 @@ def create_dealer(
     DEALERS_DB[new_id] = new_dealer
     save_dealers_db()
 
+    if new_dealer.address:
+        try:
+            from app.core.database import SessionLocal
+            from app.models.entities import DealerDeliveryPointEntity
+            from app.api.v1.endpoints.delivery_points import _sync_to_master
+            import re
+            db_s = SessionLocal()
+            try:
+                clean_p = (new_dealer.phone or "0987654321").replace(" ", "").replace(".", "").replace("-", "")
+                if not re.fullmatch(r"^\d{10}$", clean_p):
+                    clean_p = "0987654321"
+                dp = DealerDeliveryPointEntity(
+                    dealer_id=new_id,
+                    label="Địa chỉ đăng ký đại lý",
+                    address=new_dealer.address,
+                    receiver_name=new_dealer.name,
+                    receiver_phone=clean_p,
+                    route_note="Địa chỉ chính thức của đại lý",
+                    is_default=True,
+                    is_active=True,
+                )
+                db_s.add(dp)
+                _sync_to_master(db_s, dp.label, dp.address, dp.receiver_name, dp.receiver_phone, dp.route_note)
+                db_s.commit()
+            finally:
+                db_s.close()
+        except Exception:
+            pass
+
     applied_pb = get_applied_price_book_info(new_dealer.customer_group)
 
     return {
@@ -736,6 +765,42 @@ def update_dealer_profile(
         dealer.email = payload.email.strip() if payload.email.strip() else None
     if payload.address is not None:
         dealer.address = payload.address.strip() if payload.address.strip() else None
+        if dealer.address:
+            try:
+                from app.models.entities import DealerDeliveryPointEntity
+                from app.api.v1.endpoints.delivery_points import _sync_to_master
+                import re
+                clean_p = (dealer.phone or "0987654321").replace(" ", "").replace(".", "").replace("-", "")
+                if not re.fullmatch(r"^\d{10}$", clean_p):
+                    clean_p = "0987654321"
+                dp = db.query(DealerDeliveryPointEntity).filter(
+                    DealerDeliveryPointEntity.dealer_id == dealer.id,
+                    DealerDeliveryPointEntity.is_default == True,
+                    DealerDeliveryPointEntity.is_active == True,
+                ).first()
+                if dp:
+                    dp.address = dealer.address
+                    if not dp.receiver_name:
+                        dp.receiver_name = dealer.name
+                    if not dp.receiver_phone:
+                        dp.receiver_phone = clean_p
+                    _sync_to_master(db, dp.label, dp.address, dp.receiver_name, dp.receiver_phone, dp.route_note)
+                else:
+                    dp = DealerDeliveryPointEntity(
+                        dealer_id=dealer.id,
+                        label="Địa chỉ đăng ký đại lý",
+                        address=dealer.address,
+                        receiver_name=dealer.name,
+                        receiver_phone=clean_p,
+                        route_note="Địa chỉ chính thức của đại lý",
+                        is_default=True,
+                        is_active=True,
+                    )
+                    db.add(dp)
+                    _sync_to_master(db, dp.label, dp.address, dp.receiver_name, dp.receiver_phone, dp.route_note)
+                db.commit()
+            except Exception as sync_err:
+                print(f"Lỗi đồng bộ điểm giao hàng khi cập nhật hồ sơ đại lý: {sync_err}")
     if payload.region is not None and payload.region.strip():
         dealer.region = payload.region.strip()
     if payload.assigned_sale_id is not None:
