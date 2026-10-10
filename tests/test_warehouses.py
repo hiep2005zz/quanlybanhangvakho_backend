@@ -232,3 +232,67 @@ def test_rbac_protection_on_warehouses():
 
     del_res = client.delete("/api/v1/warehouses/1", headers=sales_headers)
     assert del_res.status_code == 403
+
+
+def test_warehouse_master_data_zones_and_racks():
+    client = TestClient(app)
+    admin_token = get_auth_token(client, "admin", "123")
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    # 1. Master Data dropdown options
+    md_res = client.get("/api/v1/warehouses/1/master-data", headers=admin_headers)
+    assert md_res.status_code == 200
+    md = md_res.json()
+    assert "zones" in md and len(md["zones"]) > 0
+    assert "aisles" in md and len(md["aisles"]) > 0
+    assert "racks" in md and len(md["racks"]) > 0
+    assert "bins" in md and len(md["bins"]) > 0
+
+    # 2. Zone CRUD
+    # Tạo Zone mới
+    new_zone = client.post("/api/v1/warehouses/1/zones", json={
+        "zone_code": "KHU-TEST-Z9",
+        "zone_name": "Khu Test Nhanh Z9",
+        "description": "Khu vực thử nghiệm",
+    }, headers=admin_headers)
+    assert new_zone.status_code == 201
+    zone_data = new_zone.json()
+    zone_id = zone_data["id"]
+    assert zone_data["zone_code"] == "KHU-TEST-Z9"
+
+    # Sửa Zone
+    edit_zone = client.put(f"/api/v1/warehouses/zones/{zone_id}", json={
+        "zone_name": "Khu Test Nhanh Z9 (Updated)",
+    }, headers=admin_headers)
+    assert edit_zone.status_code == 200
+    assert edit_zone.json()["zone_name"] == "Khu Test Nhanh Z9 (Updated)"
+
+    # 3. Rack CRUD
+    # Tạo Rack mới
+    new_rack = client.post("/api/v1/warehouses/1/racks", json={
+        "rack_code": "RACK-TEST-01",
+        "rack_name": "Kệ Thử Nghiệm 01",
+        "rack_type": "rack",
+        "zone_id": zone_id,
+        "max_capacity": 750.0,
+    }, headers=admin_headers)
+    assert new_rack.status_code == 201
+    rack_data = new_rack.json()
+    rack_id = rack_data["id"]
+    assert rack_data["rack_code"] == "RACK-TEST-01"
+
+    # Sửa Rack
+    edit_rack = client.put(f"/api/v1/warehouses/racks/{rack_id}", json={
+        "rack_name": "Kệ Thử Nghiệm 01 (Updated)",
+        "max_capacity": 900.0,
+    }, headers=admin_headers)
+    assert edit_rack.status_code == 200
+    assert edit_rack.json()["max_capacity"] == 900.0
+
+    # 4. Xóa Rack & Zone vừa tạo
+    del_rack = client.delete(f"/api/v1/warehouses/racks/{rack_id}", headers=admin_headers)
+    assert del_rack.status_code == 200
+
+    del_zone = client.delete(f"/api/v1/warehouses/zones/{zone_id}", headers=admin_headers)
+    assert del_zone.status_code == 200
+

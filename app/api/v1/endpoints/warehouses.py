@@ -11,7 +11,7 @@ from app.api.deps import require_roles, require_permission
 from app.core.rbac import Permission
 from app.schemas.auth import UserResponse
 from app.models.goods_receipt import WarehouseEntity
-from app.models.warehouse import WarehouseLocationEntity, LocationStockEntity
+from app.models.warehouse import WarehouseLocationEntity, LocationStockEntity, WarehouseZoneEntity, WarehouseRackEntity
 from app.models.entities import ProductEntity, DealerEntity, OrderEntity
 from app.schemas.warehouse import (
     WarehouseCreate,
@@ -25,6 +25,14 @@ from app.schemas.warehouse import (
     LocationProductStockItem,
     OrderPickingItemResponse,
     ProductPickingLocation,
+    WarehouseZoneCreate,
+    WarehouseZoneUpdate,
+    WarehouseZoneResponse,
+    WarehouseRackCreate,
+    WarehouseRackUpdate,
+    WarehouseRackResponse,
+    WarehouseMasterDataResponse,
+    MasterDataOptionItem,
 )
 
 router = APIRouter()
@@ -995,3 +1003,558 @@ def get_order_picking_locations(
         ))
 
     return results
+
+
+# ==========================================================
+# 5. MASTER DATA: QUẢN LÝ KHU VỰC (ZONES) & KỆ/DÃY (RACKS)
+# ==========================================================
+
+@router.get("/{warehouse_id}/master-data", response_model=WarehouseMasterDataResponse)
+def get_warehouse_master_data(
+    warehouse_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_VIEW_ROLES)),
+):
+    """
+    Lấy toàn bộ dữ liệu cấu hình danh mục (Khu vực, Dãy kệ, Tầng/Kệ, Ô chứa)
+    của một kho hàng để hiển thị thành các tùy chọn chọn nhanh (dropdown) khi tạo vị trí.
+    """
+    wh = db.query(WarehouseEntity).filter(WarehouseEntity.id == warehouse_id).first()
+    if not wh:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy kho hàng với ID {warehouse_id}."
+        )
+
+    # 1. Khu vực (Zones) từ bảng warehouse_zones
+    db_zones = db.query(WarehouseZoneEntity).filter(
+        WarehouseZoneEntity.warehouse_id == warehouse_id,
+        WarehouseZoneEntity.is_active == True
+    ).order_by(WarehouseZoneEntity.zone_code.asc()).all()
+
+    zone_items: List[MasterDataOptionItem] = []
+    seen_zones = set()
+    for z in db_zones:
+        zone_items.append(MasterDataOptionItem(id=z.id, code=z.zone_code, name=z.zone_name, type="zone"))
+        seen_zones.add(z.zone_name.strip().lower())
+
+    # Bổ sung các khu vực đã có trong locations nếu chưa có trong master table
+    loc_zones = db.query(WarehouseLocationEntity.zone).filter(
+        WarehouseLocationEntity.warehouse_id == warehouse_id,
+        WarehouseLocationEntity.zone.isnot(None)
+    ).distinct().all()
+    for (lz,) in loc_zones:
+        if lz and lz.strip() and lz.strip().lower() not in seen_zones:
+            zone_items.append(MasterDataOptionItem(code=f"Z-{len(zone_items)+1}", name=lz.strip(), type="zone"))
+            seen_zones.add(lz.strip().lower())
+
+    # Mặc định gợi ý nếu kho hoàn toàn mới chưa có dữ liệu
+    if not zone_items:
+        default_zones = ["Khu A (Thời trang)", "Khu B (Hàng may mặc)", "Khu C (Hàng phụ kiện)", "Khu D (Lưu trữ chung)"]
+        for idx, dz in enumerate(default_zones, start=1):
+            zone_items.append(MasterDataOptionItem(code=f"KHU-{chr(64+idx)}", name=dz, type="zone"))
+
+    # 2. Dãy kệ & Tầng/Kệ từ warehouse_racks
+    db_racks = db.query(WarehouseRackEntity).filter(
+        WarehouseRackEntity.warehouse_id == warehouse_id,
+        WarehouseRackEntity.is_active == True
+    ).order_by(WarehouseRackEntity.rack_code.asc()).all()
+
+    aisle_items: List[MasterDataOptionItem] = []
+    rack_items: List[MasterDataOptionItem] = []
+    seen_aisles = set()
+    seen_racks = set()
+
+    for r in db_racks:
+        item = MasterDataOptionItem(
+            id=r.id,
+            code=r.rack_code,
+            name=r.rack_name,
+            type=r.rack_type,
+            zone_name=r.zone.zone_name if r.zone else None
+        )
+        if r.rack_type == "aisle":
+            aisle_items.append(item)
+            seen_aisles.add(r.rack_name.strip().lower())
+        else:
+            rack_items.append(item)
+            seen_racks.add(r.rack_name.strip().lower())
+
+    # Bổ sung từ locations thực tế
+    loc_aisles = db.query(WarehouseLocationEntity.aisle).filter(
+        WarehouseLocationEntity.warehouse_id == warehouse_id,
+        WarehouseLocationEntity.aisle.isnot(None)
+    ).distinct().all()
+    for (la,) in loc_aisles:
+        if la and la.strip() and la.strip().lower() not in seen_aisles:
+            aisle_items.append(MasterDataOptionItem(code=f"A-{len(aisle_items)+1}", name=la.strip(), type="aisle"))
+            seen_aisles.add(la.strip().lower())
+
+    loc_racks = db.query(WarehouseLocationEntity.rack).filter(
+        WarehouseLocationEntity.warehouse_id == warehouse_id,
+        WarehouseLocationEntity.rack.isnot(None)
+    ).distinct().all()
+    for (lr,) in loc_racks:
+        if lr and lr.strip() and lr.strip().lower() not in seen_racks:
+            rack_items.append(MasterDataOptionItem(code=f"R-{len(rack_items)+1}", name=lr.strip(), type="rack"))
+            seen_racks.add(lr.strip().lower())
+
+    # Gợi ý mặc định nếu chưa có
+    if not aisle_items:
+        for a in ["Dãy 1", "Dãy 2", "Dãy 3", "Dãy A1", "Dãy B1"]:
+            aisle_items.append(MasterDataOptionItem(code=a.replace(" ", "-"), name=a, type="aisle"))
+
+    if not rack_items:
+        for rk in ["Tầng 1", "Tầng 2", "Tầng 3", "Tầng 4", "Kệ 01", "Kệ 02"]:
+            rack_items.append(MasterDataOptionItem(code=rk.replace(" ", "-"), name=rk, type="rack"))
+
+    # 3. Ô chứa hàng (Bins)
+    bin_items: List[MasterDataOptionItem] = []
+    seen_bins = set()
+    loc_bins = db.query(WarehouseLocationEntity.bin).filter(
+        WarehouseLocationEntity.warehouse_id == warehouse_id,
+        WarehouseLocationEntity.bin.isnot(None)
+    ).distinct().all()
+    for (lb,) in loc_bins:
+        if lb and lb.strip() and lb.strip().lower() not in seen_bins:
+            bin_items.append(MasterDataOptionItem(code=f"BIN-{len(bin_items)+1}", name=lb.strip(), type="bin"))
+            seen_bins.add(lb.strip().lower())
+
+    if not bin_items:
+        for b in ["Ô 01", "Ô 02", "Ô 03", "Ô 04", "Ô 05", "Hộc A", "Hộc B"]:
+            bin_items.append(MasterDataOptionItem(code=b.replace(" ", "-"), name=b, type="bin"))
+
+    return WarehouseMasterDataResponse(
+        zones=zone_items,
+        aisles=aisle_items,
+        racks=rack_items,
+        bins=bin_items,
+    )
+
+
+# --- QUẢN LÝ KHU VỰC (ZONES) CRUD ---
+
+@router.get("/{warehouse_id}/zones", response_model=List[WarehouseZoneResponse])
+def get_warehouse_zones(
+    warehouse_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_VIEW_ROLES)),
+):
+    wh = db.query(WarehouseEntity).filter(WarehouseEntity.id == warehouse_id).first()
+    if not wh:
+        raise HTTPException(status_code=404, detail="Không tìm thấy kho hàng.")
+
+    zones = db.query(WarehouseZoneEntity).filter(
+        WarehouseZoneEntity.warehouse_id == warehouse_id
+    ).order_by(WarehouseZoneEntity.id.asc()).all()
+
+    # Nếu chưa có bản ghi nào trong bảng warehouse_zones, tự động tạo từ danh sách locations hiện có hoặc mẫu mặc định
+    if not zones:
+        unique_zones = db.query(WarehouseLocationEntity.zone).filter(
+            WarehouseLocationEntity.warehouse_id == warehouse_id,
+            WarehouseLocationEntity.zone.isnot(None)
+        ).distinct().all()
+        created_zones = []
+        for idx, (uz,) in enumerate(unique_zones, start=1):
+            if uz and uz.strip():
+                z_entity = WarehouseZoneEntity(
+                    warehouse_id=warehouse_id,
+                    zone_code=f"KHU-{chr(64+idx)}",
+                    zone_name=uz.strip(),
+                    description="Khu vực khởi tạo từ vị trí hiện có",
+                    is_active=True,
+                )
+                db.add(z_entity)
+                created_zones.append(z_entity)
+        if not created_zones:
+            default_samples = [
+                ("KHU-A", "Khu A - Thời trang", "Khu vực trưng bày và lưu kho quần áo"),
+                ("KHU-B", "Khu B - Hàng may mặc", "Khu lưu kho phụ kiện thời trang"),
+                ("KHU-C", "Khu C - Hàng phụ kiện", "Khu vực hàng nhỏ, phụ kiện đóng gói"),
+            ]
+            for zc, zn, zd in default_samples:
+                z_entity = WarehouseZoneEntity(
+                    warehouse_id=warehouse_id,
+                    zone_code=zc,
+                    zone_name=zn,
+                    description=zd,
+                    is_active=True,
+                )
+                db.add(z_entity)
+                created_zones.append(z_entity)
+        db.commit()
+        zones = db.query(WarehouseZoneEntity).filter(
+            WarehouseZoneEntity.warehouse_id == warehouse_id
+        ).order_by(WarehouseZoneEntity.id.asc()).all()
+
+    results: List[WarehouseZoneResponse] = []
+    for z in zones:
+        loc_count = db.query(WarehouseLocationEntity).filter(
+            WarehouseLocationEntity.warehouse_id == warehouse_id,
+            WarehouseLocationEntity.zone == z.zone_name
+        ).count()
+        results.append(WarehouseZoneResponse(
+            id=z.id,
+            warehouse_id=z.warehouse_id,
+            zone_code=z.zone_code,
+            zone_name=z.zone_name,
+            description=z.description,
+            is_active=z.is_active,
+            created_at=z.created_at,
+            locations_count=loc_count,
+        ))
+    return results
+
+
+@router.post("/{warehouse_id}/zones", response_model=WarehouseZoneResponse, status_code=status.HTTP_201_CREATED)
+def create_warehouse_zone(
+    warehouse_id: int,
+    payload: WarehouseZoneCreate,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_MANAGE_ROLES)),
+):
+    wh = db.query(WarehouseEntity).filter(WarehouseEntity.id == warehouse_id).first()
+    if not wh:
+        raise HTTPException(status_code=404, detail="Không tìm thấy kho hàng.")
+
+    clean_code = payload.zone_code.strip().upper()
+    existing = db.query(WarehouseZoneEntity).filter(
+        WarehouseZoneEntity.warehouse_id == warehouse_id,
+        func.lower(WarehouseZoneEntity.zone_code) == clean_code.lower()
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Mã khu vực '{clean_code}' đã tồn tại trong kho này."
+        )
+
+    new_zone = WarehouseZoneEntity(
+        warehouse_id=warehouse_id,
+        zone_code=clean_code,
+        zone_name=payload.zone_name.strip(),
+        description=payload.description.strip() if payload.description else None,
+        is_active=payload.is_active if payload.is_active is not None else True,
+    )
+    db.add(new_zone)
+    db.commit()
+    db.refresh(new_zone)
+
+    return WarehouseZoneResponse(
+        id=new_zone.id,
+        warehouse_id=new_zone.warehouse_id,
+        zone_code=new_zone.zone_code,
+        zone_name=new_zone.zone_name,
+        description=new_zone.description,
+        is_active=new_zone.is_active,
+        created_at=new_zone.created_at,
+        locations_count=0,
+    )
+
+
+@router.put("/zones/{zone_id}", response_model=WarehouseZoneResponse)
+def update_warehouse_zone(
+    zone_id: int,
+    payload: WarehouseZoneUpdate,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_MANAGE_ROLES)),
+):
+    zone = db.query(WarehouseZoneEntity).filter(WarehouseZoneEntity.id == zone_id).first()
+    if not zone:
+        raise HTTPException(status_code=404, detail="Không tìm thấy khu vực.")
+
+    old_name = zone.zone_name
+
+    if payload.zone_code is not None:
+        clean_code = payload.zone_code.strip().upper()
+        existing = db.query(WarehouseZoneEntity).filter(
+            WarehouseZoneEntity.warehouse_id == zone.warehouse_id,
+            WarehouseZoneEntity.id != zone.id,
+            func.lower(WarehouseZoneEntity.zone_code) == clean_code.lower()
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Mã khu vực '{clean_code}' đã được sử dụng.")
+        zone.zone_code = clean_code
+
+    if payload.zone_name is not None and payload.zone_name.strip():
+        new_name = payload.zone_name.strip()
+        # Đồng bộ cập nhật tên khu vực trong các locations đang liên kết
+        if old_name != new_name:
+            db.query(WarehouseLocationEntity).filter(
+                WarehouseLocationEntity.warehouse_id == zone.warehouse_id,
+                WarehouseLocationEntity.zone == old_name
+            ).update({"zone": new_name}, synchronize_session=False)
+        zone.zone_name = new_name
+
+    if payload.description is not None:
+        zone.description = payload.description.strip() if payload.description else None
+
+    if payload.is_active is not None:
+        zone.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(zone)
+
+    loc_count = db.query(WarehouseLocationEntity).filter(
+        WarehouseLocationEntity.warehouse_id == zone.warehouse_id,
+        WarehouseLocationEntity.zone == zone.zone_name
+    ).count()
+
+    return WarehouseZoneResponse(
+        id=zone.id,
+        warehouse_id=zone.warehouse_id,
+        zone_code=zone.zone_code,
+        zone_name=zone.zone_name,
+        description=zone.description,
+        is_active=zone.is_active,
+        created_at=zone.created_at,
+        locations_count=loc_count,
+    )
+
+
+@router.delete("/zones/{zone_id}")
+def delete_warehouse_zone(
+    zone_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_MANAGE_ROLES)),
+):
+    zone = db.query(WarehouseZoneEntity).filter(WarehouseZoneEntity.id == zone_id).first()
+    if not zone:
+        raise HTTPException(status_code=404, detail="Không tìm thấy khu vực.")
+
+    loc_count = db.query(WarehouseLocationEntity).filter(
+        WarehouseLocationEntity.warehouse_id == zone.warehouse_id,
+        WarehouseLocationEntity.zone == zone.zone_name
+    ).count()
+
+    if loc_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Khu vực '{zone.zone_name}' đang có {loc_count} vị trí kệ lưu kho sử dụng. Vui lòng chuyển các vị trí sang khu vực khác trước khi xóa."
+        )
+
+    db.delete(zone)
+    db.commit()
+    return {"message": f"Đã xóa khu vực '{zone.zone_name}' thành công."}
+
+
+# --- QUẢN LÝ KỆ / DÃY (RACKS / AISLES) CRUD ---
+
+@router.get("/{warehouse_id}/racks", response_model=List[WarehouseRackResponse])
+def get_warehouse_racks(
+    warehouse_id: int,
+    rack_type: Optional[str] = Query(None, description="Lọc theo loại: aisle hoặc rack"),
+    zone_id: Optional[int] = Query(None, description="Lọc theo khu vực"),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_VIEW_ROLES)),
+):
+    wh = db.query(WarehouseEntity).filter(WarehouseEntity.id == warehouse_id).first()
+    if not wh:
+        raise HTTPException(status_code=404, detail="Không tìm thấy kho hàng.")
+
+    query = db.query(WarehouseRackEntity).filter(WarehouseRackEntity.warehouse_id == warehouse_id)
+    if rack_type:
+        query = query.filter(WarehouseRackEntity.rack_type == rack_type.strip())
+    if zone_id:
+        query = query.filter(WarehouseRackEntity.zone_id == zone_id)
+
+    racks = query.order_by(WarehouseRackEntity.id.asc()).all()
+
+    # Khởi tạo mặc định nếu chưa có
+    if not racks and not rack_type and not zone_id:
+        default_racks = [
+            ("DAY-01", "Dãy 1", "aisle", 1000.0),
+            ("DAY-02", "Dãy 2", "aisle", 1000.0),
+            ("DAY-A1", "Dãy A1", "aisle", 1200.0),
+            ("TANG-01", "Tầng 1", "rack", 500.0),
+            ("TANG-02", "Tầng 2", "rack", 500.0),
+            ("TANG-03", "Tầng 3", "rack", 500.0),
+            ("KE-01", "Kệ 01", "rack", 800.0),
+        ]
+        created = []
+        for rc, rn, rt, cap in default_racks:
+            r_ent = WarehouseRackEntity(
+                warehouse_id=warehouse_id,
+                rack_code=rc,
+                rack_name=rn,
+                rack_type=rt,
+                max_capacity=cap,
+                is_active=True,
+            )
+            db.add(r_ent)
+            created.append(r_ent)
+        db.commit()
+        racks = db.query(WarehouseRackEntity).filter(
+            WarehouseRackEntity.warehouse_id == warehouse_id
+        ).order_by(WarehouseRackEntity.id.asc()).all()
+
+    results: List[WarehouseRackResponse] = []
+    for r in racks:
+        # Đếm số location đang dùng tên rack/aisle này
+        loc_count = db.query(WarehouseLocationEntity).filter(
+            WarehouseLocationEntity.warehouse_id == warehouse_id,
+            (WarehouseLocationEntity.aisle == r.rack_name) | (WarehouseLocationEntity.rack == r.rack_name)
+        ).count()
+
+        results.append(WarehouseRackResponse(
+            id=r.id,
+            warehouse_id=r.warehouse_id,
+            zone_id=r.zone_id,
+            zone_name=r.zone.zone_name if r.zone else None,
+            rack_code=r.rack_code,
+            rack_name=r.rack_name,
+            rack_type=r.rack_type,
+            max_capacity=r.max_capacity,
+            is_active=r.is_active,
+            created_at=r.created_at,
+            locations_count=loc_count,
+        ))
+    return results
+
+
+@router.post("/{warehouse_id}/racks", response_model=WarehouseRackResponse, status_code=status.HTTP_201_CREATED)
+def create_warehouse_rack(
+    warehouse_id: int,
+    payload: WarehouseRackCreate,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_MANAGE_ROLES)),
+):
+    wh = db.query(WarehouseEntity).filter(WarehouseEntity.id == warehouse_id).first()
+    if not wh:
+        raise HTTPException(status_code=404, detail="Không tìm thấy kho hàng.")
+
+    clean_code = payload.rack_code.strip().upper()
+    existing = db.query(WarehouseRackEntity).filter(
+        WarehouseRackEntity.warehouse_id == warehouse_id,
+        func.lower(WarehouseRackEntity.rack_code) == clean_code.lower()
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Mã kệ/dãy '{clean_code}' đã tồn tại trong kho này."
+        )
+
+    new_rack = WarehouseRackEntity(
+        warehouse_id=warehouse_id,
+        zone_id=payload.zone_id,
+        rack_code=clean_code,
+        rack_name=payload.rack_name.strip(),
+        rack_type=payload.rack_type or "rack",
+        max_capacity=payload.max_capacity if payload.max_capacity is not None else 1000.0,
+        is_active=payload.is_active if payload.is_active is not None else True,
+    )
+    db.add(new_rack)
+    db.commit()
+    db.refresh(new_rack)
+
+    return WarehouseRackResponse(
+        id=new_rack.id,
+        warehouse_id=new_rack.warehouse_id,
+        zone_id=new_rack.zone_id,
+        zone_name=new_rack.zone.zone_name if new_rack.zone else None,
+        rack_code=new_rack.rack_code,
+        rack_name=new_rack.rack_name,
+        rack_type=new_rack.rack_type,
+        max_capacity=new_rack.max_capacity,
+        is_active=new_rack.is_active,
+        created_at=new_rack.created_at,
+        locations_count=0,
+    )
+
+
+@router.put("/racks/{rack_id}", response_model=WarehouseRackResponse)
+def update_warehouse_rack(
+    rack_id: int,
+    payload: WarehouseRackUpdate,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_MANAGE_ROLES)),
+):
+    rack = db.query(WarehouseRackEntity).filter(WarehouseRackEntity.id == rack_id).first()
+    if not rack:
+        raise HTTPException(status_code=404, detail="Không tìm thấy kệ/dãy.")
+
+    old_name = rack.rack_name
+
+    if payload.rack_code is not None:
+        clean_code = payload.rack_code.strip().upper()
+        existing = db.query(WarehouseRackEntity).filter(
+            WarehouseRackEntity.warehouse_id == rack.warehouse_id,
+            WarehouseRackEntity.id != rack.id,
+            func.lower(WarehouseRackEntity.rack_code) == clean_code.lower()
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Mã kệ '{clean_code}' đã được sử dụng.")
+        rack.rack_code = clean_code
+
+    if payload.rack_name is not None and payload.rack_name.strip():
+        new_name = payload.rack_name.strip()
+        # Đồng bộ cập nhật vị trí tương ứng
+        if old_name != new_name:
+            if rack.rack_type == "aisle":
+                db.query(WarehouseLocationEntity).filter(
+                    WarehouseLocationEntity.warehouse_id == rack.warehouse_id,
+                    WarehouseLocationEntity.aisle == old_name
+                ).update({"aisle": new_name}, synchronize_session=False)
+            else:
+                db.query(WarehouseLocationEntity).filter(
+                    WarehouseLocationEntity.warehouse_id == rack.warehouse_id,
+                    WarehouseLocationEntity.rack == old_name
+                ).update({"rack": new_name}, synchronize_session=False)
+        rack.rack_name = new_name
+
+    if payload.rack_type is not None:
+        rack.rack_type = payload.rack_type
+    if payload.zone_id is not None:
+        rack.zone_id = payload.zone_id if payload.zone_id > 0 else None
+    if payload.max_capacity is not None:
+        rack.max_capacity = payload.max_capacity
+    if payload.is_active is not None:
+        rack.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(rack)
+
+    loc_count = db.query(WarehouseLocationEntity).filter(
+        WarehouseLocationEntity.warehouse_id == rack.warehouse_id,
+        (WarehouseLocationEntity.aisle == rack.rack_name) | (WarehouseLocationEntity.rack == rack.rack_name)
+    ).count()
+
+    return WarehouseRackResponse(
+        id=rack.id,
+        warehouse_id=rack.warehouse_id,
+        zone_id=rack.zone_id,
+        zone_name=rack.zone.zone_name if rack.zone else None,
+        rack_code=rack.rack_code,
+        rack_name=rack.rack_name,
+        rack_type=rack.rack_type,
+        max_capacity=rack.max_capacity,
+        is_active=rack.is_active,
+        created_at=rack.created_at,
+        locations_count=loc_count,
+    )
+
+
+@router.delete("/racks/{rack_id}")
+def delete_warehouse_rack(
+    rack_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_MANAGE_ROLES)),
+):
+    rack = db.query(WarehouseRackEntity).filter(WarehouseRackEntity.id == rack_id).first()
+    if not rack:
+        raise HTTPException(status_code=404, detail="Không tìm thấy kệ/dãy.")
+
+    loc_count = db.query(WarehouseLocationEntity).filter(
+        WarehouseLocationEntity.warehouse_id == rack.warehouse_id,
+        (WarehouseLocationEntity.aisle == rack.rack_name) | (WarehouseLocationEntity.rack == rack.rack_name)
+    ).count()
+
+    if loc_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Kệ/Dãy '{rack.rack_name}' đang được liên kết trong {loc_count} vị trí lưu kho. Vui lòng chuyển các vị trí trước khi xóa."
+        )
+
+    db.delete(rack)
+    db.commit()
+    return {"message": f"Đã xóa kệ/dãy '{rack.rack_name}' thành công."}
+

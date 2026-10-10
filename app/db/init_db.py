@@ -27,6 +27,8 @@ from app.models.goods_receipt import (
 from app.models.warehouse import (
     WarehouseLocationEntity,
     LocationStockEntity,
+    WarehouseZoneEntity,
+    WarehouseRackEntity,
 )
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
@@ -541,6 +543,40 @@ def init_db():
             db.add_all(initial_stocks)
             db.commit()
             print("Location stocks seeded successfully.")
+
+        # 7.3 Seed Warehouse Zones (Khu vực lưu kho) nếu chưa có
+        if db.query(WarehouseZoneEntity).count() == 0:
+            print("Seeding initial warehouse zones...")
+            initial_zones = [
+                WarehouseZoneEntity(warehouse_id=1, zone_code="KHU-A", zone_name="Khu A - Thời trang", description="Khu vực lưu trữ các mặt hàng áo sơ mi, polo, thời trang nam", is_active=True),
+                WarehouseZoneEntity(warehouse_id=1, zone_code="KHU-B", zone_name="Khu B - Quần âu", description="Khu vực lưu trữ quần âu, kaki và đồ công sở", is_active=True),
+                WarehouseZoneEntity(warehouse_id=1, zone_code="KHU-C", zone_name="Khu C - Hàng phụ kiện", description="Khu vực lưu trữ thắt lưng, cà vạt, phụ kiện đóng hộp", is_active=True),
+                WarehouseZoneEntity(warehouse_id=2, zone_code="KHU-MT", zone_name="Khu Miền Trung", description="Khu trung chuyển hàng miền Trung", is_active=True),
+                WarehouseZoneEntity(warehouse_id=3, zone_code="KHU-MN", zone_name="Khu Nam Bộ", description="Khu phân phối thị trường miền Nam", is_active=True),
+            ]
+            db.add_all(initial_zones)
+            db.commit()
+            print("Warehouse zones seeded successfully.")
+
+        # 7.4 Seed Warehouse Racks (Dãy & Tầng/Kệ) nếu chưa có
+        if db.query(WarehouseRackEntity).count() == 0:
+            print("Seeding initial warehouse racks...")
+            initial_racks = [
+                WarehouseRackEntity(warehouse_id=1, rack_code="DAY-01", rack_name="Dãy 1", rack_type="aisle", max_capacity=1500.0, is_active=True),
+                WarehouseRackEntity(warehouse_id=1, rack_code="DAY-02", rack_name="Dãy 2", rack_type="aisle", max_capacity=1500.0, is_active=True),
+                WarehouseRackEntity(warehouse_id=1, rack_code="DAY-A1", rack_name="Dãy A1", rack_type="aisle", max_capacity=1200.0, is_active=True),
+                WarehouseRackEntity(warehouse_id=1, rack_code="TANG-01", rack_name="Tầng 1", rack_type="rack", max_capacity=500.0, is_active=True),
+                WarehouseRackEntity(warehouse_id=1, rack_code="TANG-02", rack_name="Tầng 2", rack_type="rack", max_capacity=500.0, is_active=True),
+                WarehouseRackEntity(warehouse_id=1, rack_code="TANG-03", rack_name="Tầng 3", rack_type="rack", max_capacity=500.0, is_active=True),
+                WarehouseRackEntity(warehouse_id=1, rack_code="KE-01", rack_name="Kệ 01", rack_type="rack", max_capacity=800.0, is_active=True),
+                WarehouseRackEntity(warehouse_id=2, rack_code="DN-D1", rack_name="Dãy 1", rack_type="aisle", max_capacity=1000.0, is_active=True),
+                WarehouseRackEntity(warehouse_id=2, rack_code="DN-T1", rack_name="Tầng 1", rack_type="rack", max_capacity=600.0, is_active=True),
+                WarehouseRackEntity(warehouse_id=3, rack_code="HCM-D1", rack_name="Dãy 1", rack_type="aisle", max_capacity=2000.0, is_active=True),
+                WarehouseRackEntity(warehouse_id=3, rack_code="HCM-T1", rack_name="Tầng 1", rack_type="rack", max_capacity=1000.0, is_active=True),
+            ]
+            db.add_all(initial_racks)
+            db.commit()
+            print("Warehouse racks seeded successfully.")
 
         # 8. Seed Units of Measure nếu chưa có
         if db.query(UnitOfMeasureEntity).count() == 0:

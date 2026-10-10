@@ -148,3 +148,81 @@ class OrderPickingItemResponse(BaseModel):
     warehouse_code: Optional[str] = None
     warehouse_name: Optional[str] = None
     locations: List[ProductPickingLocation] = []
+
+
+# --- MASTER DATA: KHU VỰC (ZONE) & KỆ / DÃY (RACK / AISLE) ---
+class WarehouseZoneCreate(BaseModel):
+    zone_code: str = Field(..., min_length=1, max_length=50, description="Mã khu vực (vd: KHU-A)")
+    zone_name: str = Field(..., min_length=1, max_length=100, description="Tên khu vực (vd: Khu A - Thời trang)")
+    description: Optional[str] = Field(None, description="Ghi chú / loại hàng hóa")
+    is_active: Optional[bool] = Field(True)
+
+
+class WarehouseZoneUpdate(BaseModel):
+    zone_code: Optional[str] = Field(None, min_length=1, max_length=50)
+    zone_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class WarehouseZoneResponse(BaseModel):
+    id: int
+    warehouse_id: int
+    zone_code: str
+    zone_name: str
+    description: Optional[str] = None
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    locations_count: int = 0
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WarehouseRackCreate(BaseModel):
+    rack_code: str = Field(..., min_length=1, max_length=50, description="Mã kệ / dãy (vd: DAY-01, TANG-1)")
+    rack_name: str = Field(..., min_length=1, max_length=100, description="Tên kệ / dãy (vd: Dãy 1, Tầng 1)")
+    rack_type: Optional[str] = Field("rack", max_length=50, description="Loại: aisle (dãy kệ) | rack (tầng/kệ) | bin (ô chứa)")
+    zone_id: Optional[int] = Field(None, description="ID khu vực trực thuộc nếu có")
+    max_capacity: Optional[float] = Field(1000.0, ge=0)
+    is_active: Optional[bool] = Field(True)
+
+
+class WarehouseRackUpdate(BaseModel):
+    rack_code: Optional[str] = Field(None, min_length=1, max_length=50)
+    rack_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    rack_type: Optional[str] = Field(None, max_length=50)
+    zone_id: Optional[int] = None
+    max_capacity: Optional[float] = Field(None, ge=0)
+    is_active: Optional[bool] = None
+
+
+class WarehouseRackResponse(BaseModel):
+    id: int
+    warehouse_id: int
+    zone_id: Optional[int] = None
+    zone_name: Optional[str] = None
+    rack_code: str
+    rack_name: str
+    rack_type: str = "rack"
+    max_capacity: Optional[float] = 1000.0
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    locations_count: int = 0
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MasterDataOptionItem(BaseModel):
+    id: Optional[int] = None
+    code: str
+    name: str
+    type: Optional[str] = None
+    zone_name: Optional[str] = None
+
+
+class WarehouseMasterDataResponse(BaseModel):
+    zones: List[MasterDataOptionItem] = []
+    aisles: List[MasterDataOptionItem] = []
+    racks: List[MasterDataOptionItem] = []
+    bins: List[MasterDataOptionItem] = []
+

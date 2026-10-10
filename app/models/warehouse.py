@@ -46,6 +46,47 @@ class WarehouseLocationEntity(Base):
     stocks = relationship("LocationStockEntity", back_populates="location", cascade="all, delete-orphan")
 
 
+class WarehouseZoneEntity(Base):
+    """
+    Khai báo danh mục Khu vực trong kho (Master Data: Zone).
+    Ví dụ: Khu A - Thời trang, Khu B - Quần âu, Khu Hàng Nặng, Khu Đóng Gói...
+    """
+    __tablename__ = "warehouse_zones"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False, index=True)
+    zone_code = Column(String(50), nullable=False)   # vd: KHU-A, ZONE-01
+    zone_name = Column(Unicode(100), nullable=False) # vd: Khu A - Thời trang nam
+    description = Column(UnicodeText, nullable=True) # Mô tả phạm vi / loại hàng
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+    warehouse = relationship("WarehouseEntity", foreign_keys=[warehouse_id])
+
+
+class WarehouseRackEntity(Base):
+    """
+    Khai báo danh mục Kệ / Dãy kệ / Tầng trong kho (Master Data: Rack / Aisle).
+    Ví dụ: Dãy A1, Dãy 02, Tầng 1, Tầng 2, Kệ 01...
+    """
+    __tablename__ = "warehouse_racks"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False, index=True)
+    zone_id = Column(Integer, ForeignKey("warehouse_zones.id", ondelete="SET NULL"), nullable=True, index=True)
+    rack_code = Column(String(50), nullable=False)  # vd: DAY-A1, KE-01, TANG-1
+    rack_name = Column(Unicode(100), nullable=False) # vd: Dãy A1, Tầng 1, Kệ 01
+    rack_type = Column(String(50), default="rack", nullable=False) # 'aisle' (Dãy), 'rack' (Tầng/Kệ), 'bin' (Ô)
+    max_capacity = Column(Float, default=1000.0, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+    warehouse = relationship("WarehouseEntity", foreign_keys=[warehouse_id])
+    zone = relationship("WarehouseZoneEntity", foreign_keys=[zone_id])
+
+
 class LocationStockEntity(Base):
     """
     Số lượng hàng hóa của từng sản phẩm được gán tại từng vị trí lưu kho.
@@ -64,3 +105,4 @@ class LocationStockEntity(Base):
     warehouse = relationship("WarehouseEntity", foreign_keys=[warehouse_id])
     location = relationship("WarehouseLocationEntity", back_populates="stocks")
     product = relationship("ProductEntity", foreign_keys=[product_id])
+
