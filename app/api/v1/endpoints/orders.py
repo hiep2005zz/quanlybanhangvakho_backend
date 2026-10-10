@@ -1249,13 +1249,18 @@ def get_order_detail(
         (
             order
             for order in ORDERS_DB.values()
-            if order["order_code"].upper() == order_code.upper()
+            if order.get("order_code", "").upper() == order_code.upper() or str(order.get("id")) == str(order_code)
         ),
         None,
     )
     entity = db.query(OrderEntity).filter(
         func.upper(OrderEntity.order_code) == order_code.upper()
     ).first()
+
+    if entity is None and str(order_code).isdigit():
+        entity = db.query(OrderEntity).filter(OrderEntity.id == int(order_code)).first()
+        if entity is None and order_record is None:
+            order_record = ORDERS_DB.get(int(order_code))
 
     if entity is None and order_record is None:
         raise HTTPException(
@@ -1400,6 +1405,156 @@ def get_order_detail(
         "dealer_address": getattr(d, "address", None) if d else None,
     })
     return SalesOrderResponse(**detail_response)
+
+@router.get("/{order_code}/clone-data", response_model=SalesOrderResponse)
+def get_order_clone_data(
+    order_code: str,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value)),
+):
+    """Lấy dữ liệu để sao chép đơn. Tính lại giá theo bảng sản phẩm (products.sell_price) / price_book hiện tại và discount hiện hành, bỏ SP inactive."""
+    # 1. Load original order
+    original_order = get_order_detail(order_code, db, current_user).dict()
+    
+    # 2. Get current dealer
+    dealer_id = original_order.get("dealer_id")
+    dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+    if not dealer:
+        dealer = DEALERS_DB.get(dealer_id)
+        if not dealer:
+            dealer = next((dl for dl in DEALERS_DB.values() if str(dl.id) == str(dealer_id)), None)
+        
+    customer_group = getattr(dealer, "customer_group", "dai_ly_cap_1") if dealer else "dai_ly_cap_1"
+    
+    from app.api.v1.endpoints.price_books import get_utc_now
+    from app.api.v1.endpoints.products import _find_product_in_raw
+    
+    new_items = []
+    subtotal = 0.0
+    now = get_utc_now()
+    
+    # Normalize group
+    aliases = [customer_group]
+    if str(customer_group).lower() in ["cap_1", "dai_ly_cap_1", "đại lý cấp 1"]:
+        aliases = ["Dai_ly_cap_1", "CAP_1", "Đại lý cấp 1", "dai_ly_cap_1"]
+    elif str(customer_group).lower() in ["cap_2", "dai_ly_cap_2", "đại lý cấp 2"]:
+        aliases = ["Dai_ly_cap_2", "CAP_2", "Đại lý cấp 2", "dai_ly_cap_2"]
+    elif str(customer_group).lower() in ["retail", "khach_le", "khách lẻ"]:
+        aliases = ["Khach_le", "RETAIL", "Khách lẻ", "khach_le"]
+        
+    for item in original_order.get("items", []):
+        product_id = item.get("product_id")
+        sku = item.get("product_code") or item.get("code")
+        
+        # Check product entity & active status
+        prod_entity = None
+        if product_id:
+            try:
+                prod_entity = db.query(ProductEntity).filter(ProductEntity.id == int(product_id)).first()
+            except Exception:
+                pass
+        if not prod_entity and sku:
+            prod_entity = db.query(ProductEntity).filter(ProductEntity.code == sku).first()
+            if prod_entity:
+                product_id = prod_entity.id
+                item["product_id"] = product_id
+
+        raw_p = None
+        if product_id:
+            try:
+                raw_p = _find_product_in_raw(int(product_id))
+            except Exception:
+                raw_p = _find_product_in_raw(product_id)
+        if not raw_p and sku:
+            for p in RAW_PRODUCTS:
+                if p.get("code") == sku:
+                    raw_p = p
+                    break
+
+        prod_status = raw_p.get("status") if raw_p else (getattr(prod_entity, "status", "active") if prod_entity else "active")
+        
+        if str(prod_status).lower() in ["inactive", "ngừng kinh doanh", "ngung_kinh_doanh"]:
+            # Bỏ qua SP ngừng kinh doanh
+            continue
+            
+        # Đảm bảo có product_name và product_code
+        if prod_entity:
+            item["product_name"] = prod_entity.name
+            item["product_code"] = prod_entity.code
+        elif raw_p:
+            item["product_name"] = raw_p.get("name")
+            item["product_code"] = raw_p.get("code")
+
+        # 1. Bắt buộc truy vấn lại giá niêm yết hiện hành từ bảng sản phẩm (products.sell_price)
+        current_sell_price = None
+        if prod_entity and getattr(prod_entity, "sell_price", None) is not None and float(prod_entity.sell_price) > 0:
+            current_sell_price = float(prod_entity.sell_price)
+        elif raw_p and raw_p.get("sell_price") is not None and float(raw_p.get("sell_price")) > 0:
+            current_sell_price = float(raw_p.get("sell_price"))
+            
+        # Fallback từ price_book nếu sản phẩm chưa có sell_price
+        if current_sell_price is None:
+            try:
+                pb_item = db.query(PriceBookItemEntity).join(PriceBookEntity).filter(
+                    PriceBookItemEntity.product_id == (prod_entity.id if prod_entity else product_id),
+                    func.upper(PriceBookEntity.status) == "ACTIVE",
+                    PriceBookEntity.customer_group.in_(aliases),
+                    PriceBookEntity.valid_from <= now,
+                    PriceBookEntity.valid_to >= now
+                ).order_by(PriceBookEntity.id.desc()).first()
+                
+                if pb_item and pb_item.sale_price is not None and float(pb_item.sale_price) > 0:
+                    current_sell_price = float(pb_item.sale_price)
+            except Exception:
+                pass
+
+        if current_sell_price is None:
+            current_sell_price = float(item.get("unit_price") or item.get("price") or 0)
+                
+        # Ghi đè unit_price và price mới nhất vào item trả về
+        item["price"] = current_sell_price
+        item["unit_price"] = current_sell_price
+        qty = float(item.get("quantity", 0))
+        item["subtotal"] = round(current_sell_price * qty, 2)
+        subtotal += current_sell_price * qty
+        new_items.append(item)
+        
+    original_order["items"] = new_items
+    original_order["subtotal_amount"] = round(subtotal, 2)
+    
+    # 2. Áp dụng lại chính sách chiết khấu sản lượng (discounts) theo số lượng sản phẩm hiện có
+    discount_amount = 0.0
+    discount_percent = 0.0
+    try:
+        from app.api.v1.endpoints.discounts import resolve_best_discount
+        total_quantity = sum(float(it.get("quantity", 0)) for it in new_items)
+        discount_res = resolve_best_discount(
+            items=new_items,
+            dealer=dealer,
+            total_quantity=total_quantity,
+            subtotal_amount=subtotal,
+            db=db,
+        )
+        discount_percent = float(discount_res.get("discount_percent", 0.0))
+        discount_amount = float(discount_res.get("discount_amount", 0.0))
+        if discount_percent > 0 and discount_amount == 0:
+            discount_amount = round(subtotal * discount_percent / 100.0, 2)
+        original_order["discount_percent"] = discount_percent
+        original_order["discount_rate"] = discount_percent
+        original_order["discount_amount"] = round(discount_amount, 2)
+        original_order["applied_policy_code"] = discount_res.get("applied_policy_code")
+        original_order["applied_policy_name"] = discount_res.get("applied_policy_name")
+    except Exception:
+        original_order["discount_percent"] = 0.0
+        original_order["discount_rate"] = 0.0
+        original_order["discount_amount"] = 0.0
+        
+    original_order["total_amount"] = max(0.0, round(subtotal - discount_amount, 2))
+    original_order["status"] = "DRAFT" # Luôn ở trạng thái Nháp
+    original_order["id"] = 0 # Xoá id cũ
+    original_order["order_code"] = "" # Xoá mã đơn
+    
+    return SalesOrderResponse(**original_order)
 
 
 def _resolve_current_product_price(db: Session, dealer_id: int, product_id: int) -> tuple[float, Optional[float], Optional[str]]:
