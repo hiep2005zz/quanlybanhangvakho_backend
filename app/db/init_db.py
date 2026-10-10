@@ -14,6 +14,7 @@ from app.models.entities import (
     CategoryEntity,
     AuditLogEntity,
     WarehouseStockEntity,
+    StockAuditEntity,
 )
 from app.models.supplier import SupplierEntity
 from app.models.goods_receipt import (
@@ -88,6 +89,11 @@ def _ensure_legacy_columns(bind=engine):
             "code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
             "product_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
             "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
+        },
+        "stock_audits": {
+            "discrepancy_items_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "cancelled_by": ("VARCHAR(100)", "NVARCHAR(100)"),
+            "cancelled_at": ("DATETIME", "DATETIME"),
         },
     }
     inspector = inspect(bind)
