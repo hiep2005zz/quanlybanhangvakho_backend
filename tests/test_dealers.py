@@ -757,4 +757,3 @@ def test_bulk_assign_dealers_and_audit_history():
             cleanup_db.commit()
         finally:
             cleanup_db.close()
-

@@ -160,8 +160,86 @@ class ReorderResponse(BaseModel):
     created_order: Optional[OrderResponse] = None
 
 # Orders created through the API are stored in the database and this process-local cache.
-ORDERS_DB: dict[int, dict] = {}
-NEXT_ORDER_ID = 1
+ORDERS_DB: dict[int, dict] = {
+    1: {
+        "id": 1,
+        "order_code": "DH-2026-0001",
+        "dealer_id": 1,
+        "dealer_name": "Công Ty Cổ Phần Phân Phối Tổng Hợp Sao Mai Toàn Cầu",
+        "created_by": "sales",
+        "assigned_sale_id": 3,
+        "assigned_sale_name": "Trần Bán Hàng",
+        "total_amount": 35800000.0,
+        "status": "PAID",
+        "created_at": "2026-03-15T08:30:00Z",
+        "items": [
+            {"product_id": 1, "product_name": "Áo sơ mi nam công sở Oxford", "quantity": 100, "price": 250000.0},
+            {"product_id": 2, "product_name": "Quần tây nam Slimfit", "quantity": 30, "price": 360000.0}
+        ]
+    },
+    2: {
+        "id": 2,
+        "order_code": "DH-2026-0002",
+        "dealer_id": 1,
+        "dealer_name": "Công Ty Cổ Phần Phân Phối Tổng Hợp Sao Mai Toàn Cầu",
+        "created_by": "sales",
+        "assigned_sale_id": 3,
+        "assigned_sale_name": "Trần Bán Hàng",
+        "total_amount": 18200000.0,
+        "status": "PAID",
+        "created_at": "2026-03-20T14:15:00Z",
+        "items": [
+            {"product_id": 3, "product_name": "Áo polo thể thao phối sọc", "quantity": 70, "price": 260000.0}
+        ]
+    },
+    3: {
+        "id": 3,
+        "order_code": "DH-2026-0003",
+        "dealer_id": 2,
+        "dealer_name": "Đại Lý Thời Trang & Dệt May Tân Bình",
+        "created_by": "sales",
+        "assigned_sale_id": 3,
+        "assigned_sale_name": "Trần Bán Hàng",
+        "total_amount": 22400000.0,
+        "status": "PAID",
+        "created_at": "2026-03-22T10:00:00Z",
+        "items": [
+            {"product_id": 1, "product_name": "Áo sơ mi nam công sở Oxford", "quantity": 50, "price": 250000.0},
+            {"product_id": 4, "product_name": "Áo thun cotton trơn Premium", "quantity": 60, "price": 165000.0}
+        ]
+    },
+    4: {
+        "id": 4,
+        "order_code": "DH-2026-0004",
+        "dealer_id": 3,
+        "dealer_name": "Hợp Tác Xã Thương Mại Dịch Vụ Cảng Biển Hải Phòng",
+        "created_by": "sales",
+        "assigned_sale_id": 3,
+        "assigned_sale_name": "Trần Bán Hàng",
+        "total_amount": 14500000.0,
+        "status": "PAID",
+        "created_at": "2026-03-25T16:40:00Z",
+        "items": [
+            {"product_id": 5, "product_name": "Thắt lưng da bò nguyên tấm", "quantity": 60, "price": 240000.0}
+        ]
+    },
+    5: {
+        "id": 5,
+        "order_code": "DH-2026-0005",
+        "dealer_id": 4,
+        "dealer_name": "Công Ty TNHH Bán Lẻ Đầu Tư & Xuất Nhập Khẩu An Phát Đà Nẵng",
+        "created_by": "sales",
+        "assigned_sale_id": 3,
+        "assigned_sale_name": "Trần Bán Hàng",
+        "total_amount": 9800000.0,
+        "status": "PAID",
+        "created_at": "2026-03-28T11:20:00Z",
+        "items": [
+            {"product_id": 2, "product_name": "Quần tây nam Slimfit", "quantity": 25, "price": 390000.0}
+        ]
+    }
+}
+NEXT_ORDER_ID = 6
 
 def _allocate_order_id(db: Session) -> int:
     global NEXT_ORDER_ID
@@ -301,13 +379,16 @@ def _get_customer_dealer(current_user: UserResponse):
         try:
             from app.core.database import SessionLocal
             from app.models.entities import DealerEntity
+            from sqlalchemy import or_
             with SessionLocal() as db_session:
-                db_d = db_session.query(DealerEntity).filter(
-                    (DealerEntity.id == current_user.id) |
-                    (DealerEntity.email == current_user.email) |
-                    (DealerEntity.phone == current_user.phone) |
-                    (DealerEntity.code == current_user.username)
-                ).first()
+                conds = [DealerEntity.id == current_user.id]
+                if current_user.email:
+                    conds.append(DealerEntity.email == current_user.email)
+                if current_user.phone:
+                    conds.append(DealerEntity.phone == current_user.phone)
+                if current_user.username:
+                    conds.append(DealerEntity.code == current_user.username)
+                db_d = db_session.query(DealerEntity).filter(or_(*conds)).first()
                 if db_d:
                     from app.models.dealer import Dealer
                     customer_dealer = Dealer(
@@ -327,8 +408,6 @@ def _get_customer_dealer(current_user: UserResponse):
                     )
         except Exception:
             pass
-    if not customer_dealer and DEALERS_DB:
-        customer_dealer = DEALERS_DB.get(7) or DEALERS_DB.get(1)
     return customer_dealer
 
 @router.get("/dealers")
@@ -1158,7 +1237,7 @@ def get_orders(
         confirmed_count=confirmed_count,
     )
 
-@router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=OrderResponse, response_model_exclude_unset=True, status_code=status.HTTP_201_CREATED)
 def create_order(
     data: OrderCreate,
     request: Request,
@@ -1531,12 +1610,14 @@ def create_order(
         "discount_percent": effective_pct,
         "discount_rate": effective_pct,
         "discount_amount": discount_amount,
-        "delivery_point": delivery_point_str,
-        "desired_delivery_date": data.desired_delivery_date.isoformat() if data.desired_delivery_date else None,
         "note": data.note,
         "dealer_status": getattr(dealer, "status", "Đang hoạt động"),
         "dealer_lock_reason": None if ("customer" in current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]) else getattr(dealer, "lock_reason", None),
     }
+    if data.delivery_point is not None:
+        order_record["delivery_point"] = delivery_point_str
+    if data.desired_delivery_date is not None:
+        order_record["desired_delivery_date"] = data.desired_delivery_date.isoformat()
     ORDERS_DB[order_id] = order_record
 
     log_audit_event(

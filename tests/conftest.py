@@ -72,7 +72,8 @@ def reset_test_state():
         # Xóa các sản phẩm test được tạo trong lúc test
         from app.models.entities import ProductEntity
         db.query(ProductEntity).filter(
-            (ProductEntity.code.like(r"SP\_%", escape="\\")) | (ProductEntity.code == "SSOJSH")
+            ((ProductEntity.code.like(r"SP\_%", escape="\\")) | (ProductEntity.code == "SSOJSH"))
+            & (~ProductEntity.code.in_(["SP001", "SP002", "SP003", "SP004", "SP005"]))
         ).delete(synchronize_session=False)
         from app.api.v1.endpoints.products import RAW_PRODUCTS
         RAW_PRODUCTS[:] = [p for p in RAW_PRODUCTS if not p.get("code", "").startswith("SP_") and p.get("code") != "SSOJSH"]
@@ -232,8 +233,8 @@ def reset_test_state():
         from app.models.entities import WarehouseStockEntity
         for ws in cleanup_db.query(WarehouseStockEntity).all():
             ws.reserved_stock = 0
-            if ws.actual_stock is None or ws.actual_stock < 150:
-                ws.actual_stock = 150
+            if ws.actual_stock is None or ws.actual_stock > 150 or ws.actual_stock < 50:
+                ws.actual_stock = 120
         cleanup_db.commit()
 
         from app.models.entities import DealerEntity
