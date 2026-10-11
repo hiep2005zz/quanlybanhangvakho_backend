@@ -65,14 +65,19 @@ class DiscountTierEntity(Base):
     min_quantity = Column(Integer, nullable=False, default=0)
     max_quantity = Column(Integer, nullable=True)
     discount_percent = Column(Float, nullable=False, default=0.0)
+    discount_amount = Column(Float, nullable=True, default=0.0)
+    discount_type = Column(String(20), nullable=True, default="percent")
     created_at = Column(DateTime, default=get_utc_now)
 
     policy = relationship("DiscountPolicyEntity", back_populates="tiers")
 
     def to_dict(self):
+        disc_type = self.discount_type or ("amount" if (self.discount_amount and self.discount_amount > 0 and self.discount_percent == 0) else "percent")
         return {
             "id": self.id,
             "min_quantity": self.min_quantity,
             "max_quantity": self.max_quantity,
-            "discount_percent": self.discount_percent,
+            "discount_percent": self.discount_percent or 0.0,
+            "discount_amount": self.discount_amount or 0.0,
+            "discount_type": disc_type,
         }
