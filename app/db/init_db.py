@@ -157,6 +157,12 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (units_json): {ex}")
+            if "min_stock" not in product_cols:
+                try:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN min_stock INTEGER DEFAULT 10;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (products.min_stock): {ex}")
 
             dealer_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(dealers)")).fetchall()]
             if "customer_group" not in dealer_cols:
@@ -259,12 +265,21 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (products.floor_price): {ex}")
+            ws_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(warehouse_stocks)")).fetchall()]
+            if ws_cols and "min_stock" not in ws_cols:
+                try:
+                    conn.execute(text("ALTER TABLE warehouse_stocks ADD COLUMN min_stock INTEGER DEFAULT 10;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (warehouse_stocks.min_stock): {ex}")
         else:
             for sql_statement in [
                 "IF COL_LENGTH('users', 'avatar_url') IS NULL ALTER TABLE users ADD avatar_url NVARCHAR(500);",
                 "IF COL_LENGTH('products', 'base_unit') IS NULL ALTER TABLE products ADD base_unit NVARCHAR(50) DEFAULT N'Cái';",
                 "IF COL_LENGTH('products', 'floor_price') IS NULL ALTER TABLE products ADD floor_price FLOAT DEFAULT 0.0;",
                 "IF COL_LENGTH('products', 'units_json') IS NULL ALTER TABLE products ADD units_json NVARCHAR(MAX);",
+                "IF COL_LENGTH('products', 'min_stock') IS NULL ALTER TABLE products ADD min_stock INT DEFAULT 10;",
+                "IF COL_LENGTH('warehouse_stocks', 'min_stock') IS NULL ALTER TABLE warehouse_stocks ADD min_stock INT DEFAULT 10;",
                 "IF COL_LENGTH('inventory_transactions', 'unit_name') IS NULL ALTER TABLE inventory_transactions ADD unit_name NVARCHAR(50) DEFAULT N'Cái';",
                 "IF COL_LENGTH('inventory_transactions', 'conversion_rate') IS NULL ALTER TABLE inventory_transactions ADD conversion_rate FLOAT DEFAULT 1.0;",
                 "IF COL_LENGTH('inventory_transactions', 'base_quantity') IS NULL ALTER TABLE inventory_transactions ADD base_quantity FLOAT DEFAULT 0.0;",
@@ -692,6 +707,8 @@ def init_db():
 
         from app.models.dealer import load_dealers_db
         load_dealers_db()
+        from app.api.v1.endpoints.discounts import load_discount_policies
+        load_discount_policies(db)
 
 
     except Exception as e:

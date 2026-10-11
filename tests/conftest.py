@@ -56,6 +56,8 @@ def setup_test_db():
 @pytest.fixture(autouse=True)
 def reset_test_state():
     """Reset database and memory state before each test run."""
+    if DEV_USERS_JSON.exists():
+        shutil.copyfile(DEV_USERS_JSON, TEST_USERS_JSON)
     db = SessionLocal()
     try:
         # Xóa các user phụ được tạo trong lúc test
@@ -174,7 +176,8 @@ def reset_test_state():
     from app.services.auth_service import FAILED_ATTEMPTS
     FAILED_ATTEMPTS.clear()
     from app.models.user import USERS_DB
-    from app.models.dealer import DEALERS_DB
+    from app.models.dealer import DEALERS_DB, load_dealers_db
+    load_dealers_db()
     for k in list(DEALERS_DB.keys()):
         if k > 5:
             del DEALERS_DB[k]
