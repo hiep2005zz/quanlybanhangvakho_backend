@@ -120,6 +120,7 @@ class ProductEntity(Base):
     images_json = Column(UnicodeText, nullable=True)
     is_batch_managed = Column(Boolean, default=False)
     status = Column(String(50), default="active")
+    min_stock = Column(Integer, default=10, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
     category_rel = relationship("CategoryEntity", backref="products")
@@ -288,6 +289,7 @@ class WarehouseStockEntity(Base):
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
     actual_stock = Column(Integer, default=0, nullable=False)
     reserved_stock = Column(Integer, default=0, nullable=False)
+    min_stock = Column(Integer, default=10, nullable=False)
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 
@@ -297,6 +299,13 @@ class WarehouseStockEntity(Base):
     def available_stock(self) -> int:
         return max(0, (self.actual_stock or 0) - (self.reserved_stock or 0))
 
+    @property
+    def is_low_stock(self) -> bool:
+        return (self.actual_stock or 0) <= (self.min_stock or 0)
+
+    @property
+    def shortage_quantity(self) -> int:
+        return max(0, (self.min_stock or 0) - (self.actual_stock or 0))
 
 class StockAuditEntity(Base):
     __tablename__ = "stock_audits"

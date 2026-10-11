@@ -10,7 +10,7 @@ import json
 from uuid import uuid4
 from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEntity, ProductEntity
 from typing import List, Optional, Union
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, status as http_status, Request
 from sqlalchemy import func, case, or_, and_
@@ -81,6 +81,10 @@ class OrderResponse(BaseModel):
     dealer_address: Optional[str] = None
     applied_policy_code: Optional[str] = None
     applied_policy_name: Optional[str] = None
+    delivery_point: Optional[str] = None
+    delivery_point_id: Optional[int] = None
+    desired_delivery_date: Optional[str] = None
+    note: Optional[str] = None
 
 class OrderListFilteredResponse(BaseModel):
     items: List[OrderResponse]
@@ -97,10 +101,6 @@ class SalesOrderResponse(OrderResponse):
     discount_percent: float = 0
     discount_rate: Optional[float] = 0
     discount_amount: float = 0
-    delivery_point: Optional[str] = None
-    delivery_point_id: Optional[int] = None
-    desired_delivery_date: Optional[str] = None
-    note: Optional[str] = None
     items: List[dict] = Field(default_factory=list)
 
 class OrderListResponse(OrderListFilteredResponse):
@@ -294,6 +294,7 @@ def get_order_dealers(
             "name": dealer.name,
             "phone": dealer.phone,
             "address": dealer.address,
+            "assigned_sale_id": getattr(dealer, "assigned_sale_id", None),
             "status": getattr(dealer, "status", "Đang hoạt động"),
             "lock_reason": getattr(dealer, "lock_reason", None),
             "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
@@ -335,6 +336,251 @@ def get_order_dealer_credit_info(
             )
     return calculate_dealer_debt_summary(dealer, ORDERS_DB)
 
+
+
+class PurchaseHistoryItem(BaseModel):
+    product_id: int
+    product_code: str
+    product_name: str
+    unit: str
+    conversion_rate: float = 1.0
+    price: float = 0.0
+    total_quantity: float = 0.0
+    order_count: int = 0
+    avg_quantity: float = 0.0
+    last_order_quantity: float = 0.0
+    last_purchased_date: Optional[str] = None
+
+
+class LastOrderItem(BaseModel):
+    product_id: int
+    product_code: str
+    product_name: str
+    quantity: float
+    price: float
+    unit: str
+    conversion_rate: float = 1.0
+
+
+class LastOrderSummary(BaseModel):
+    order_code: str
+    created_at: str
+    items: List[LastOrderItem] = Field(default_factory=list)
+
+
+class DealerPurchaseHistoryResponse(BaseModel):
+    dealer_id: int
+    dealer_name: str
+    period: str = "3 tháng gần nhất"
+    has_history: bool = False
+    total_orders_3_months: int = 0
+    items: List[PurchaseHistoryItem] = Field(default_factory=list)
+    last_order: Optional[LastOrderSummary] = None
+    last_order_items: List[LastOrderItem] = Field(default_factory=list)
+
+
+@router.get("/dealers/{dealer_id}/purchase-history", response_model=DealerPurchaseHistoryResponse)
+def get_dealer_purchase_history(
+    dealer_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    SCRUM-52 / SCRUM-57:
+    Lấy lịch sử mua hàng của đại lý trong 3 tháng gần nhất kèm số lượng bình quân,
+    và nhóm hàng đã mua ở đơn hàng lần trước.
+    Ràng buộc: Chỉ hiện với đại lý mà nhân viên được phân công.
+    """
+    # 1. Tra cứu đại lý trong DB hoặc in-memory
+    dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+    if not dealer:
+        dealer = DEALERS_DB.get(dealer_id)
+    if not dealer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy đại lý.",
+        )
+
+    # 2. Kiểm tra quyền hạn: Chỉ hiện với đại lý mà nhân viên được phân công
+    user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
+    if "admin" not in user_roles and "sales_manager" not in user_roles:
+        assigned_user = USERS_DB.get(current_user.username)
+        current_uid = assigned_user.id if assigned_user else current_user.id
+        dealer_assigned_id = getattr(dealer, "assigned_sale_id", None)
+        if dealer_assigned_id != current_uid:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Chỉ hiển thị với đại lý mà nhân viên được phân công.",
+            )
+
+    # 3. Lấy toàn bộ đơn hàng của đại lý (loại trừ đơn bị hủy)
+    all_orders = []
+    seen_codes = set()
+
+    db_orders = db.query(OrderEntity).filter(
+        OrderEntity.dealer_id == dealer_id,
+        OrderEntity.status != "CANCELLED",
+    ).all()
+    for o in db_orders:
+        if o.order_code not in seen_codes:
+            seen_codes.add(o.order_code)
+            all_orders.append(o)
+
+    for o_dict in ORDERS_DB.values():
+        if o_dict.get("dealer_id") == dealer_id and o_dict.get("status") != "CANCELLED":
+            code = o_dict.get("order_code")
+            if code and code not in seen_codes:
+                seen_codes.add(code)
+                all_orders.append(o_dict)
+
+    now = datetime.now(timezone.utc)
+    three_months_ago = now - timedelta(days=90)
+
+    def parse_created_at(o):
+        val = getattr(o, "created_at", None) if hasattr(o, "created_at") else (o.get("created_at") if isinstance(o, dict) else None)
+        if isinstance(val, datetime):
+            return val if val.tzinfo is not None else val.replace(tzinfo=timezone.utc)
+        if isinstance(val, str):
+            try:
+                dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                return now
+        return now
+
+    def get_order_items(o):
+        if hasattr(o, "items_json") and o.items_json:
+            try:
+                parsed = json.loads(o.items_json)
+                if isinstance(parsed, list):
+                    return parsed
+                if isinstance(parsed, dict):
+                    return parsed.get("items", [])
+            except Exception:
+                pass
+        if isinstance(o, dict):
+            if "items" in o and isinstance(o["items"], list):
+                return o["items"]
+            if "items_json" in o and o["items_json"]:
+                try:
+                    parsed = json.loads(o["items_json"])
+                    if isinstance(parsed, list):
+                        return parsed
+                    if isinstance(parsed, dict):
+                        return parsed.get("items", [])
+                except Exception:
+                    pass
+        return []
+
+    all_orders.sort(key=parse_created_at, reverse=True)
+
+    # 4. Xác định nhóm hàng đã mua lần trước (đơn hàng mới nhất)
+    last_order_obj = all_orders[0] if all_orders else None
+    last_order_summary = None
+    last_order_items: List[LastOrderItem] = []
+
+    product_map = {p.id: p for p in db.query(ProductEntity).all()}
+    for rp in RAW_PRODUCTS:
+        if rp.get("id") and rp["id"] not in product_map:
+            product_map[rp["id"]] = type("RawProd", (), rp)()
+
+    if last_order_obj:
+        raw_items = get_order_items(last_order_obj)
+        last_code = getattr(last_order_obj, "order_code", None) if hasattr(last_order_obj, "order_code") else last_order_obj.get("order_code", "")
+        last_dt = parse_created_at(last_order_obj).strftime("%Y-%m-%d %H:%M")
+        for it in raw_items:
+            pid = it.get("product_id")
+            if not pid:
+                continue
+            prod = product_map.get(pid)
+            p_code = getattr(prod, "code", f"SP{pid:03d}") if prod else f"SP{pid:03d}"
+            p_name = it.get("product_name") or (getattr(prod, "name", f"Sản phẩm #{pid}") if prod else f"Sản phẩm #{pid}")
+            last_item = LastOrderItem(
+                product_id=pid,
+                product_code=p_code,
+                product_name=p_name,
+                quantity=float(it.get("quantity", 1)),
+                price=float(it.get("price", 0.0)),
+                unit=it.get("unit") or it.get("unit_name") or getattr(prod, "base_unit", "Cái"),
+                conversion_rate=float(it.get("conversion_rate", 1.0)),
+            )
+            last_order_items.append(last_item)
+
+        last_order_summary = LastOrderSummary(
+            order_code=last_code,
+            created_at=last_dt,
+            items=last_order_items,
+        )
+
+    # 5. Thống kê các mặt hàng đại lý đã mua trong 3 tháng gần nhất kèm số lượng bình quân
+    recent_orders = [o for o in all_orders if parse_created_at(o) >= three_months_ago]
+    product_stats = {}
+    last_order_pids = {it.product_id: it.quantity for it in last_order_items}
+
+    for o in recent_orders:
+        o_date_str = parse_created_at(o).strftime("%Y-%m-%d")
+        items = get_order_items(o)
+        for it in items:
+            pid = it.get("product_id")
+            if not pid:
+                continue
+            qty = float(it.get("quantity", 0))
+            if pid not in product_stats:
+                prod = product_map.get(pid)
+                p_code = getattr(prod, "code", f"SP{pid:03d}") if prod else f"SP{pid:03d}"
+                p_name = it.get("product_name") or (getattr(prod, "name", f"Sản phẩm #{pid}") if prod else f"Sản phẩm #{pid}")
+                product_stats[pid] = {
+                    "product_id": pid,
+                    "product_code": p_code,
+                    "product_name": p_name,
+                    "unit": it.get("unit") or it.get("unit_name") or getattr(prod, "base_unit", "Cái"),
+                    "conversion_rate": float(it.get("conversion_rate", 1.0)),
+                    "price": float(it.get("price", 0.0)),
+                    "total_quantity": qty,
+                    "order_count": 1,
+                    "last_purchased_date": o_date_str,
+                    "last_order_quantity": last_order_pids.get(pid, qty),
+                }
+            else:
+                stat = product_stats[pid]
+                stat["total_quantity"] += qty
+                stat["order_count"] += 1
+                if not stat["last_purchased_date"]:
+                    stat["last_purchased_date"] = o_date_str
+
+    history_items = []
+    for pid, stat in product_stats.items():
+        avg = stat["total_quantity"] / stat["order_count"] if stat["order_count"] > 0 else 0
+        history_items.append(
+            PurchaseHistoryItem(
+                product_id=stat["product_id"],
+                product_code=stat["product_code"],
+                product_name=stat["product_name"],
+                unit=stat["unit"],
+                conversion_rate=stat["conversion_rate"],
+                price=stat["price"],
+                total_quantity=round(stat["total_quantity"], 2),
+                order_count=stat["order_count"],
+                avg_quantity=round(avg, 1),
+                last_order_quantity=round(stat["last_order_quantity"], 2),
+                last_purchased_date=stat["last_purchased_date"],
+            )
+        )
+
+    history_items.sort(key=lambda x: (x.order_count, x.total_quantity), reverse=True)
+
+    return DealerPurchaseHistoryResponse(
+        dealer_id=dealer.id,
+        dealer_name=dealer.name,
+        period="3 tháng gần nhất",
+        has_history=len(history_items) > 0,
+        total_orders_3_months=len(recent_orders),
+        items=history_items,
+        last_order=last_order_summary,
+        last_order_items=last_order_items,
+    )
+
+
 def _format_order_response(
     order: OrderEntity,
     db: Session,
@@ -346,8 +592,12 @@ def _format_order_response(
     from app.api.v1.endpoints.products import _find_product_in_raw
 
     items = []
-    delivery_point = None
-    desired_delivery_date = None
+    in_mem = ORDERS_DB.get(order.id)
+    if not in_mem:
+        in_mem = next((v for v in ORDERS_DB.values() if v.get("order_code") == order.order_code), {}) or {}
+
+    delivery_point = in_mem.get("delivery_point") if in_mem else None
+    desired_delivery_date = in_mem.get("desired_delivery_date") if in_mem else None
     subtotal_amount = order.total_amount
     discount_percent = 0.0
     discount_amount = 0.0
@@ -359,8 +609,10 @@ def _format_order_response(
                 items = payload
             elif isinstance(payload, dict):
                 items = payload.get("items", [])
-                delivery_point = payload.get("delivery_point")
-                desired_delivery_date = payload.get("desired_delivery_date")
+                if not delivery_point:
+                    delivery_point = payload.get("delivery_point")
+                if not desired_delivery_date:
+                    desired_delivery_date = payload.get("desired_delivery_date")
                 subtotal_amount = payload.get("subtotal_amount", order.total_amount)
                 discount_percent = payload.get("discount_percent", 0.0)
                 discount_amount = payload.get("discount_amount", 0.0)
@@ -425,7 +677,9 @@ def _format_order_response(
     c_at_val = getattr(order, "cancelled_at", None)
     c_at_str = c_at_val.isoformat() if c_at_val and hasattr(c_at_val, "isoformat") else (str(c_at_val) if c_at_val else None)
 
-    in_mem = ORDERS_DB.get(order.id, {})
+    in_mem = ORDERS_DB.get(order.id)
+    if not in_mem:
+        in_mem = next((v for v in ORDERS_DB.values() if v.get("order_code") == order.order_code), {}) or {}
     if in_mem:
         if not appr_reason:
             appr_reason = in_mem.get("approval_reason")
@@ -438,6 +692,10 @@ def _format_order_response(
             c_by = in_mem.get("cancelled_by")
         if not c_at_str:
             c_at_str = in_mem.get("cancelled_at")
+        if not delivery_point:
+            delivery_point = in_mem.get("delivery_point")
+        if not desired_delivery_date:
+            desired_delivery_date = in_mem.get("desired_delivery_date")
 
     if order.status in ("PENDING_APPROVAL", "PENDING"):
         req_appr = True
@@ -455,10 +713,40 @@ def _format_order_response(
             for it in clean_items
         ]
 
+    # Map delivered_quantity & shortage_quantity
+    ord_st = (order.status or "").upper()
+    is_order_dispatched = ord_st in ("DELIVERED", "CLOSED", "COMPLETED", "EXPORTED", "SHIPPED")
+    if in_mem and in_mem.get("items"):
+        mem_items_by_pid = {it.get("product_id"): it for it in in_mem.get("items", []) if isinstance(it, dict)}
+        for it in (clean_items or []):
+            if isinstance(it, dict):
+                pid = it.get("product_id")
+                if pid in mem_items_by_pid:
+                    m_it = mem_items_by_pid[pid]
+                    if "delivered_quantity" in m_it and it.get("delivered_quantity") is None:
+                        it["delivered_quantity"] = m_it["delivered_quantity"]
+                    if "shortage_quantity" in m_it and it.get("shortage_quantity") is None:
+                        it["shortage_quantity"] = m_it["shortage_quantity"]
+
+    for it in (clean_items or []):
+        if isinstance(it, dict):
+            qty = it.get("quantity", 0)
+            del_qty = it.get("delivered_quantity")
+            if is_order_dispatched:
+                if del_qty is None:
+                    del_qty = qty
+                shortage = max(0, int(qty) - int(del_qty))
+            else:
+                del_qty = None
+                shortage = 0
+            it["delivered_quantity"] = del_qty
+            it["shortage_quantity"] = shortage
+
     dealer_status = getattr(d_obj, "status", "Đang hoạt động") if d_obj else "Đang hoạt động"
     dealer_lock_reason = None if is_customer else (getattr(d_obj, "lock_reason", None) if d_obj else None)
 
     created_at_str = order.created_at.isoformat() if hasattr(order.created_at, "isoformat") else str(order.created_at or "")
+    desired_del_date_str = desired_delivery_date.isoformat() if hasattr(desired_delivery_date, "isoformat") else (str(desired_delivery_date) if desired_delivery_date else None)
 
     return OrderResponse(
         id=order.id,
@@ -486,6 +774,10 @@ def _format_order_response(
         cancel_reason=c_reason,
         cancelled_by=c_by,
         cancelled_at=c_at_str,
+        delivery_point=delivery_point,
+        delivery_point_id=order.delivery_point_id,
+        desired_delivery_date=desired_del_date_str,
+        note=order.note or (in_mem.get("note") if in_mem else None),
     )
 
 _build_order_response = _format_order_response
@@ -555,11 +847,14 @@ def get_orders(
             detail="Truy cập bị từ chối (403 Forbidden). Nhân viên mua hàng không có quyền truy cập đơn hàng bán."
         )
 
-    allowed_roles = {Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value, Role.SALES.value, "admin", "sales_manager", "sales"}
+    allowed_roles = {
+        Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value, Role.SALES.value, Role.CUSTOMER.value,
+        "admin", "sales_manager", "sales", "customer", "agent"
+    }
     if not any(r in allowed_roles for r in user_roles):
         raise HTTPException(
             status_code=403,
-            detail="Chức năng chỉ dành cho Quản trị viên, Quản lý kinh doanh và Nhân viên kinh doanh."
+            detail="Chức năng chỉ dành cho Quản trị viên, Quản lý kinh doanh, Nhân viên kinh doanh và Đại lý."
         )
 
     # 1. AC: Tự động chạy migration an toàn bổ sung cột SQLite (tránh lỗi 500)
@@ -635,6 +930,7 @@ def get_orders(
                 items=[], total=0, total_count=0, page=cur_page, page_size=cur_page_size,
                 filtered_total_amount=0.0, pending_count=0, confirmed_count=0
             )
+
 
     # 3. Xây dựng Query cơ sở
     query = db.query(OrderEntity)
@@ -1503,7 +1799,7 @@ def get_order_detail(
 ):
     """Return one order with its persisted line items and delivery details."""
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    if current_user.username == "muahang" or "purchasing" in user_roles:
+    if "purchasing" in user_roles and "customer" not in user_roles:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Truy cập bị từ chối (403 Forbidden). Nhân viên mua hàng không có quyền truy cập đơn hàng bán."
@@ -1653,6 +1949,43 @@ def get_order_detail(
     d_status = getattr(d, "status", "Đang hoạt động") if d else "Đang hoạt động"
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
     is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+
+    if is_customer:
+        customer_dealer = _get_customer_dealer(current_user)
+        ord_dealer_id = order_record.get("dealer_id")
+        dealer_target_ids = {str(customer_dealer.id), str(getattr(customer_dealer, "code", "")).upper()} if customer_dealer else set()
+        ord_dealer_name = (order_record.get("dealer_name") or "").strip().lower()
+        cust_name = (getattr(customer_dealer, "name", "") or "").strip().lower() if customer_dealer else ""
+        if not customer_dealer or (
+            str(ord_dealer_id) not in dealer_target_ids and
+            ord_dealer_name != cust_name
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tài khoản đại lý chỉ được phép xem đơn hàng của chính mình."
+            )
+
+    ord_st = (order_record.get("status") or "").upper()
+    is_order_dispatched = ord_st in ("DELIVERED", "CLOSED", "COMPLETED", "EXPORTED", "SHIPPED")
+    for item in items:
+        is_dict = isinstance(item, dict)
+        qty = item.get("quantity", 0) if is_dict else getattr(item, "quantity", 0)
+        del_qty = item.get("delivered_quantity") if is_dict else getattr(item, "delivered_quantity", None)
+        if is_order_dispatched:
+            if del_qty is None:
+                del_qty = qty
+            shortage = max(0, int(qty) - int(del_qty))
+        else:
+            del_qty = None
+            shortage = 0
+
+        if is_dict:
+            item["delivered_quantity"] = del_qty
+            item["shortage_quantity"] = shortage
+        else:
+            setattr(item, "delivered_quantity", del_qty)
+            setattr(item, "shortage_quantity", shortage)
+
     d_lock_reason = None if is_customer else (getattr(d, "lock_reason", None) if d else None)
 
     detail_response = dict(order_record)
@@ -2333,7 +2666,7 @@ def _execute_order_cancellation(
     4. Database Transaction: Đổi trạng thái sang CANCELLED, lưu lý do hủy, và tự động nhả (giảm) reserved_stock.
     """
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    if current_user.username == "muahang" or "purchasing" in user_roles:
+    if "purchasing" in user_roles and "customer" not in user_roles:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Truy cập bị từ chối (403 Forbidden). Nhân viên mua hàng không có quyền truy cập hay hủy đơn hàng bán."
@@ -2704,3 +3037,110 @@ def unlock_dealer(
     save_dealers_db()
 
     return {"message": "Đã mở khóa giao dịch đại lý thành công.", "dealer": dealer}
+
+
+class SupplementaryDeliveryRequest(BaseModel):
+    note: Optional[str] = "Giao bổ sung đợt 2 - hoàn tất đơn hàng"
+    delivered_quantities: Optional[dict[str, int]] = None
+
+
+@router.post("/{order_code}/supplementary-delivery")
+def execute_supplementary_delivery(
+    order_code: str,
+    request: Request,
+    payload: Optional[SupplementaryDeliveryRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Xử lý giao bổ sung cho đơn hàng bị giao thiếu (Phương án 1).
+    Phân quyền: Nhân viên nội bộ (Admin, Sales Manager, Sales, Warehouse). Chặn vai trò customer.
+    """
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    if "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "warehouse_manager", "warehouse_staff"]):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tài khoản đại lý không có quyền thực hiện giao hàng bổ sung."
+        )
+
+    target = None
+    for o in ORDERS_DB.values():
+        if o["order_code"].upper() == order_code.upper() or str(o.get("id")) == str(order_code):
+            target = o
+            break
+
+    db_order = db.query(OrderEntity).filter(
+        (func.upper(OrderEntity.order_code) == order_code.upper()) | (OrderEntity.id == (int(order_code) if order_code.isdigit() else -1))
+    ).first()
+
+    if not target and not db_order:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đơn hàng có mã {order_code}."
+        )
+
+    items = []
+    if target and target.get("items"):
+        items = target["items"]
+    elif db_order and db_order.items_json:
+        try:
+            stored = json.loads(db_order.items_json)
+            items = stored if isinstance(stored, list) else stored.get("items", [])
+        except Exception:
+            pass
+
+    req_map = (payload.delivered_quantities if payload and payload.delivered_quantities else {})
+    delivery_note = (payload.note if payload and payload.note else "Giao bổ sung đợt 2 - hoàn tất đơn hàng")
+
+    for it in items:
+        p_id = str(it.get("product_id"))
+        qty = int(it.get("quantity", 0))
+        cur_del = int(it.get("delivered_quantity", 0))
+        if p_id in req_map:
+            add_qty = int(req_map[p_id])
+            it["delivered_quantity"] = min(qty, cur_del + add_qty)
+        else:
+            it["delivered_quantity"] = qty
+        it["shortage_quantity"] = max(0, qty - int(it["delivered_quantity"]))
+
+    if target:
+        target["items"] = items
+        target["status"] = "DELIVERED"
+        if target.get("note"):
+            target["note"] += f" | {delivery_note}"
+        else:
+            target["note"] = delivery_note
+
+    if db_order:
+        db_order.status = "DELIVERED"
+        try:
+            stored = json.loads(db_order.items_json) if db_order.items_json else {}
+            if isinstance(stored, dict):
+                stored["items"] = items
+                db_order.items_json = json.dumps(stored, ensure_ascii=False)
+            elif isinstance(stored, list):
+                db_order.items_json = json.dumps(items, ensure_ascii=False)
+        except Exception:
+            pass
+        if db_order.note:
+            db_order.note += f" | {delivery_note}"
+        else:
+            db_order.note = delivery_note
+        db.commit()
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action_type="ORDER_SUPPLEMENTARY_DELIVERY",
+        entity_type="Order",
+        entity_id=order_code,
+        old_val={"action": "shortage_delivery"},
+        new_val={"items": items, "status": "DELIVERED"},
+        reason=delivery_note,
+        request=request,
+    )
+
+    if target:
+        return target
+    return get_order_detail(order_code=order_code, db=db, current_user=current_user)
+
