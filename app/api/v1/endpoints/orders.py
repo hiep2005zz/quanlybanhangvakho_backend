@@ -1,4 +1,4 @@
-# backend/app/api/v1/endpoints/orders.py
+﻿# backend/app/api/v1/endpoints/orders.py
 from __future__ import annotations
 """
 Order Management Endpoint:
@@ -8,7 +8,7 @@ Nếu tài khoản nhân viên đang ở trạng thái LOCKED, từ chối tạo
 """
 import json
 from uuid import uuid4
-from app.models.entities import DealerDeliveryPointEntity
+from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEntity, ProductEntity
 from typing import List, Optional, Union
 from datetime import date, datetime, timezone
 from pydantic import BaseModel, Field
@@ -23,7 +23,6 @@ from app.schemas.auth import UserResponse
 from app.api.v1.endpoints.products import RAW_PRODUCTS
 from app.models.dealer import DEALERS_DB, save_dealers_db, load_dealers_db
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
-from app.models.entities import OrderEntity, ProductEntity, DealerEntity
 
 from app.models.user import USERS_DB
 from app.services.audit_service import log_audit_event
@@ -72,6 +71,7 @@ class OrderResponse(BaseModel):
     discount_rate: Optional[float] = 0.0
     discount_amount: float = 0.0
     dealer_status: Optional[str] = "Đang hoạt động"
+    region: Optional[str] = None
     dealer_lock_reason: Optional[str] = None
     cancel_reason: Optional[str] = None
     cancelled_by: Optional[str] = None
@@ -81,6 +81,16 @@ class OrderResponse(BaseModel):
     dealer_address: Optional[str] = None
     applied_policy_code: Optional[str] = None
     applied_policy_name: Optional[str] = None
+
+class OrderListFilteredResponse(BaseModel):
+    items: List[OrderResponse]
+    total: int
+    total_count: Optional[int] = None
+    filtered_total_amount: float
+    pending_count: int = 0
+    confirmed_count: int = 0
+    page: int = 1
+    page_size: int = 20
 
 class SalesOrderResponse(OrderResponse):
     subtotal_amount: float = 0
@@ -93,15 +103,8 @@ class SalesOrderResponse(OrderResponse):
     note: Optional[str] = None
     items: List[dict] = Field(default_factory=list)
 
-class OrderListResponse(BaseModel):
-    items: List[OrderResponse]
-    total: int
-    total_count: int
-    filtered_total_amount: float
-    pending_count: int
-    confirmed_count: int
-    page: int
-    page_size: int
+class OrderListResponse(OrderListFilteredResponse):
+    pass
 
 class OrderCancelRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500, description="Lý do hủy đơn hàng")
@@ -332,8 +335,16 @@ def get_order_dealer_credit_info(
             )
     return calculate_dealer_debt_summary(dealer, ORDERS_DB)
 
-def _build_order_response(order: OrderEntity, db: Session, is_customer: bool = False, is_sales: bool = False) -> OrderResponse:
+def _format_order_response(
+    order: OrderEntity,
+    db: Session,
+    can_view_cost: bool = False,
+    is_customer: bool = False,
+    is_sales: bool = False,
+) -> OrderResponse:
+    load_dealers_db()
     from app.api.v1.endpoints.products import _find_product_in_raw
+
     items = []
     delivery_point = None
     desired_delivery_date = None
@@ -357,31 +368,37 @@ def _build_order_response(order: OrderEntity, db: Session, is_customer: bool = F
             pass
 
     for item in items:
-        if isinstance(item, dict) and not item.get("product_name"):
-            p = _find_product_in_raw(item.get("product_id"))
-            if p:
-                item["product_name"] = p.get("name")
-                item.setdefault("product_code", p.get("code"))
-            else:
-                item["product_name"] = f"SP #{item.get('product_id', '')}"
+        if isinstance(item, dict):
+            if not item.get("product_name"):
+                p = _find_product_in_raw(item.get("product_id"))
+                if p:
+                    item["product_name"] = p.get("name")
+                    item.setdefault("product_code", p.get("code"))
+                else:
+                    item["product_name"] = f"SP #{item.get('product_id', '')}"
+            # AC-5: Bảo mật thông tin: Không trả về cost_price hay profit cho vai trò sales
+            if is_sales or not can_view_cost:
+                for sensitive_key in ["cost_price", "cost", "profit", "profit_margin", "margin", "gross_profit", "base_price"]:
+                    item.pop(sensitive_key, None)
 
     if not delivery_point and order.delivery_point_id:
         dp_obj = db.get(DealerDeliveryPointEntity, order.delivery_point_id)
         if dp_obj:
             delivery_point = f"{dp_obj.label} — {dp_obj.address}"
 
-    if not delivery_point:
-        d_obj = DEALERS_DB.get(order.dealer_id)
-        if d_obj and getattr(d_obj, "address", None):
-            delivery_point = f"Địa chỉ đại lý — {d_obj.address}"
+    d_obj = DEALERS_DB.get(order.dealer_id)
+    if not delivery_point and d_obj and getattr(d_obj, "address", None):
+        delivery_point = f"Địa chỉ đại lý — {d_obj.address}"
 
-    c_reason = getattr(order, "cancel_reason", None)
-    c_by = getattr(order, "cancelled_by", None)
-    c_at_val = getattr(order, "cancelled_at", None)
-    c_at_str = c_at_val.isoformat() if c_at_val and hasattr(c_at_val, "isoformat") else (str(c_at_val) if c_at_val else None)
+    # Lấy thông tin region của đại lý
+    region_val = getattr(d_obj, "region", None) if d_obj else None
+    if not region_val:
+        db_dealer = db.get(DealerEntity, order.dealer_id)
+        if db_dealer and db_dealer.region:
+            region_val = db_dealer.region
 
-    disc_rate = getattr(order, "discount_rate", 0.0) or 0.0
-    disc_amt = getattr(order, "discount_amount", 0.0) or 0.0
+    disc_rate = getattr(order, "discount_rate", 0.0) or discount_percent or 0.0
+    disc_amt = getattr(order, "discount_amount", 0.0) or discount_amount or 0.0
     sub_amt = (order.total_amount or 0.0) + disc_amt
     items_parsed = None
     appr_reason = None
@@ -391,27 +408,36 @@ def _build_order_response(order: OrderEntity, db: Session, is_customer: bool = F
     if order.items_json:
         try:
             ij = json.loads(order.items_json)
-            items_parsed = ij.get("items", [])
-            disc_rate = ij.get("discount_percent", ij.get("discount_rate", disc_rate))
-            disc_amt = ij.get("discount_amount", disc_amt)
-            sub_amt = ij.get("subtotal_amount", sub_amt)
-            appr_reason = ij.get("approval_reason")
-            req_appr = ij.get("requires_approval", False)
-            appr_by = ij.get("approved_by")
-            appr_at = ij.get("approved_at")
+            if isinstance(ij, dict):
+                items_parsed = ij.get("items", [])
+                disc_rate = ij.get("discount_percent", ij.get("discount_rate", disc_rate))
+                disc_amt = ij.get("discount_amount", disc_amt)
+                sub_amt = ij.get("subtotal_amount", sub_amt)
+                appr_reason = ij.get("approval_reason")
+                req_appr = ij.get("requires_approval", False)
+                appr_by = ij.get("approved_by")
+                appr_at = ij.get("approved_at")
         except Exception:
             pass
 
+    c_reason = getattr(order, "cancel_reason", None)
+    c_by = getattr(order, "cancelled_by", None)
+    c_at_val = getattr(order, "cancelled_at", None)
+    c_at_str = c_at_val.isoformat() if c_at_val and hasattr(c_at_val, "isoformat") else (str(c_at_val) if c_at_val else None)
+
     in_mem = ORDERS_DB.get(order.id, {})
-    if not appr_reason and in_mem:
-        appr_reason = in_mem.get("approval_reason")
-        req_appr = in_mem.get("requires_approval", req_appr)
-        appr_by = in_mem.get("approved_by", appr_by)
-        appr_at = in_mem.get("approved_at", appr_at)
-    if not c_reason and in_mem:
-        c_reason = in_mem.get("cancel_reason")
-        c_by = in_mem.get("cancelled_by", c_by)
-        c_at_str = in_mem.get("cancelled_at", c_at_str)
+    if in_mem:
+        if not appr_reason:
+            appr_reason = in_mem.get("approval_reason")
+            req_appr = in_mem.get("requires_approval", req_appr)
+            appr_by = in_mem.get("approved_by", appr_by)
+            appr_at = in_mem.get("approved_at", appr_at)
+        if not c_reason:
+            c_reason = in_mem.get("cancel_reason")
+        if not c_by:
+            c_by = in_mem.get("cancelled_by")
+        if not c_at_str:
+            c_at_str = in_mem.get("cancelled_at")
 
     if order.status in ("PENDING_APPROVAL", "PENDING"):
         req_appr = True
@@ -421,23 +447,18 @@ def _build_order_response(order: OrderEntity, db: Session, is_customer: bool = F
             else:
                 appr_reason = "Bán dưới giá sàn cần quản lý duyệt"
 
-    clean_items = items_parsed or items
-    if is_sales and clean_items:
-        stripped_items = []
-        for it in clean_items:
-            if isinstance(it, dict):
-                stripped_items.append({k: v for k, v in it.items() if k not in ("cost_price", "cost", "profit", "profit_margin", "margin", "base_price")})
-            else:
-                stripped_items.append(it)
-        clean_items = stripped_items
+    clean_items = items or items_parsed
+    if (is_sales or not can_view_cost) and clean_items:
+        clean_items = [
+            {k: v for k, v in it.items() if k not in ("cost_price", "cost", "profit", "profit_margin", "margin", "gross_profit", "base_price")}
+            if isinstance(it, dict) else it
+            for it in clean_items
+        ]
 
-    dealer_obj = DEALERS_DB.get(order.dealer_id)
-    if dealer_obj:
-        dealer_st = getattr(dealer_obj, "status", "Đang hoạt động")
-        dealer_lock = None if is_customer else getattr(dealer_obj, "lock_reason", None)
-    else:
-        dealer_st = "Đang hoạt động"
-        dealer_lock = None
+    dealer_status = getattr(d_obj, "status", "Đang hoạt động") if d_obj else "Đang hoạt động"
+    dealer_lock_reason = None if is_customer else (getattr(d_obj, "lock_reason", None) if d_obj else None)
+
+    created_at_str = order.created_at.isoformat() if hasattr(order.created_at, "isoformat") else str(order.created_at or "")
 
     return OrderResponse(
         id=order.id,
@@ -458,31 +479,75 @@ def _build_order_response(order: OrderEntity, db: Session, is_customer: bool = F
         approved_by=appr_by,
         approved_at=appr_at,
         items=clean_items,
-        created_at=order.created_at.isoformat() if order.created_at else "",
+        created_at=created_at_str,
+        dealer_status=dealer_status,
+        dealer_lock_reason=dealer_lock_reason,
+        region=region_val,
         cancel_reason=c_reason,
         cancelled_by=c_by,
         cancelled_at=c_at_str,
-        dealer_status=dealer_st,
-        dealer_lock_reason=dealer_lock,
     )
 
-@router.get("", response_model=Union[OrderListResponse, List[OrderResponse]])
+_build_order_response = _format_order_response
+
+
+@router.get("/sales-reps")
+def get_sales_representatives(
+    current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value))
+):
+    """Danh sách nhân viên kinh doanh cho bộ lọc."""
+    reps = []
+    seen_ids = set()
+    for u in USERS_DB.values():
+        u_roles = u.roles if hasattr(u, "roles") else [u.role]
+        if any(r in u_roles for r in ["sales", "sales_manager"]) or u.role in ["sales", "sales_manager"]:
+            if u.id not in seen_ids:
+                seen_ids.add(u.id)
+                reps.append({
+                    "id": u.id,
+                    "username": u.username,
+                    "full_name": u.full_name or u.username,
+                    "role": u.role,
+                })
+    return sorted(reps, key=lambda x: x["full_name"])
+
+
+@router.get("/regions")
+def get_order_regions(
+    current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value)),
+    db: Session = Depends(get_db)
+):
+    """Danh sách khu vực cho bộ lọc."""
+    regions = set()
+    for d in DEALERS_DB.values():
+        if d.region:
+            regions.add(d.region.strip())
+    for r in db.query(DealerEntity.region).filter(DealerEntity.region.isnot(None)).all():
+        if r[0]:
+            regions.add(r[0].strip())
+    return sorted(list(regions))
+
+
+@router.get("", response_model=Union[OrderListFilteredResponse, List[OrderResponse]])
 def get_orders(
     request: Request,
     status: Optional[str] = None,
     dealer_id: Optional[int] = None,
     sales_rep_id: Optional[int] = None,
     region: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    page: Optional[int] = None,
-    page_size: Optional[int] = None,
+    start_date: Optional[Union[date, str]] = None,
+    end_date: Optional[Union[date, str]] = None,
+    page: Optional[int] = 1,
+    page_size: Optional[int] = 20,
     search: Optional[str] = None,
     format: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value))
 ):
-    """Lấy danh sách đơn hàng / hóa đơn có hỗ trợ lọc đa tiêu chí, phân trang và thống kê doanh thu."""
+    """
+    Lấy danh sách đơn hàng / hóa đơn kèm bộ lọc đa tiêu chí và tổng hợp doanh thu.
+    Áp dụng Zero-Trust Row-Level Security (RLS) cho vai trò sales.
+    """
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
     if current_user.username == "muahang" or "purchasing" in user_roles or current_user.role == "purchasing":
         raise HTTPException(
@@ -498,54 +563,75 @@ def get_orders(
 
     load_dealers_db()
 
-    # Kiểm tra quyền truy cập (RLS)
-    is_admin = "admin" in user_roles or current_user.role == "admin"
-    is_sales_manager = "sales_manager" in user_roles or current_user.role == "sales_manager"
-    is_sales = ("sales" in user_roles or current_user.role == "sales") and not (is_admin or is_sales_manager)
-    is_customer = ("customer" in user_roles or current_user.role == "customer") and not (is_admin or is_sales_manager or is_sales or "accountant" in user_roles)
+    # Kiểm tra tương thích với legacy tests & clients (khi không truyền query param nào hoặc request legacy format)
+    is_legacy_request = (
+        not request.query_params
+        or format in ("legacy", "list")
+        or request.query_params.get("format") in ("legacy", "list")
+        or request.headers.get("x-legacy-response") == "true"
+        or request.headers.get("x-format") == "list"
+    )
 
-    # Xác định có phải client legacy không (nếu không truyền query param nào và không chỉ định format='summary')
-    is_legacy_request = False
-    if format == "list" or request.headers.get("x-format") == "list":
-        is_legacy_request = True
-    elif len(request.query_params) == 0:
-        is_legacy_request = True
+    # Quyền & Roles
+    is_admin = Role.SYSTEM_ADMIN.value in user_roles or current_user.role == Role.SYSTEM_ADMIN.value or "admin" in user_roles or current_user.role == "admin"
+    is_sales_manager = Role.SALES_MANAGER.value in user_roles or current_user.role == Role.SALES_MANAGER.value or "sales_manager" in user_roles or current_user.role == "sales_manager"
+    is_sales = ("sales" in user_roles or current_user.role == "sales" or Role.SALES.value in user_roles) and not (is_admin or is_sales_manager)
+    is_customer = ("customer" in user_roles or current_user.role == "customer" or Role.CUSTOMER.value in user_roles) and not (is_admin or is_sales_manager or is_sales or "accountant" in user_roles)
+    can_view_cost = is_admin or is_sales_manager or (hasattr(Permission, "COST_READ") and Permission.COST_READ.value in (current_user.permissions or []))
 
-    # 2. Xử lý RLS cho Role.SALES
+    # Đồng bộ các đơn in-memory nếu có vào DB để SQL query aggregation chính xác
+    try:
+        existing_db_codes = {r[0] for r in db.query(OrderEntity.order_code).all()}
+        for o_id, mem_order in ORDERS_DB.items():
+            ocode = mem_order.get("order_code")
+            if ocode and ocode not in existing_db_codes:
+                dt_str = mem_order.get("created_at")
+                c_at = datetime.fromisoformat(dt_str.replace("Z", "+00:00")) if dt_str else datetime.now(timezone.utc)
+                db.add(OrderEntity(
+                    id=mem_order.get("id", o_id),
+                    order_code=ocode,
+                    dealer_id=mem_order.get("dealer_id", 1),
+                    dealer_name=mem_order.get("dealer_name", ""),
+                    created_by=mem_order.get("created_by", ""),
+                    assigned_sale_id=mem_order.get("assigned_sale_id"),
+                    assigned_sale_name=mem_order.get("assigned_sale_name"),
+                    total_amount=mem_order.get("total_amount", 0.0),
+                    status=mem_order.get("status", "CONFIRMED"),
+                    note=mem_order.get("note"),
+                    delivery_point_id=mem_order.get("delivery_point_id"),
+                    discount_rate=mem_order.get("discount_percent", 0.0),
+                    discount_amount=mem_order.get("discount_amount", 0.0),
+                    items_json=json.dumps(mem_order.get("items", []), ensure_ascii=False),
+                    created_at=c_at,
+                ))
+                existing_db_codes.add(ocode)
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    cur_page = max(1, page or 1)
+    cur_page_size = max(1, min(page_size or 20, 100))
+
+    # 2. Xử lý Row-Level Security (RLS)
     assigned_dealer_ids = set()
     if is_sales:
-        assigned_dealer_ids = {
-            d.id for d in DEALERS_DB.values() if getattr(d, "assigned_sale_id", None) == current_user.id
-        }
-        try:
-            db_dids = {
-                row[0] for row in db.query(DealerEntity.id).filter(DealerEntity.assigned_sale_id == current_user.id).all()
-            }
-            assigned_dealer_ids.update(db_dids)
-        except Exception:
-            pass
+        assigned_user = USERS_DB.get(current_user.username) or next((u for u in USERS_DB.values() if u.id == current_user.id), None)
+        target_sale_id = assigned_user.id if assigned_user else current_user.id
+        assigned_ids = [d.id for d in DEALERS_DB.values() if getattr(d, "assigned_sale_id", None) == target_sale_id]
+        sql_assigned_ids = [r[0] for r in db.query(DealerEntity.id).filter(DealerEntity.assigned_sale_id == target_sale_id).all()]
+        assigned_dealer_ids = set(assigned_ids) | set(sql_assigned_ids)
 
-        if not assigned_dealer_ids:
+        if not assigned_dealer_ids or (dealer_id is not None and dealer_id not in assigned_dealer_ids):
             if is_legacy_request:
                 return []
-            return OrderListResponse(
-                items=[], total=0, total_count=0, filtered_total_amount=0.0,
-                pending_count=0, confirmed_count=0, page=page or 1, page_size=page_size or 20
-            )
-
-        # Nếu sales cố tình truyền dealer_id ngoài phạm vi phụ trách -> Trả về danh sách rỗng
-        if dealer_id is not None and dealer_id not in assigned_dealer_ids:
-            if is_legacy_request:
-                return []
-            return OrderListResponse(
-                items=[], total=0, total_count=0, filtered_total_amount=0.0,
-                pending_count=0, confirmed_count=0, page=page or 1, page_size=page_size or 20
+            return OrderListFilteredResponse(
+                items=[], total=0, total_count=0, page=cur_page, page_size=cur_page_size,
+                filtered_total_amount=0.0, pending_count=0, confirmed_count=0
             )
 
     # 3. Xây dựng Query cơ sở
     query = db.query(OrderEntity)
 
-    # Áp đặt RLS dealer
     if is_sales:
         if dealer_id is not None:
             query = query.filter(OrderEntity.dealer_id == dealer_id)
@@ -558,9 +644,9 @@ def get_orders(
         else:
             if is_legacy_request:
                 return []
-            return OrderListResponse(
-                items=[], total=0, total_count=0, filtered_total_amount=0.0,
-                pending_count=0, confirmed_count=0, page=page or 1, page_size=page_size or 20
+            return OrderListFilteredResponse(
+                items=[], total=0, total_count=0, page=cur_page, page_size=cur_page_size,
+                filtered_total_amount=0.0, pending_count=0, confirmed_count=0
             )
     else:
         # Admin / Sales Manager / Accountant
@@ -570,34 +656,29 @@ def get_orders(
             query = query.filter(OrderEntity.assigned_sale_id == sales_rep_id)
 
     # 4. Bộ lọc trạng thái
-    if status and status.upper() != "ALL":
-        st = status.upper().strip()
+    if status and status.strip() and status.strip().upper() != "ALL":
+        st = status.strip().upper()
         if st in ("PENDING_APPROVAL", "PENDING"):
             query = query.filter(OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING"]))
         elif st == "CONFIRMED":
-            query = query.filter(OrderEntity.status == "CONFIRMED")
+            query = query.filter(func.upper(OrderEntity.status) == "CONFIRMED")
         elif st == "COMPLETED":
             query = query.filter(OrderEntity.status.in_(["COMPLETED", "DELIVERED", "EXPORTED", "CLOSED"]))
         elif st == "CANCELLED":
-            query = query.filter(OrderEntity.status == "CANCELLED")
+            query = query.filter(func.upper(OrderEntity.status) == "CANCELLED")
         elif st == "REJECTED":
-            query = query.filter(OrderEntity.status == "REJECTED")
+            query = query.filter(func.upper(OrderEntity.status) == "REJECTED")
         else:
-            query = query.filter(OrderEntity.status == st)
+            query = query.filter(func.upper(OrderEntity.status) == st)
 
     # 5. Bộ lọc khu vực (Region)
     if region and region.strip() and region.strip().upper() != "ALL":
-        reg = region.strip().lower()
-        matched_dealer_ids = [
-            d.id for d in DEALERS_DB.values() if d.region and reg in d.region.lower()
-        ]
-        try:
-            db_dids = [r[0] for r in db.query(DealerEntity.id).filter(func.lower(DealerEntity.region).contains(reg)).all()]
-            matched_dealer_ids = list(set(matched_dealer_ids + db_dids))
-        except Exception:
-            pass
-        if matched_dealer_ids:
-            query = query.filter(OrderEntity.dealer_id.in_(matched_dealer_ids))
+        clean_reg = region.strip().lower()
+        reg_db_ids = [d.id for d in DEALERS_DB.values() if d.region and clean_reg in d.region.lower()]
+        reg_sql_ids = [r[0] for r in db.query(DealerEntity.id).filter(DealerEntity.region.ilike(f"%{clean_reg}%")).all()]
+        matching_dealer_ids = list(set(reg_db_ids) | set(reg_sql_ids))
+        if matching_dealer_ids:
+            query = query.filter(OrderEntity.dealer_id.in_(matching_dealer_ids))
         else:
             query = query.filter(OrderEntity.id == -1)
 
@@ -641,6 +722,14 @@ def get_orders(
             )
         )
 
+    # Nếu là legacy request không phân trang:
+    if is_legacy_request:
+        entities = query.order_by(OrderEntity.id.desc()).all()
+        return [
+            _format_order_response(rec, db, can_view_cost=can_view_cost, is_customer=is_customer, is_sales=is_sales)
+            for rec in entities
+        ]
+
     # 8. Tính toán Thống kê & Tổng tiền (Cả 4 KPI đều tính trên tập query đã áp dụng các bộ lọc)
     stats = query.with_entities(
         func.coalesce(func.sum(OrderEntity.total_amount), 0.0),
@@ -659,33 +748,23 @@ def get_orders(
     items_query = query.order_by(is_pending_expr.desc(), OrderEntity.id.desc())
 
     # 10. Phân trang
-    if page is not None or page_size is not None:
-        cur_page = max(1, page or 1)
-        cur_page_size = max(1, min(page_size or 20, 100))
-        db_items = items_query.offset((cur_page - 1) * cur_page_size).limit(cur_page_size).all()
-    else:
-        cur_page = 1
-        cur_page_size = total_count if is_legacy_request else 20
-        db_items = items_query.all()
+    offset_val = (cur_page - 1) * cur_page_size
+    records = items_query.offset(offset_val).limit(cur_page_size).all()
 
-    # Chuyển đổi thành OrderResponse
-    order_responses = [
-        _build_order_response(order, db, is_customer=is_customer, is_sales=is_sales)
-        for order in db_items
+    items = [
+        _format_order_response(rec, db, can_view_cost=can_view_cost, is_customer=is_customer, is_sales=is_sales)
+        for rec in records
     ]
 
-    if is_legacy_request:
-        return order_responses
-
-    return OrderListResponse(
-        items=order_responses,
+    return OrderListFilteredResponse(
+        items=items,
         total=total_count,
         total_count=total_count,
-        filtered_total_amount=filtered_total_amount,
-        pending_count=pending_count,
-        confirmed_count=confirmed_count,
         page=cur_page,
         page_size=cur_page_size,
+        filtered_total_amount=round(filtered_total_amount, 2),
+        pending_count=pending_count,
+        confirmed_count=confirmed_count,
     )
 
 @router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
@@ -911,19 +990,19 @@ def create_order(
             if item_match:
                 pbi, pb_matched = item_match
                 pb_matched.is_locked = True
-                fl_val = pbi.floor_price if (pbi.floor_price is not None and pbi.floor_price > 0) else (pbi.min_price if (pbi.min_price is not None and pbi.min_price > 0) else None)
+                fl_val = pbi.floor_price if (pbi.floor_price is not None and pbi.floor_price > 0) else (pbi.min_price if (getattr(pbi, "min_price", None) is not None and pbi.min_price > 0) else None)
                 if fl_val is not None and it.price < fl_val:
                     requires_approval = True
                     approval_reasons.append(
                         f"Bán dưới giá sàn: {cur_name} có đơn giá {it.price:,.0f} đ thấp hơn giá sàn {fl_val:,.0f} đ (Bảng giá: {pb_matched.name})"
                     )
-                elif fl_val is None and listed_price is not None and it.price < listed_price:
+                elif fl_val is None and listed_price is not None and listed_price > 0 and it.price < listed_price:
                     requires_approval = True
                     approval_reasons.append(
                         f"Bán dưới giá niêm yết: {cur_name} có đơn giá {it.price:,.0f} đ thấp hơn giá niêm yết {listed_price:,.0f} đ"
                     )
             else:
-                if listed_price is not None and it.price < listed_price:
+                if listed_price is not None and listed_price > 0 and it.price < listed_price:
                     requires_approval = True
                     approval_reasons.append(
                         f"Bán dưới giá niêm yết: {cur_name} có đơn giá {it.price:,.0f} đ thấp hơn giá niêm yết {listed_price:,.0f} đ"

@@ -18,13 +18,34 @@ def _admin_login() -> str:
 @pytest.fixture(autouse=True)
 def reset_test_stock():
     from app.core.database import SessionLocal
-    from app.models.entities import WarehouseStockEntity
+    from app.models.entities import WarehouseStockEntity, ProductEntity
     db = SessionLocal()
     try:
+        ws = db.query(WarehouseStockEntity).filter(
+            WarehouseStockEntity.warehouse_id == "WH01",
+            WarehouseStockEntity.product_id == 1
+        ).first()
+        if not ws:
+            ws = WarehouseStockEntity(
+                warehouse_id="WH01",
+                warehouse_name="Kho Tổng Hà Nội",
+                product_id=1,
+                actual_stock=10000.0,
+                reserved_stock=0.0
+            )
+            db.add(ws)
+        else:
+            ws.actual_stock = max(float(ws.actual_stock or 0), 10000.0)
+            ws.reserved_stock = 0.0
+
         stocks = db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id == 1).all()
         for s in stocks:
-            s.actual_stock = 1000.0
+            s.actual_stock = max(float(s.actual_stock or 0), 10000.0)
             s.reserved_stock = 0.0
+
+        p = db.query(ProductEntity).filter(ProductEntity.id == 1).first()
+        if p:
+            p.stock = max(float(p.stock or 0), 10000.0)
         db.commit()
     finally:
         db.close()
