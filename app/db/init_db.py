@@ -14,6 +14,7 @@ from app.models.entities import (
     CategoryEntity,
     AuditLogEntity,
     WarehouseStockEntity,
+    StockAuditEntity,
 )
 from app.models.supplier import SupplierEntity
 from app.models.goods_receipt import (
@@ -58,6 +59,10 @@ def _ensure_legacy_columns(bind=engine):
             "images_json": ("TEXT", "NVARCHAR(MAX)"),
             "status": ("VARCHAR(50) DEFAULT 'active'", "NVARCHAR(50) DEFAULT 'active'"),
             "is_batch_managed": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
+            "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
+        },
+        "warehouse_stocks": {
+            "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
         },
         "dealers": {
             "max_debt_days": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
@@ -86,8 +91,18 @@ def _ensure_legacy_columns(bind=engine):
         },
         "categories": {
             "code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
+            "parent_id": ("INTEGER NULL", "INT NULL"),
             "product_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
             "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
+        },
+        "stock_audits": {
+            "discrepancy_items_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "cancelled_by": ("VARCHAR(100)", "NVARCHAR(100)"),
+            "cancelled_at": ("DATETIME", "DATETIME"),
+        },
+        "discount_tiers": {
+            "discount_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "discount_type": ("VARCHAR(20) DEFAULT 'percent'", "NVARCHAR(20) DEFAULT 'percent'"),
         },
     }
     inspector = inspect(bind)
@@ -140,6 +155,20 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (units_json): {ex}")
+            if "min_stock" not in product_cols:
+                try:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN min_stock INTEGER DEFAULT 10;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (products.min_stock): {ex}")
+
+            ws_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(warehouse_stocks)")).fetchall()]
+            if ws_cols and "min_stock" not in ws_cols:
+                try:
+                    conn.execute(text("ALTER TABLE warehouse_stocks ADD COLUMN min_stock INTEGER DEFAULT 10;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (warehouse_stocks.min_stock): {ex}")
 
             dealer_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(dealers)")).fetchall()]
             if "customer_group" not in dealer_cols:
@@ -261,6 +290,10 @@ def init_db():
                 "IF COL_LENGTH('price_books', 'is_locked') IS NULL ALTER TABLE price_books ADD is_locked BIT DEFAULT 0;",
                 "IF COL_LENGTH('price_book_items', 'sale_price') IS NULL ALTER TABLE price_book_items ADD sale_price FLOAT DEFAULT 0.0;",
                 "IF COL_LENGTH('price_book_items', 'floor_price') IS NULL ALTER TABLE price_book_items ADD floor_price FLOAT DEFAULT 0.0;",
+                "IF COL_LENGTH('products', 'min_stock') IS NULL ALTER TABLE products ADD min_stock INT DEFAULT 10;",
+                "IF COL_LENGTH('warehouse_stocks', 'min_stock') IS NULL ALTER TABLE warehouse_stocks ADD min_stock INT DEFAULT 10;",
+                "IF COL_LENGTH('discount_tiers', 'discount_amount') IS NULL ALTER TABLE discount_tiers ADD discount_amount FLOAT DEFAULT 0.0;",
+                "IF COL_LENGTH('discount_tiers', 'discount_type') IS NULL ALTER TABLE discount_tiers ADD discount_type NVARCHAR(20) DEFAULT 'percent';",
             ]:
                 try:
                     conn.execute(text(sql_statement))
@@ -305,9 +338,6 @@ def init_db():
                 CategoryEntity(id=1, name="Thời trang", parent_id=None),
                 CategoryEntity(id=2, name="Giày dép", parent_id=None),
                 CategoryEntity(id=3, name="Phụ kiện", parent_id=None),
-                CategoryEntity(id=4, name="Áo Nam", parent_id=1),
-                CategoryEntity(id=5, name="Quần Nam", parent_id=1),
-                CategoryEntity(id=6, name="Áo Thun", parent_id=4),
             ]
             db.add_all(initial_categories)
             db.commit()
@@ -317,9 +347,9 @@ def init_db():
         if db.query(ProductEntity).count() == 0:
             print("Seeding initial products...")
             initial_products = [
-                ProductEntity(id=1, code="SP001", name="Áo thun Polo Nam Cao Cấp", category="Thời trang", category_id=6, stock=120, cost_price=85000.0, sell_price=199000.0, base_unit="Cái", units_json=json.dumps([{"unit_name": "Lốc", "conversion_rate": 6.0}, {"unit_name": "Thùng", "conversion_rate": 24.0}], ensure_ascii=False)),
-                ProductEntity(id=2, code="SP002", name="Quần Jeans Slimfit Co Giãn", category="Thời trang", category_id=5, stock=45, cost_price=160000.0, sell_price=380000.0, base_unit="Chiếc", units_json=json.dumps([{"unit_name": "Kiện", "conversion_rate": 10.0}], ensure_ascii=False)),
-                ProductEntity(id=3, code="SP003", name="Áo khoác Bomber Chống Nước", category="Thời trang", category_id=4, stock=30, cost_price=220000.0, sell_price=490000.0, base_unit="Chiếc", units_json=json.dumps([], ensure_ascii=False)),
+                ProductEntity(id=1, code="SP001", name="Áo thun Polo Nam Cao Cấp", category="Thời trang", category_id=1, stock=120, cost_price=85000.0, sell_price=199000.0, base_unit="Cái", units_json=json.dumps([{"unit_name": "Lốc", "conversion_rate": 6.0}, {"unit_name": "Thùng", "conversion_rate": 24.0}], ensure_ascii=False)),
+                ProductEntity(id=2, code="SP002", name="Quần Jeans Slimfit Co Giãn", category="Thời trang", category_id=1, stock=45, cost_price=160000.0, sell_price=380000.0, base_unit="Chiếc", units_json=json.dumps([{"unit_name": "Kiện", "conversion_rate": 10.0}], ensure_ascii=False)),
+                ProductEntity(id=3, code="SP003", name="Áo khoác Bomber Chống Nước", category="Thời trang", category_id=1, stock=30, cost_price=220000.0, sell_price=490000.0, base_unit="Chiếc", units_json=json.dumps([], ensure_ascii=False)),
                 ProductEntity(id=4, code="SP004", name="Giày Sneaker Thể Thao", category="Giày dép", category_id=2, stock=65, cost_price=310000.0, sell_price=650000.0, base_unit="Đôi", units_json=json.dumps([{"unit_name": "Thùng", "conversion_rate": 12.0}], ensure_ascii=False)),
                 ProductEntity(id=5, code="SP005", name="Thắt lưng da bò nguyên tấm", category="Phụ kiện", category_id=3, stock=80, cost_price=95000.0, sell_price=250000.0, base_unit="Chiếc", units_json=json.dumps([{"unit_name": "Hộp", "conversion_rate": 5.0}], ensure_ascii=False)),
             ]
@@ -566,6 +596,8 @@ def init_db():
 
         from app.models.dealer import load_dealers_db
         load_dealers_db()
+        from app.api.v1.endpoints.discounts import load_discount_policies
+        load_discount_policies(db)
 
 
     except Exception as e:
