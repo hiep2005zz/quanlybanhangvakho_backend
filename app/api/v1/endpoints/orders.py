@@ -37,6 +37,7 @@ class OrderItemCreate(BaseModel):
     unit: Optional[str] = None
     unit_name: Optional[str] = None
     conversion_rate: Optional[float] = Field(None, gt=0)
+    unit_price_override: Optional[float] = Field(None, ge=0)
 
 SALES_ORDER_UNITS = {"Cái", "Hộp", "Thùng", "Bộ", "Đôi"}
 
@@ -805,7 +806,7 @@ def get_orders(
 
     return sorted(orders_by_code.values(), key=_order_sort_key, reverse=True)
 
-@router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED, response_model_exclude_none=True)
 def create_order(
     data: OrderCreate,
     request: Request,
@@ -859,18 +860,6 @@ def create_order(
                 detail="Điểm giao hàng không hợp lệ hoặc không thuộc đại lý này."
             )
         selected_delivery_point_id = dp.id
-    else:
-        # Nếu không chọn, tự động tìm điểm mặc định của đại lý
-        from sqlalchemy import select
-        dp = db.scalars(
-            select(DealerDeliveryPointEntity).where(
-                DealerDeliveryPointEntity.dealer_id == data.dealer_id,
-                DealerDeliveryPointEntity.is_default == True,
-                DealerDeliveryPointEntity.is_active == True
-            )
-        ).first()
-        if dp:
-            selected_delivery_point_id = dp.id
 
     # 1. AC 3: Kiểm tra nhân viên phụ trách của đại lý
     assigned_sale_id = dealer.assigned_sale_id
@@ -962,10 +951,12 @@ def create_order(
         if prod_entity:
             prod_entity.stock = max(0, (prod_entity.stock or 0) - base_quantity)
 
+        prod_cat = raw_p.get("category") if raw_p else (prod_entity.category if prod_entity else None)
         processed_items.append({
             "product_id": item.product_id,
             "product_code": prod_code,
             "product_name": raw_p.get("name") if raw_p else (prod_entity.name if prod_entity else f"SP #{item.product_id}"),
+            "category": prod_cat,
             "quantity": item.quantity,
             "price": item.price,
             "unit": chosen_unit,
@@ -1056,6 +1047,7 @@ def create_order(
         dealer=dealer,
         total_quantity=total_quantity,
         subtotal_amount=subtotal_amount,
+        db=db,
     )
     best_pct = float(best_disc["discount_percent"])
 
@@ -1065,10 +1057,12 @@ def create_order(
         effective_pct = best_pct
     else:
         effective_pct = req_discount
-        if best_pct > 0 and effective_pct > best_pct:
+        if effective_pct > best_pct:
             requires_approval = True
+            pol_code = best_disc.get('applied_policy_code')
+            pol_desc = f"{pol_code} ({best_pct}%)" if (pol_code and best_pct > 0) else f"({best_pct}%)"
             approval_reasons.append(
-                f"Chiết khấu thủ công ({effective_pct}%) vượt mức chính sách {best_disc.get('applied_policy_code', '')} ({best_pct}%)"
+                f"Chiết khấu ({effective_pct}%) vượt mức chính sách {pol_desc} cần quản lý duyệt"
             )
 
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
@@ -1351,12 +1345,18 @@ def create_sales_entry_order(
                 detail=f"Hệ số quy đổi của đơn vị '{selected_unit}' không hợp lệ.",
             )
 
+        if item.unit_price_override is not None:
+            actual_price = float(item.unit_price_override)
+        elif item.price is not None and item.price != 1:
+            actual_price = float(item.price)
+        else:
+            actual_price = product["sell_price"]
         priced_items.append({
             "product_id": product["id"],
             "product_code": product["code"],
             "product_name": product["name"],
             "quantity": item.quantity,
-            "price": product["sell_price"],
+            "price": actual_price,
             "unit": selected_unit,
             "unit_name": selected_unit,
             "conversion_rate": expected_rate,
@@ -1395,6 +1395,7 @@ def create_sales_entry_order(
         dealer=dealer,
         total_quantity=total_quantity,
         subtotal_amount=subtotal_amount,
+        db=db,
     )
     best_pct = float(best_disc["discount_percent"])
 
@@ -1403,14 +1404,81 @@ def create_sales_entry_order(
     requires_approval = False
     approval_reasons = []
 
+    # AC3 & AC: Kiểm tra bảng giá & giá sàn (Price Floor Check)
+    cust_group = getattr(dealer, "customer_group", None) or "dai_ly_cap_1"
+    aliases = [cust_group]
+    if cust_group in ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1", "dai_ly_cap_1"]:
+        aliases = ["dai_ly_cap_1", "Dai_ly_cap_1", "CAP_1", "Đại lý cấp 1"]
+    elif cust_group in ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2", "dai_ly_cap_2"]:
+        aliases = ["dai_ly_cap_2", "Dai_ly_cap_2", "CAP_2", "Đại lý cấp 2"]
+    elif cust_group in ["RETAIL", "Khach_le", "Khách lẻ", "khach_le"]:
+        aliases = ["khach_le", "Khach_le", "RETAIL", "Khách lẻ"]
+
+    now_dt = datetime.now(timezone.utc)
+    if db:
+        active_pbs = db.query(PriceBookEntity).filter(
+            PriceBookEntity.customer_group.in_(aliases),
+            PriceBookEntity.status == "ACTIVE",
+            PriceBookEntity.valid_from <= now_dt,
+            PriceBookEntity.valid_to >= now_dt
+        ).order_by(PriceBookEntity.version.desc(), PriceBookEntity.created_at.desc()).all()
+
+        for pb in active_pbs:
+            pb.is_locked = True
+
+        for it in data.items:
+            item_match = db.query(PriceBookItemEntity, PriceBookEntity).join(
+                PriceBookEntity, PriceBookItemEntity.price_book_id == PriceBookEntity.id
+            ).filter(
+                PriceBookEntity.customer_group.in_(aliases),
+                PriceBookEntity.status == "ACTIVE",
+                PriceBookEntity.valid_from <= now_dt,
+                PriceBookEntity.valid_to >= now_dt,
+                PriceBookItemEntity.product_id == it.product_id
+            ).order_by(PriceBookEntity.version.desc(), PriceBookEntity.created_at.desc()).first()
+
+            prod_entity = products_by_id.get(it.product_id)
+            raw_p = product_by_id.get(it.product_id)
+            listed_price = prod_entity.sell_price if prod_entity and prod_entity.sell_price is not None else (raw_p.get("sell_price") if raw_p else None)
+            cur_name = prod_entity.name if prod_entity else (raw_p.get("name") if raw_p else f"SP #{it.product_id}")
+            if it.unit_price_override is not None:
+                line_price = float(it.unit_price_override)
+            elif it.price is not None and it.price != 1:
+                line_price = float(it.price)
+            else:
+                line_price = listed_price or 0.0
+
+            if item_match:
+                pbi, pb_matched = item_match
+                pb_matched.is_locked = True
+                fl_val = pbi.floor_price if (pbi.floor_price is not None and pbi.floor_price > 0) else (pbi.min_price if (pbi.min_price is not None and pbi.min_price > 0) else None)
+                if fl_val is not None and line_price < fl_val:
+                    requires_approval = True
+                    approval_reasons.append(
+                        f"Bán dưới giá sàn: {cur_name} có đơn giá {line_price:,.0f} đ thấp hơn giá sàn {fl_val:,.0f} đ (Bảng giá: {pb_matched.name})"
+                    )
+                elif fl_val is None and listed_price is not None and line_price < listed_price:
+                    requires_approval = True
+                    approval_reasons.append(
+                        f"Bán dưới giá niêm yết: {cur_name} có đơn giá {line_price:,.0f} đ thấp hơn giá niêm yết {listed_price:,.0f} đ"
+                    )
+            else:
+                if listed_price is not None and line_price < listed_price:
+                    requires_approval = True
+                    approval_reasons.append(
+                        f"Bán dưới giá niêm yết: {cur_name} có đơn giá {line_price:,.0f} đ thấp hơn giá niêm yết {listed_price:,.0f} đ"
+                    )
+
     if req_discount == 0:
         effective_pct = best_pct
     else:
         effective_pct = req_discount
-        if best_pct > 0 and effective_pct > best_pct:
+        if effective_pct > best_pct:
             requires_approval = True
+            pol_code = best_disc.get('applied_policy_code')
+            pol_desc = f"{pol_code} ({best_pct}%)" if (pol_code and best_pct > 0) else f"({best_pct}%)"
             approval_reasons.append(
-                f"Chiết khấu thủ công ({effective_pct}%) vượt mức chính sách {best_disc.get('applied_policy_code', '')} ({best_pct}%)"
+                f"Chiết khấu ({effective_pct}%) vượt mức chính sách {pol_desc} cần quản lý duyệt"
             )
 
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]

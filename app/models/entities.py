@@ -48,6 +48,12 @@ class UserEntity(Base):
             try:
                 res = json.loads(self.roles_json)
                 if isinstance(res, str):
+                    try:
+                        sub = json.loads(res)
+                        if isinstance(sub, list):
+                            return sub
+                    except Exception:
+                        pass
                     return [res]
                 elif isinstance(res, list):
                     return res
