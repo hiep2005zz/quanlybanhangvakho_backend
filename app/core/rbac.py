@@ -79,7 +79,6 @@ ROLE_PERMISSIONS: Dict[str, Set[str]] = {
         Permission.PRODUCT_READ.value,
         Permission.INVENTORY_READ.value,
         Permission.INVENTORY_WRITE.value,    # Có quyền ghi kho
-        Permission.ORDER_READ.value,        # Xem đơn hàng để soạn/xuất hàng
     },
 
     # 5. Quản lý kho: Quản lý kho hàng & xem phiếu mua hàng.
@@ -90,14 +89,12 @@ ROLE_PERMISSIONS: Dict[str, Set[str]] = {
         Permission.INVENTORY_WRITE.value,
         Permission.PURCHASE_READ.value,
         Permission.REPORT_READ.value,
-        Permission.ORDER_READ.value,        # Xem đơn hàng để điều phối xuất kho
     },
 
     # 6. Kế toán: Xem chứng từ, đơn hàng, mua hàng, báo cáo chung.
     # Không có quyền can thiệp kho (inventory:write)
     Role.ACCOUNTANT.value: {
         Permission.PRODUCT_READ.value,
-        Permission.ORDER_READ.value,
         Permission.PURCHASE_READ.value,
         Permission.REPORT_READ.value,
         Permission.INVENTORY_READ.value,
@@ -245,7 +242,8 @@ def has_roles_permission(roles: List[str], permission: str) -> bool:
     if not roles:
         return False
     for r in roles:
-        perms = ROLE_PERMISSIONS.get(r)
+        r_str = str(getattr(r, "value", r)).strip()
+        perms = ROLE_PERMISSIONS.get(r_str) or ROLE_PERMISSIONS.get(r_str.lower())
         if perms is not None:
             if "*" in perms or permission in perms:
                 return True

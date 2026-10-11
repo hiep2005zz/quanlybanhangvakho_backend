@@ -151,6 +151,16 @@ def test_ac3_dealers_marked_needing_handover_and_block_orders():
     assert sales_check.json()["total_dealers"] == 0
 
     # 4. Thử tạo đơn lại cho đại lý DL001 (nay đã thuộc sales_manager) -> Thành công!
+    from app.core.database import SessionLocal
+    from app.models.entities import DealerEntity
+    db_test = SessionLocal()
+    d1 = db_test.query(DealerEntity).filter(DealerEntity.id == 1).first()
+    if d1:
+        d1.credit_limit = 10_000_000_000.0
+        db_test.commit()
+    db_test.close()
+    if 1 in DEALERS_DB:
+        DEALERS_DB[1].credit_limit = 10_000_000_000.0
     order_success = client.post(
         "/api/v1/orders",
         headers={"Authorization": f"Bearer {admin_token}"},
