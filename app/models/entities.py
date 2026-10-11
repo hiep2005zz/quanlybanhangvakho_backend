@@ -93,8 +93,9 @@ class CategoryEntity(Base):
     __tablename__ = "categories"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    code = Column(String(50), unique=True, index=True, nullable=False)
+    code = Column(String(50), unique=True, index=True, nullable=True)
     name = Column(Unicode(100), nullable=False)
+    parent_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
     description = Column(Unicode(255), nullable=True)
     product_count = Column(Integer, default=0)
     status = Column(Unicode(50), default="Đang hoạt động")
@@ -295,3 +296,29 @@ class WarehouseStockEntity(Base):
     @property
     def available_stock(self) -> int:
         return max(0, (self.actual_stock or 0) - (self.reserved_stock or 0))
+
+
+class StockAuditEntity(Base):
+    __tablename__ = "stock_audits"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    warehouse_id = Column(String(50), nullable=True, index=True)
+    warehouse_name = Column(Unicode(255), nullable=True)
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True, index=True)
+    category_name = Column(Unicode(100), nullable=True)
+    scope_type = Column(String(20), default="WAREHOUSE")  # WAREHOUSE | CATEGORY | ALL
+    status = Column(String(20), default="DRAFT", nullable=False)  # DRAFT | CONFIRMED | CANCELLED
+    note = Column(UnicodeText, nullable=True)
+    total_items = Column(Integer, default=0)
+    discrepancy_items_count = Column(Integer, default=0)
+    total_discrepancy_qty = Column(Integer, default=0)
+    items_json = Column(UnicodeText, nullable=True)
+    created_by = Column(Unicode(100), nullable=False)
+    confirmed_by = Column(Unicode(100), nullable=True)
+    confirmed_at = Column(DateTime, nullable=True)
+    cancelled_by = Column(Unicode(100), nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
