@@ -1597,15 +1597,24 @@ def _resolve_current_product_price(db: Session, dealer_id: int, product_id: int)
     raw_p = _find_product_in_raw(product_id)
     prod_entity = db.query(ProductEntity).filter(ProductEntity.id == product_id).first() if db else None
     listed_price = (prod_entity.sell_price if prod_entity and prod_entity.sell_price is not None else (raw_p.get("sell_price") if raw_p else 0.0)) or 0.0
+    floor_price = (prod_entity.floor_price if prod_entity and prod_entity.floor_price is not None else (raw_p.get("floor_price") if raw_p else 0.0)) or 0.0
 
     if item_match:
         pbi, pb_matched = item_match
         sale_val = pbi.sale_price if (pbi.sale_price is not None and pbi.sale_price > 0) else (pbi.price if (pbi.price is not None and pbi.price > 0) else listed_price)
-        floor_val = pbi.floor_price if (pbi.floor_price is not None and pbi.floor_price > 0) else (pbi.min_price if (pbi.min_price is not None and pbi.min_price > 0) else sale_val)
+        floor_val = pbi.floor_price if (pbi.floor_price is not None and pbi.floor_price > 0) else (pbi.min_price if (pbi.min_price is not None and pbi.min_price > 0) else floor_price or sale_val)
+
+        # Bắt buộc đồng bộ với giá niêm yết và giá sàn mới nhất từ sản phẩm nếu có
+        # (trừ khi bảng giá có version > 1 được chỉ định riêng biệt)
+        if listed_price > 0 and getattr(pb_matched, "version", 1) <= 1:
+            sale_val = listed_price
+            if floor_price > 0:
+                floor_val = floor_price
+
         price_note = pb_matched.name or pb_matched.code
         return float(sale_val or listed_price), float(floor_val) if floor_val is not None else None, price_note
 
-    return float(listed_price), float(listed_price), "Giá niêm yết"
+    return float(listed_price), float(floor_price or listed_price), "Giá niêm yết"
 
 
 def _check_product_reorder_status(db: Session, product_id: int) -> tuple[bool, Optional[str], Optional[dict]]:

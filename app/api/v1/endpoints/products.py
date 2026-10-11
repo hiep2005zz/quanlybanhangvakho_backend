@@ -29,7 +29,7 @@ RAW_PRODUCTS = [
         "category": "Thời trang",
         "stock": 120,
         "cost_price": 85000.0,
-        "sell_price": 199000.0,
+        "sell_price": 190000.0,
         "base_unit": "Cái",
         "units": [
             {"unit_name": "Lốc", "conversion_rate": 6.0},
@@ -751,6 +751,23 @@ def update_product_price(
             db_p.floor_price = new_val["floor_price"]
         if "cost_price" in new_val:
             db_p.cost_price = new_val["cost_price"]
+
+        # Tự động đồng bộ sang tất cả bảng giá đang ACTIVE chứa sản phẩm này
+        try:
+            from app.models.price_book import PriceBookEntity, PriceBookItemEntity
+            active_items = db.query(PriceBookItemEntity).join(PriceBookEntity).filter(
+                PriceBookItemEntity.product_id == db_p.id,
+                PriceBookEntity.status == "ACTIVE"
+            ).all()
+            for pbi in active_items:
+                if "sell_price" in new_val:
+                    pbi.sale_price = float(new_val["sell_price"])
+                    pbi.price = float(new_val["sell_price"])
+                if "floor_price" in new_val:
+                    pbi.floor_price = float(new_val["floor_price"])
+                    pbi.min_price = float(new_val["floor_price"])
+        except Exception:
+            pass
 
     db.commit()
     if db_p:
