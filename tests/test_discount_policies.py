@@ -349,11 +349,18 @@ def test_category_discount_policy_application():
     với số lượng đủ bậc sẽ được hưởng chiết khấu chính sách.
     """
     admin_token = _admin_login()
+    from app.core.database import SessionLocal
+    from app.models.entities import ProductEntity
+    _db = SessionLocal()
+    p1 = _db.query(ProductEntity).filter(ProductEntity.id == 1).first()
+    target_cat = p1.category if p1 and p1.category else "Thời trang"
+    _db.close()
+
     payload = {
-        "code": "CK-CAT-AONAM",
-        "name": "Nhóm hàng: Áo Nam",
-        "title": "Nhóm hàng: Áo Nam",
-        "category": "Áo Nam",
+        "code": "CK-CAT-TEST",
+        "name": f"Nhóm hàng: {target_cat}",
+        "title": f"Nhóm hàng: {target_cat}",
+        "category": target_cat,
         "target_dealer_type": "ALL",
         "is_active": True,
         "tiers": [
@@ -375,7 +382,7 @@ def test_category_discount_policy_application():
         assert calc_res.status_code == 200
         data = calc_res.json()
         assert data["discount_percent"] == 12.0
-        assert data["applied_policy_code"] == "CK-CAT-AONAM"
+        assert data["applied_policy_code"] == "CK-CAT-TEST"
     finally:
         client.delete(f"/api/v1/discounts/{pol_id}", headers={"Authorization": f"Bearer {admin_token}"})
 

@@ -14,6 +14,7 @@ from app.models.entities import (
     CategoryEntity,
     AuditLogEntity,
     WarehouseStockEntity,
+    StockAuditEntity,
 )
 from app.models.supplier import SupplierEntity
 from app.models.goods_receipt import (
@@ -88,6 +89,11 @@ def _ensure_legacy_columns(bind=engine):
             "code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
             "product_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
             "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
+        },
+        "stock_audits": {
+            "discrepancy_items_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "cancelled_by": ("VARCHAR(100)", "NVARCHAR(100)"),
+            "cancelled_at": ("DATETIME", "DATETIME"),
         },
     }
     inspector = inspect(bind)
@@ -305,9 +311,6 @@ def init_db():
                 CategoryEntity(id=1, name="Thời trang", parent_id=None),
                 CategoryEntity(id=2, name="Giày dép", parent_id=None),
                 CategoryEntity(id=3, name="Phụ kiện", parent_id=None),
-                CategoryEntity(id=4, name="Áo Nam", parent_id=1),
-                CategoryEntity(id=5, name="Quần Nam", parent_id=1),
-                CategoryEntity(id=6, name="Áo Thun", parent_id=4),
             ]
             db.add_all(initial_categories)
             db.commit()
@@ -317,9 +320,9 @@ def init_db():
         if db.query(ProductEntity).count() == 0:
             print("Seeding initial products...")
             initial_products = [
-                ProductEntity(id=1, code="SP001", name="Áo thun Polo Nam Cao Cấp", category="Thời trang", category_id=6, stock=120, cost_price=85000.0, sell_price=199000.0, base_unit="Cái", units_json=json.dumps([{"unit_name": "Lốc", "conversion_rate": 6.0}, {"unit_name": "Thùng", "conversion_rate": 24.0}], ensure_ascii=False)),
-                ProductEntity(id=2, code="SP002", name="Quần Jeans Slimfit Co Giãn", category="Thời trang", category_id=5, stock=45, cost_price=160000.0, sell_price=380000.0, base_unit="Chiếc", units_json=json.dumps([{"unit_name": "Kiện", "conversion_rate": 10.0}], ensure_ascii=False)),
-                ProductEntity(id=3, code="SP003", name="Áo khoác Bomber Chống Nước", category="Thời trang", category_id=4, stock=30, cost_price=220000.0, sell_price=490000.0, base_unit="Chiếc", units_json=json.dumps([], ensure_ascii=False)),
+                ProductEntity(id=1, code="SP001", name="Áo thun Polo Nam Cao Cấp", category="Thời trang", category_id=1, stock=120, cost_price=85000.0, sell_price=199000.0, base_unit="Cái", units_json=json.dumps([{"unit_name": "Lốc", "conversion_rate": 6.0}, {"unit_name": "Thùng", "conversion_rate": 24.0}], ensure_ascii=False)),
+                ProductEntity(id=2, code="SP002", name="Quần Jeans Slimfit Co Giãn", category="Thời trang", category_id=1, stock=45, cost_price=160000.0, sell_price=380000.0, base_unit="Chiếc", units_json=json.dumps([{"unit_name": "Kiện", "conversion_rate": 10.0}], ensure_ascii=False)),
+                ProductEntity(id=3, code="SP003", name="Áo khoác Bomber Chống Nước", category="Thời trang", category_id=1, stock=30, cost_price=220000.0, sell_price=490000.0, base_unit="Chiếc", units_json=json.dumps([], ensure_ascii=False)),
                 ProductEntity(id=4, code="SP004", name="Giày Sneaker Thể Thao", category="Giày dép", category_id=2, stock=65, cost_price=310000.0, sell_price=650000.0, base_unit="Đôi", units_json=json.dumps([{"unit_name": "Thùng", "conversion_rate": 12.0}], ensure_ascii=False)),
                 ProductEntity(id=5, code="SP005", name="Thắt lưng da bò nguyên tấm", category="Phụ kiện", category_id=3, stock=80, cost_price=95000.0, sell_price=250000.0, base_unit="Chiếc", units_json=json.dumps([{"unit_name": "Hộp", "conversion_rate": 5.0}], ensure_ascii=False)),
             ]
