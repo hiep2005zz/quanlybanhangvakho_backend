@@ -48,9 +48,31 @@ class UserEntity(Base):
             try:
                 res = json.loads(self.roles_json)
                 if isinstance(res, str):
+                    try:
+                        inner = json.loads(res)
+                        if isinstance(inner, list):
+                            return [str(x) for x in inner]
+                    except Exception:
+                        pass
                     return [res]
                 elif isinstance(res, list):
-                    return res
+                    cleaned = []
+                    for item in res:
+                        if isinstance(item, str) and (item.startswith("[") or item.startswith('"[')):
+                            try:
+                                inner = json.loads(item)
+                                if isinstance(inner, str):
+                                    inner = json.loads(inner)
+                                if isinstance(inner, list):
+                                    cleaned.extend([str(x) for x in inner])
+                                    continue
+                                elif isinstance(inner, str):
+                                    cleaned.append(str(inner))
+                                    continue
+                            except Exception:
+                                pass
+                        cleaned.append(str(item))
+                    return cleaned
             except Exception:
                 pass
         return [self.role] if self.role else []
@@ -118,8 +140,8 @@ class ProductEntity(Base):
     units_json = Column(UnicodeText, nullable=True)
     packaging_specification = Column(Unicode(255), nullable=True)
     images_json = Column(UnicodeText, nullable=True)
-    status = Column(String(50), default="active")
     is_batch_managed = Column(Boolean, default=False)
+    status = Column(String(50), default="active")
     min_stock = Column(Integer, default=10, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 

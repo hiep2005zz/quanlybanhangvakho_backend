@@ -39,7 +39,7 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
-    "avatar_url": null
+    "avatar_url": "/uploads/avatars/sales_manager_23bee469a45e_square.png"
   },
   "sales": {
     "id": 3,
@@ -60,7 +60,7 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
-    "avatar_url": null
+    "avatar_url": "/uploads/avatars/sales_aed5c6c4b390_square.png"
   },
   "kho": {
     "id": 4,
@@ -152,9 +152,9 @@
     "full_name": "trahhuy",
     "email": "tranngochuy2509066@gmail.com",
     "phone": "0936716131",
-    "role": "sales_manager",
+    "role": "customer",
     "roles": [
-      "sales_manager"
+      "customer"
     ],
     "hashed_password": "$2b$12$RoDAZOGYCExiRfeD735pZesoI.gVOshCTm4W93qBEmW5jMBaver/m",
     "branch": "Kho Tổng Hà Nội",

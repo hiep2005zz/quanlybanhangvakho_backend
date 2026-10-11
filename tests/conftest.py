@@ -233,8 +233,8 @@ def reset_test_state():
         from app.models.entities import WarehouseStockEntity
         for ws in cleanup_db.query(WarehouseStockEntity).all():
             ws.reserved_stock = 0
-            if ws.actual_stock is None or ws.actual_stock < 150:
-                ws.actual_stock = 150
+            if ws.actual_stock is None or ws.actual_stock > 150 or ws.actual_stock < 50:
+                ws.actual_stock = 120
         cleanup_db.commit()
 
         from app.models.entities import DealerEntity

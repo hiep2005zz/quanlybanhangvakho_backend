@@ -65,6 +65,10 @@ def _ensure_legacy_columns(bind=engine):
             "images_json": ("TEXT", "NVARCHAR(MAX)"),
             "status": ("VARCHAR(50) DEFAULT 'active'", "NVARCHAR(50) DEFAULT 'active'"),
             "is_batch_managed": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
+            "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
+        },
+        "warehouse_stocks": {
+            "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
         },
         "dealers": {
             "max_debt_days": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
@@ -93,6 +97,7 @@ def _ensure_legacy_columns(bind=engine):
         },
         "categories": {
             "code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
+            "parent_id": ("INTEGER NULL", "INT NULL"),
             "product_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
             "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
         },
@@ -105,6 +110,10 @@ def _ensure_legacy_columns(bind=engine):
             "discrepancy_items_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
             "cancelled_by": ("VARCHAR(100)", "NVARCHAR(100)"),
             "cancelled_at": ("DATETIME", "DATETIME"),
+        },
+        "discount_tiers": {
+            "discount_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "discount_type": ("VARCHAR(20) DEFAULT 'percent'", "NVARCHAR(20) DEFAULT 'percent'"),
         },
     }
     inspector = inspect(bind)
@@ -163,6 +172,14 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (products.min_stock): {ex}")
+
+            ws_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(warehouse_stocks)")).fetchall()]
+            if ws_cols and "min_stock" not in ws_cols:
+                try:
+                    conn.execute(text("ALTER TABLE warehouse_stocks ADD COLUMN min_stock INTEGER DEFAULT 10;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (warehouse_stocks.min_stock): {ex}")
 
             dealer_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(dealers)")).fetchall()]
             if "customer_group" not in dealer_cols:
@@ -247,7 +264,7 @@ def init_db():
             if pbi_cols:
                 if "sale_price" not in pbi_cols:
                     try:
-                        conn.execute(text("ALTER TABLE price_book_items ADD COLUMN sale_price REAL DEFAULT 0.0;"))
+                        conn.execute(text("ALTER TABLE price_book_items ADD COLUMN sale_price REAL;"))
                         conn.commit()
                     except Exception as ex:
                         print(f"SQLite migration notice (price_book_items.sale_price): {ex}")
@@ -258,20 +275,12 @@ def init_db():
                     except Exception as ex:
                         print(f"SQLite migration notice (price_book_items.floor_price): {ex}")
 
-            prod_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(products)")).fetchall()]
-            if prod_cols and "floor_price" not in prod_cols:
+            if "floor_price" not in product_cols:
                 try:
                     conn.execute(text("ALTER TABLE products ADD COLUMN floor_price REAL DEFAULT 0.0;"))
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (products.floor_price): {ex}")
-            ws_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(warehouse_stocks)")).fetchall()]
-            if ws_cols and "min_stock" not in ws_cols:
-                try:
-                    conn.execute(text("ALTER TABLE warehouse_stocks ADD COLUMN min_stock INTEGER DEFAULT 10;"))
-                    conn.commit()
-                except Exception as ex:
-                    print(f"SQLite migration notice (warehouse_stocks.min_stock): {ex}")
         else:
             for sql_statement in [
                 "IF COL_LENGTH('users', 'avatar_url') IS NULL ALTER TABLE users ADD avatar_url NVARCHAR(500);",
@@ -284,55 +293,75 @@ def init_db():
                 "IF COL_LENGTH('inventory_transactions', 'conversion_rate') IS NULL ALTER TABLE inventory_transactions ADD conversion_rate FLOAT DEFAULT 1.0;",
                 "IF COL_LENGTH('inventory_transactions', 'base_quantity') IS NULL ALTER TABLE inventory_transactions ADD base_quantity FLOAT DEFAULT 0.0;",
                 "IF COL_LENGTH('dealers', 'customer_group') IS NULL ALTER TABLE dealers ADD customer_group NVARCHAR(100) DEFAULT N'Đại lý cấp 1';",
-                "IF COL_LENGTH('dealers', 'status') IS NULL ALTER TABLE dealers ADD status NVARCHAR(50) DEFAULT N'Đang hoạt động';",
+                "IF COL_LENGTH('dealers', 'status') IS NULL ALTER TABLE dealers ADD status VARCHAR(20) DEFAULT 'ACTIVE';",
                 "IF COL_LENGTH('dealers', 'region') IS NULL ALTER TABLE dealers ADD region NVARCHAR(100);",
                 "IF COL_LENGTH('dealers', 'lock_reason') IS NULL ALTER TABLE dealers ADD lock_reason NVARCHAR(500);",
                 "IF COL_LENGTH('dealers', 'locked_at') IS NULL ALTER TABLE dealers ADD locked_at DATETIME;",
                 "IF COL_LENGTH('dealers', 'locked_by') IS NULL ALTER TABLE dealers ADD locked_by VARCHAR(50);",
+                "IF COL_LENGTH('dealers', 'max_debt_days') IS NULL ALTER TABLE dealers ADD max_debt_days INT DEFAULT 30;",
                 "IF COL_LENGTH('price_books', 'version') IS NULL ALTER TABLE price_books ADD version INT DEFAULT 1;",
                 "IF COL_LENGTH('price_books', 'is_locked') IS NULL ALTER TABLE price_books ADD is_locked BIT DEFAULT 0;",
                 "IF COL_LENGTH('price_book_items', 'sale_price') IS NULL ALTER TABLE price_book_items ADD sale_price FLOAT DEFAULT 0.0;",
                 "IF COL_LENGTH('price_book_items', 'floor_price') IS NULL ALTER TABLE price_book_items ADD floor_price FLOAT DEFAULT 0.0;",
+                "IF COL_LENGTH('discount_tiers', 'discount_amount') IS NULL ALTER TABLE discount_tiers ADD discount_amount FLOAT DEFAULT 0.0;",
+                "IF COL_LENGTH('discount_tiers', 'discount_type') IS NULL ALTER TABLE discount_tiers ADD discount_type NVARCHAR(20) DEFAULT 'percent';",
             ]:
                 try:
                     conn.execute(text(sql_statement))
                     conn.commit()
                 except Exception as ex:
-                    print(f"Migration notice: {ex}")
+                    print(f"SQL Server migration notice ({sql_statement[:35]}...): {ex}")
+
     db = SessionLocal()
     try:
-        # 1. Seed Users nếu bảng đang trống
+        # 1. Seed Users nếu chưa có
         if db.query(UserEntity).count() == 0:
             print("Seeding initial users...")
-            # Kiểm tra xem có file users_data.json để migrate dữ liệu cũ không
-            json_path = os.path.join(os.path.dirname(__file__), "..", "models", "users_data.json")
-            if os.path.exists(json_path):
-                with open(json_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    for k, u in data.items():
-                        user_obj = UserEntity(
-                            id=u.get("id"),
-                            username=u.get("username"),
-                            full_name=u.get("full_name"),
-                            email=u.get("email"),
-                            phone=u.get("phone"),
-                            role=u.get("role"),
-                            roles_json=json.dumps(u.get("roles", [u.get("role")])),
-                            hashed_password=u.get("hashed_password"),
-                            branch=u.get("branch", "Kho Tổng Hà Nội"),
-                            is_active=u.get("is_active", True),
-                            status=u.get("status", "ACTIVE"),
-                            lock_reason=u.get("lock_reason"),
-                            failed_attempts=u.get("failed_attempts", 0),
-                            token_version=u.get("token_version", 1),
-                        )
-                        db.add(user_obj)
+            initial_users = [
+                UserEntity(
+                    id=1,
+                    username="admin",
+                    password_hash=get_password_hash("admin123"),
+                    full_name="Quản Trị Viên",
+                    role=Role.ADMIN.value,
+                    roles_json=json.dumps([Role.ADMIN.value]),
+                    is_active=True,
+                ),
+                UserEntity(
+                    id=2,
+                    username="sales_manager",
+                    password_hash=get_password_hash("manager123"),
+                    full_name="Trưởng Phòng Kinh Doanh",
+                    role=Role.SALES_MANAGER.value,
+                    roles_json=json.dumps([Role.SALES_MANAGER.value]),
+                    is_active=True,
+                ),
+                UserEntity(
+                    id=3,
+                    username="sales_user",
+                    password_hash=get_password_hash("sales123"),
+                    full_name="Nhân Viên Bán Hàng",
+                    role=Role.SALES.value,
+                    roles_json=json.dumps([Role.SALES.value]),
+                    is_active=True,
+                ),
+                UserEntity(
+                    id=4,
+                    username="warehouse_user",
+                    password_hash=get_password_hash("kho123"),
+                    full_name="Thủ Kho",
+                    role=Role.WAREHOUSE.value,
+                    roles_json=json.dumps([Role.WAREHOUSE.value]),
+                    is_active=True,
+                ),
+            ]
+            db.add_all(initial_users)
             db.commit()
             print("Users seeded successfully.")
 
-        # 1.5 Seed Categories nếu chưa có
+        # 2. Seed Categories nếu chưa có
         if db.query(CategoryEntity).count() == 0:
-            print("Seeding initial categories into SQL Server...")
+            print("Seeding initial categories...")
             initial_categories = [
                 CategoryEntity(id=1, name="Thời trang", parent_id=None),
                 CategoryEntity(id=2, name="Giày dép", parent_id=None),
@@ -345,7 +374,7 @@ def init_db():
             db.commit()
             print("Categories seeded successfully.")
 
-        # 2. Seed Products nếu chưa có
+        # 3. Seed Products nếu chưa có
         if db.query(ProductEntity).count() == 0:
             print("Seeding initial products...")
             initial_products = [
@@ -359,144 +388,77 @@ def init_db():
             db.commit()
             print("Products seeded successfully.")
 
-        # 3. Seed Dealers nếu chưa có
+        # 4. Seed Dealers nếu chưa có
         if db.query(DealerEntity).count() == 0:
             print("Seeding initial dealers...")
             initial_dealers = [
-                DealerEntity(id=1, code="DL001", name="Đại Lý Phân Phối Miền Bắc - Sao Mai", phone="0912345678", email="saomai@daily.vn", address="120 Cầu Giấy, Hà Nội", region="Hà Nội", assigned_sale_id=3, customer_group="dai_ly_cap_1", status="Đang hoạt động"),
-                DealerEntity(id=2, code="DL002", name="Đại Lý Thời Trang Tân Bình", phone="0987654321", email="tanbinh@daily.vn", address="45 Lý Thường Kiệt, TP. HCM", region="TP. HCM", assigned_sale_id=3, customer_group="dai_ly_cap_2", status="Đang hoạt động"),
-                DealerEntity(id=3, code="DL003", name="Đại Lý Tổng Hợp Hải Phòng", phone="0934567890", email="haiphong@daily.vn", address="88 Lạch Tray, Hải Phòng", region="Hải Phòng", assigned_sale_id=3, customer_group="dai_ly_cap_2", status="Đang hoạt động"),
-                DealerEntity(id=4, code="DL004", name="Công Ty TNHH Bán Lẻ An Phát", phone="0945678901", email="anphat@daily.vn", address="66 Nguyễn Huệ, Đà Nẵng", region="Đà Nẵng", assigned_sale_id=8, customer_group="khach_le", status="Tạm ngừng"),
-                DealerEntity(id=5, code="DL005", name="Khách Mua Lẻ Trực Tiếp", phone="0911223344", email="khachle@gmail.com", address="Số 10 Tràng Thi, Hoàn Kiếm, Hà Nội", region="Hà Nội", assigned_sale_id=8, customer_group="khach_le", status="Đang hoạt động"),
+                DealerEntity(
+                    id=1,
+                    code="DL001",
+                    name="Đại Lý Toàn Thắng",
+                    phone="0912345678",
+                    address="123 Lê Lợi, Quận 1, TP. HCM",
+                    debt=15000000.0,
+                    credit_limit=50000000.0,
+                    customer_group="Đại lý cấp 1",
+                    status="ACTIVE",
+                    region="Miền Nam",
+                    assigned_sale_id=3,
+                    assigned_sale_name="Nhân Viên Bán Hàng",
+                ),
+                DealerEntity(
+                    id=2,
+                    code="DL002",
+                    name="Đại Lý Minh Khang",
+                    phone="0987654321",
+                    address="456 Hoàng Hoa Thám, Ba Đình, Hà Nội",
+                    debt=42000000.0,
+                    credit_limit=60000000.0,
+                    customer_group="Đại lý cấp 2",
+                    status="ACTIVE",
+                    region="Miền Bắc",
+                    assigned_sale_id=3,
+                    assigned_sale_name="Nhân Viên Bán Hàng",
+                ),
+                DealerEntity(
+                    id=3,
+                    code="DL003",
+                    name="Cửa Hàng Thời Trang Hạnh Phúc",
+                    phone="0905123456",
+                    address="789 Nguyễn Văn Linh, Hải Châu, Đà Nẵng",
+                    debt=0.0,
+                    credit_limit=30000000.0,
+                    customer_group="Khách lẻ thân thiết",
+                    status="ACTIVE",
+                    region="Miền Trung",
+                    assigned_sale_id=2,
+                    assigned_sale_name="Trưởng Phòng Kinh Doanh",
+                ),
             ]
             db.add_all(initial_dealers)
             db.commit()
             print("Dealers seeded successfully.")
 
-        # 4. Seed Master Delivery Points nếu chưa có
-        if db.query(MasterDeliveryPointEntity).count() == 0:
-            print("Seeding master delivery points...")
-            existing_dealer_points = db.query(DealerDeliveryPointEntity).all()
-            seen_pts = set()
-            master_seeds = []
-            for dp in existing_dealer_points:
-                key = (dp.label.strip().lower(), dp.address.strip().lower())
-                if key not in seen_pts:
-                    seen_pts.add(key)
-                    master_seeds.append(
-                        MasterDeliveryPointEntity(
-                            label=dp.label,
-                            address=dp.address,
-                            receiver_name=dp.receiver_name or "",
-                            receiver_phone=dp.receiver_phone or "",
-                            route_note=dp.route_note or "",
-                            is_active=True,
-                        )
-                    )
-            if master_seeds:
-                db.add_all(master_seeds)
-                db.commit()
-                print(f"Seeded {len(master_seeds)} master delivery points.")
-
-        # 5. Seed Price Books nếu chưa có
-        if db.query(PriceBookEntity).count() == 0:
-            print("Seeding initial price books into Database...")
-            from datetime import timedelta, timezone, datetime
-            now_dt = datetime.now(timezone.utc)
-            
-            # Lấy các sản phẩm có sẵn
-            prods = db.query(ProductEntity).all()
-            
-            pb1 = PriceBookEntity(
-                code="BG-DL1",
-                name="Bảng giá Đại lý cấp 1",
-                customer_group="Dai_ly_cap_1",
-                valid_from=now_dt - timedelta(days=5),
-                valid_to=now_dt + timedelta(days=90),
-                status="ACTIVE",
-                version=1,
-                is_locked=False,
-                note="Bảng giá chuẩn dành cho Đại lý cấp 1 toàn quốc",
-                created_by="admin"
-            )
-            db.add(pb1)
-            db.flush()
-
-            for p in prods[:4]:
-                sale_p = round(p.sell_price * 0.85, -3) if p.sell_price else 100000.0
-                floor_p = round(p.sell_price * 0.75, -3) if p.sell_price else 80000.0
-                db.add(PriceBookItemEntity(
-                    price_book_id=pb1.id,
-                    product_id=p.id,
-                    sale_price=sale_p,
-                    floor_price=floor_p,
-                    price=sale_p,
-                    min_price=floor_p
-                ))
-
-            pb2 = PriceBookEntity(
-                code="BG-LE",
-                name="Bảng giá Khách lẻ",
-                customer_group="Khach_le",
-                valid_from=now_dt - timedelta(days=30),
-                valid_to=now_dt + timedelta(days=180),
-                status="ACTIVE",
-                version=1,
-                is_locked=False,
-                note="Bảng giá niêm yết bán lẻ",
-                created_by="admin"
-            )
-            db.add(pb2)
-            db.flush()
-
-            for p in prods[:4]:
-                sale_p = p.sell_price or 120000.0
-                floor_p = round((p.sell_price or 120000.0) * 0.9, -3)
-                db.add(PriceBookItemEntity(
-                    price_book_id=pb2.id,
-                    product_id=p.id,
-                    sale_price=sale_p,
-                    floor_price=floor_p,
-                    price=sale_p,
-                    min_price=floor_p
-                ))
-
-            pb3 = PriceBookEntity(
-                code="BG-DL2-OLD",
-                name="Bảng giá Đại lý cấp 2 (Đã khóa)",
-                customer_group="Dai_ly_cap_2",
-                valid_from=now_dt - timedelta(days=90),
-                valid_to=now_dt - timedelta(days=5),
-                status="EXPIRED",
-                version=1,
-                is_locked=True,
-                note="Bảng giá đã phát sinh đơn hàng, không được phép chỉnh sửa",
-                created_by="admin"
-            )
-            db.add(pb3)
-            db.flush()
-
-            for p in prods[:3]:
-                sale_p = round((p.sell_price or 150000.0) * 0.9, -3)
-                floor_p = round((p.sell_price or 150000.0) * 0.8, -3)
-                db.add(PriceBookItemEntity(
-                    price_book_id=pb3.id,
-                    product_id=p.id,
-                    sale_price=sale_p,
-                    floor_price=floor_p,
-                    price=sale_p,
-                    min_price=floor_p
-                ))
-
+        # 5. Seed Dealer Delivery Points nếu chưa có
+        if db.query(DealerDeliveryPointEntity).count() == 0:
+            print("Seeding initial dealer delivery points...")
+            points = [
+                DealerDeliveryPointEntity(dealer_id=1, name="Kho tổng Lê Lợi", address="123 Lê Lợi, Q1, TP. HCM", is_default=True),
+                DealerDeliveryPointEntity(dealer_id=1, name="Chi nhánh Bình Thạnh", address="45 Xô Viết Nghệ Tĩnh, Bình Thạnh, TP. HCM", is_default=False),
+                DealerDeliveryPointEntity(dealer_id=2, name="Cửa hàng Ba Đình", address="456 Hoàng Hoa Thám, Ba Đình, Hà Nội", is_default=True),
+                DealerDeliveryPointEntity(dealer_id=3, name="Cơ sở Hải Châu", address="789 Nguyễn Văn Linh, Đà Nẵng", is_default=True),
+            ]
+            db.add_all(points)
             db.commit()
-            print("Price books seeded successfully.")
+            print("Dealer delivery points seeded successfully.")
 
         # 6. Seed Suppliers nếu chưa có
         if db.query(SupplierEntity).count() == 0:
             print("Seeding initial suppliers...")
             initial_suppliers = [
-                SupplierEntity(id=1, code="NCC001", name="Công ty Cổ phần Nước Giải Khát Sabeco", tax_code="0300588569", contact_person="Nguyễn Văn Cung", payment_terms="Gối đầu 30 ngày", is_active=True),
-                SupplierEntity(id=2, code="NCC002", name="Công ty TNHH May Mặc An Phước", tax_code="0301438927", contact_person="Trần Thị May", payment_terms="Thanh toán ngay khi giao", is_active=True),
+                SupplierEntity(id=1, code="NCC001", name="Công ty Cổ phần May Việt Tiến", tax_code="0300123456", phone="02838640800", email="contact@viettien.com.vn", address="Số 7 Lê Minh Xuân, Phường 7, Tân Bình, TP. HCM", status="active"),
+                SupplierEntity(id=2, code="NCC002", name="Tập đoàn Dệt May Phong Phú", tax_code="0300987654", phone="02838963533", email="info@phongphu.com.vn", address="48 Tăng Nhơn Phú, Tăng Nhơn Phú B, TP. Thủ Đức, TP. HCM", status="active"),
+                SupplierEntity(id=3, code="NCC003", name="Công ty TNHH Giày Biti's Việt Nam", tax_code="0301112233", phone="02838753443", email="support@bitis.com.vn", address="22 Lý Chiêu Hoàng, Phường 10, Quận 6, TP. HCM", status="active"),
             ]
             db.add_all(initial_suppliers)
             db.commit()
@@ -632,96 +594,94 @@ def init_db():
         if db.query(UnitOfMeasureEntity).count() == 0:
             print("Seeding initial units of measure...")
             initial_uoms = [
-                UnitOfMeasureEntity(id=1, code="CAI", name="Cái", description="Đơn vị cơ sở cái"),
-                UnitOfMeasureEntity(id=2, code="LON", name="Lon", description="Đơn vị cơ sở lon"),
-                UnitOfMeasureEntity(id=3, code="LOC", name="Lốc", description="Quy cách lốc 6 cái/lon"),
-                UnitOfMeasureEntity(id=4, code="THUNG", name="Thùng", description="Quy cách thùng 24 cái/lon"),
-                UnitOfMeasureEntity(id=5, code="CHIEC", name="Chiếc", description="Đơn vị chiếc"),
-                UnitOfMeasureEntity(id=6, code="KIEN", name="Kiện", description="Quy cách kiện 10 chiếc"),
-                UnitOfMeasureEntity(id=7, code="HOP", name="Hộp", description="Đơn vị hộp"),
-                UnitOfMeasureEntity(id=8, code="KG", name="Kg", description="Đơn vị kilogam"),
+                UnitOfMeasureEntity(id=1, name="Cái", description="Đơn vị đếm cơ bản", is_active=True),
+                UnitOfMeasureEntity(id=2, name="Hộp", description="Hộp đóng gói nhỏ", is_active=True),
+                UnitOfMeasureEntity(id=3, name="Thùng", description="Thùng carton tiêu chuẩn", is_active=True),
+                UnitOfMeasureEntity(id=4, name="Bộ", description="Bộ sản phẩm hoàn chỉnh", is_active=True),
+                UnitOfMeasureEntity(id=5, name="Kiện", description="Kiện hàng lớn", is_active=True),
             ]
             db.add_all(initial_uoms)
             db.commit()
             print("Units of measure seeded successfully.")
 
-        # 9. Seed Discount Policies nếu chưa có
+        # 9. Seed Inventory Ledger nếu chưa có
+        if db.query(InventoryLedgerEntity).count() == 0:
+            print("Seeding initial inventory ledger...")
+            ledgers = [
+                InventoryLedgerEntity(
+                    warehouse_id=1,
+                    product_id=1,
+                    reference_code="DK-001",
+                    transaction_type="RECEIPT",
+                    quantity=120,
+                    previous_stock=0,
+                    new_stock=120,
+                    note="Tồn đầu kỳ hệ thống",
+                ),
+                InventoryLedgerEntity(
+                    warehouse_id=1,
+                    product_id=2,
+                    reference_code="DK-002",
+                    transaction_type="RECEIPT",
+                    quantity=45,
+                    previous_stock=0,
+                    new_stock=45,
+                    note="Tồn đầu kỳ hệ thống",
+                ),
+                InventoryLedgerEntity(
+                    warehouse_id=1,
+                    product_id=3,
+                    reference_code="DK-003",
+                    transaction_type="RECEIPT",
+                    quantity=30,
+                    previous_stock=0,
+                    new_stock=30,
+                    note="Tồn đầu kỳ hệ thống",
+                ),
+            ]
+            db.add_all(ledgers)
+            db.commit()
+            print("Inventory ledger seeded successfully.")
+
+        # 10. Seed Discount Policies nếu chưa có
         if db.query(DiscountPolicyEntity).count() == 0:
-            print("Seeding initial discount policies...")
-            default_policy = DiscountPolicyEntity(
-                code="CK-SL-001",
-                name="Chiết khấu sản lượng toàn hệ thống",
-                title="Tất cả sản phẩm",
-                category="ALL",
-                target_dealer_type="ALL",
-                target_group="all",
-                description="Giảm giá theo sản lượng đặt hàng áp dụng toàn hệ thống",
-                start_date="2026-01-01",
-                end_date="2026-12-31",
-                is_active=True,
-                status="active",
-                created_by="admin",
-            )
-            db.add(default_policy)
-            db.flush()
-
-            tier1 = DiscountTierEntity(
-                policy_id=default_policy.id,
-                min_quantity=100,
-                max_quantity=499,
-                discount_percent=5.0,
-            )
-            tier2 = DiscountTierEntity(
-                policy_id=default_policy.id,
-                min_quantity=500,
-                max_quantity=999,
-                discount_percent=10.0,
-            )
-            tier3 = DiscountTierEntity(
-                policy_id=default_policy.id,
-                min_quantity=1000,
-                max_quantity=None,
-                discount_percent=15.0,
-            )
-            db.add_all([tier1, tier2, tier3])
-
-            policy_cap1 = DiscountPolicyEntity(
-                code="CK-CAP1",
-                name="Chính sách chiết khấu - Đại lý Cấp 1",
-                title="Chính sách chiết khấu - Đại lý Cấp 1",
-                category="ALL",
-                target_dealer_type="agent_tier_1",
-                target_group="agent_tier_1",
-                description="Áp dụng cho đơn hàng đạt mốc sản lượng",
-                start_date="2026-10-01",
-                end_date="2026-12-31",
-                is_active=True,
-                status="active",
-                created_by="admin",
-            )
-            db.add(policy_cap1)
-            db.flush()
-
-            t1 = DiscountTierEntity(policy_id=policy_cap1.id, min_quantity=100, max_quantity=499, discount_percent=5.0)
-            t2 = DiscountTierEntity(policy_id=policy_cap1.id, min_quantity=500, max_quantity=999, discount_percent=8.0)
-            t3 = DiscountTierEntity(policy_id=policy_cap1.id, min_quantity=1000, max_quantity=None, discount_percent=12.0)
-            db.add_all([t1, t2, t3])
-
+            print("Seeding initial volume discount policies...")
+            policies = [
+                DiscountPolicyEntity(
+                    id=1,
+                    name="Chiết khấu số lượng Áo Thun Polo",
+                    description="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP001",
+                    product_id=1,
+                    is_active=True,
+                    tiers=[
+                        DiscountTierEntity(min_quantity=10, max_quantity=29, discount_percent=5.0),
+                        DiscountTierEntity(min_quantity=30, max_quantity=99, discount_percent=10.0),
+                        DiscountTierEntity(min_quantity=100, max_quantity=None, discount_percent=15.0),
+                    ]
+                ),
+                DiscountPolicyEntity(
+                    id=2,
+                    name="Chiết khấu số lượng Quần Jeans Slimfit",
+                    description="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP002",
+                    product_id=2,
+                    is_active=True,
+                    tiers=[
+                        DiscountTierEntity(min_quantity=20, max_quantity=49, discount_percent=8.0),
+                        DiscountTierEntity(min_quantity=50, max_quantity=None, discount_percent=12.0),
+                    ]
+                )
+            ]
+            db.add_all(policies)
             db.commit()
             print("Discount policies seeded successfully.")
 
-        from app.models.dealer import load_dealers_db
-        load_dealers_db()
-        from app.api.v1.endpoints.discounts import load_discount_policies
-        load_discount_policies(db)
-
-
+        print("Database initialization completed successfully.")
     except Exception as e:
+        print(f"Error during seeding: {e}")
         db.rollback()
-        print(f"Error during init_db: {e}")
-        raise e
     finally:
         db.close()
+
 
 if __name__ == "__main__":
     init_db()
