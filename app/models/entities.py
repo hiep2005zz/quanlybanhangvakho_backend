@@ -307,7 +307,6 @@ class WarehouseStockEntity(Base):
     def shortage_quantity(self) -> int:
         return max(0, (self.min_stock or 0) - (self.actual_stock or 0))
 
-
 class StockAuditEntity(Base):
     __tablename__ = "stock_audits"
 

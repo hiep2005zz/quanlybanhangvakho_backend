@@ -22,7 +22,7 @@ from app.schemas.auth import UserResponse
 from app.api.v1.endpoints.products import RAW_PRODUCTS
 from app.models.dealer import DEALERS_DB, save_dealers_db, load_dealers_db
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
-from app.models.entities import OrderEntity, DealerEntity, ProductEntity
+from app.models.entities import OrderEntity, ProductEntity, DealerEntity
 
 from app.models.user import USERS_DB
 from app.services.audit_service import log_audit_event
