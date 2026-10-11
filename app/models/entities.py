@@ -338,3 +338,31 @@ class StockAuditEntity(Base):
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 
+
+class StockTransferEntity(Base):
+    __tablename__ = "stock_transfers"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    from_warehouse_id = Column(String(50), nullable=False, index=True)
+    from_warehouse_name = Column(Unicode(255), nullable=False)
+    to_warehouse_id = Column(String(50), nullable=False, index=True)
+    to_warehouse_name = Column(Unicode(255), nullable=False)
+    status = Column(String(20), default="IN_TRANSIT", nullable=False)  # DRAFT | IN_TRANSIT | COMPLETED | CANCELLED
+    note = Column(UnicodeText, nullable=True)
+    total_items = Column(Integer, default=0)
+    total_transfer_qty = Column(Integer, default=0)
+    total_received_qty = Column(Integer, default=0)
+    discrepancy_qty = Column(Integer, default=0)
+    discrepancy_reason = Column(UnicodeText, nullable=True)
+    items_json = Column(UnicodeText, nullable=True)
+    created_by = Column(Unicode(100), nullable=False)
+    dispatched_by = Column(Unicode(100), nullable=True)
+    dispatched_at = Column(DateTime, nullable=True)
+    received_by = Column(Unicode(100), nullable=True)
+    received_at = Column(DateTime, nullable=True)
+    cancelled_by = Column(Unicode(100), nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+

@@ -147,6 +147,18 @@ def _supplier_has_receipts(db: Session, entity: SupplierEntity) -> bool:
     from app.models.entities import InventoryTransactionEntity
     from app.api.v1.endpoints.inventory import INVENTORY_TRANSACTIONS
 
+    # 1. Kiểm tra trực tiếp bảng phiếu nhập kho (GoodsReceiptNoteEntity)
+    try:
+        from app.models.goods_receipt import GoodsReceiptNoteEntity
+        has_grn = db.query(GoodsReceiptNoteEntity).filter(
+            GoodsReceiptNoteEntity.supplier_id == entity.id
+        ).first() is not None
+        if has_grn:
+            return True
+    except Exception:
+        pass
+
+    # 2. Kiểm tra trong InventoryTransactionEntity (nhật ký nhập kho)
     like_name = f"%{entity.name}%"
     like_code = f"%{entity.code}%"
     has_db = db.query(InventoryTransactionEntity).filter(
@@ -160,6 +172,7 @@ def _supplier_has_receipts(db: Session, entity: SupplierEntity) -> bool:
     if has_db:
         return True
 
+    # 3. Kiểm tra in-memory INVENTORY_TRANSACTIONS
     for tx in INVENTORY_TRANSACTIONS:
         tx_type = getattr(tx, "type", None) or (tx.get("type") if isinstance(tx, dict) else None)
         tx_reason = getattr(tx, "reason", "") or (tx.get("reason", "") if isinstance(tx, dict) else "")
@@ -184,6 +197,7 @@ class SupplierListDetailResponse(BaseModel):
 def list_suppliers(
     search: Optional[str] = Query(None, max_length=100, description="Tìm theo mã, tên, MST, người liên hệ"),
     status_filter: str = Query("all", alias="status", description="all | active | inactive"),
+    has_receipts: Optional[bool] = Query(None, description="Lọc theo đã có phiếu nhập hay chưa (true/false)"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_supplier_read),
 ):
@@ -218,6 +232,9 @@ def list_suppliers(
         item_dict = {c.name: getattr(r, c.name) for c in r.__table__.columns}
         item_dict["has_receipts"] = _supplier_has_receipts(db, r)
         detail_items.append(SupplierDetailResponse(**item_dict))
+
+    if has_receipts is not None:
+        detail_items = [r for r in detail_items if r.has_receipts == has_receipts]
 
     return SupplierListDetailResponse(
         items=detail_items,

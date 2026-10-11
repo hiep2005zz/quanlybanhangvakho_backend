@@ -222,6 +222,20 @@ def get_products(
     except Exception:
         pass
 
+    # Tự động tính tổng tồn kho thực tế từ tất cả các kho (WH01, WH02, WH03...)
+    wh_stock_map = {}
+    try:
+        from app.models.entities import WarehouseStockEntity
+        from sqlalchemy import func
+        wh_rows = (
+            db.query(WarehouseStockEntity.product_id, func.sum(WarehouseStockEntity.actual_stock))
+            .group_by(WarehouseStockEntity.product_id)
+            .all()
+        )
+        wh_stock_map = {pid: int(val) for pid, val in wh_rows if val is not None}
+    except Exception:
+        pass
+
     sanitized_items: list[ProductItem] = []
     total_stock = 0
     total_sell_val = 0.0
@@ -252,13 +266,20 @@ def get_products(
             if db_p.cost_price is not None and db_p.cost_price > 0:
                 cost_price = float(db_p.cost_price)
                 p["cost_price"] = cost_price
-            if db_p.stock is not None:
-                stock = int(db_p.stock)
-                p["stock"] = stock
             if db_p.code:
                 p["code"] = db_p.code
             if db_p.name:
                 p["name"] = db_p.name
+
+        # Ưu tiên tính tồn kho từ tổng thực tế tất cả các kho
+        if p["id"] in wh_stock_map:
+            stock = wh_stock_map[p["id"]]
+            p["stock"] = stock
+            if db_p and db_p.stock != stock:
+                db_p.stock = stock
+        elif db_p and db_p.stock is not None:
+            stock = int(db_p.stock)
+            p["stock"] = stock
 
         # Tự động đồng bộ từ bảng giá mới nhất nếu sản phẩm chưa có giá niêm yết hoặc giá sàn
         pid = p["id"]
