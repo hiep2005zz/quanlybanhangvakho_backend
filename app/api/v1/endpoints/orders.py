@@ -10,7 +10,7 @@ import json
 from uuid import uuid4
 from app.models.entities import DealerDeliveryPointEntity, OrderEntity, ProductEntity
 from typing import List, Optional
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy import func
@@ -22,6 +22,7 @@ from app.schemas.auth import UserResponse
 from app.api.v1.endpoints.products import RAW_PRODUCTS
 from app.models.dealer import DEALERS_DB, save_dealers_db, load_dealers_db
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
+from app.models.entities import OrderEntity, DealerEntity, ProductEntity
 
 from app.models.user import USERS_DB
 from app.services.audit_service import log_audit_event
@@ -103,6 +104,46 @@ class DebtLimitUpdateRequest(BaseModel):
     credit_limit: float = Field(..., ge=0)
     max_debt_days: int = Field(default=30, ge=0)
     reason: str = Field(..., min_length=2, max_length=255)
+
+class ReorderRequest(BaseModel):
+    product_id: Optional[int] = None
+    create_immediate: Optional[bool] = False
+    delivery_point_id: Optional[int] = None
+    note: Optional[str] = None
+
+class ReorderItemDetail(BaseModel):
+    product_id: int
+    product_code: str
+    product_name: str
+    quantity: int
+    price: float
+    old_price: Optional[float] = None
+    unit: str
+    unit_name: Optional[str] = None
+    conversion_rate: float
+    base_unit: str
+    stock: int
+    available_units: List[dict] = Field(default_factory=list)
+    price_note: Optional[str] = None
+
+class ExcludedItemDetail(BaseModel):
+    product_id: int
+    product_code: Optional[str] = None
+    product_name: str
+    reason: str
+
+class ReorderResponse(BaseModel):
+    order_id: int
+    order_code: str
+    dealer_id: int
+    dealer_name: str
+    valid_items: List[ReorderItemDetail]
+    excluded_items: List[ExcludedItemDetail]
+    total_valid: int
+    total_excluded: int
+    can_reorder: bool
+    message: str
+    created_order: Optional[OrderResponse] = None
 
 # Orders created through the API are stored in the database and this process-local cache.
 ORDERS_DB: dict[int, dict] = {}
@@ -239,6 +280,7 @@ def get_order_dealers(
             "name": dealer.name,
             "phone": dealer.phone,
             "address": dealer.address,
+            "assigned_sale_id": getattr(dealer, "assigned_sale_id", None),
             "status": getattr(dealer, "status", "Đang hoạt động"),
             "lock_reason": getattr(dealer, "lock_reason", None),
             "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
@@ -279,6 +321,250 @@ def get_order_dealer_credit_info(
                 detail="Tài khoản đại lý chỉ được phép xem thông tin công nợ của chính mình."
             )
     return calculate_dealer_debt_summary(dealer, ORDERS_DB)
+
+
+class PurchaseHistoryItem(BaseModel):
+    product_id: int
+    product_code: str
+    product_name: str
+    unit: str
+    conversion_rate: float = 1.0
+    price: float = 0.0
+    total_quantity: float = 0.0
+    order_count: int = 0
+    avg_quantity: float = 0.0
+    last_order_quantity: float = 0.0
+    last_purchased_date: Optional[str] = None
+
+
+class LastOrderItem(BaseModel):
+    product_id: int
+    product_code: str
+    product_name: str
+    quantity: float
+    price: float
+    unit: str
+    conversion_rate: float = 1.0
+
+
+class LastOrderSummary(BaseModel):
+    order_code: str
+    created_at: str
+    items: List[LastOrderItem] = Field(default_factory=list)
+
+
+class DealerPurchaseHistoryResponse(BaseModel):
+    dealer_id: int
+    dealer_name: str
+    period: str = "3 tháng gần nhất"
+    has_history: bool = False
+    total_orders_3_months: int = 0
+    items: List[PurchaseHistoryItem] = Field(default_factory=list)
+    last_order: Optional[LastOrderSummary] = None
+    last_order_items: List[LastOrderItem] = Field(default_factory=list)
+
+
+@router.get("/dealers/{dealer_id}/purchase-history", response_model=DealerPurchaseHistoryResponse)
+def get_dealer_purchase_history(
+    dealer_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    SCRUM-52 / SCRUM-57:
+    Lấy lịch sử mua hàng của đại lý trong 3 tháng gần nhất kèm số lượng bình quân,
+    và nhóm hàng đã mua ở đơn hàng lần trước.
+    Ràng buộc: Chỉ hiện với đại lý mà nhân viên được phân công.
+    """
+    # 1. Tra cứu đại lý trong DB hoặc in-memory
+    dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+    if not dealer:
+        dealer = DEALERS_DB.get(dealer_id)
+    if not dealer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy đại lý.",
+        )
+
+    # 2. Kiểm tra quyền hạn: Chỉ hiện với đại lý mà nhân viên được phân công
+    user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
+    if "admin" not in user_roles and "sales_manager" not in user_roles:
+        assigned_user = USERS_DB.get(current_user.username)
+        current_uid = assigned_user.id if assigned_user else current_user.id
+        dealer_assigned_id = getattr(dealer, "assigned_sale_id", None)
+        if dealer_assigned_id != current_uid:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Chỉ hiển thị với đại lý mà nhân viên được phân công.",
+            )
+
+    # 3. Lấy toàn bộ đơn hàng của đại lý (loại trừ đơn bị hủy)
+    all_orders = []
+    seen_codes = set()
+
+    db_orders = db.query(OrderEntity).filter(
+        OrderEntity.dealer_id == dealer_id,
+        OrderEntity.status != "CANCELLED",
+    ).all()
+    for o in db_orders:
+        if o.order_code not in seen_codes:
+            seen_codes.add(o.order_code)
+            all_orders.append(o)
+
+    for o_dict in ORDERS_DB.values():
+        if o_dict.get("dealer_id") == dealer_id and o_dict.get("status") != "CANCELLED":
+            code = o_dict.get("order_code")
+            if code and code not in seen_codes:
+                seen_codes.add(code)
+                all_orders.append(o_dict)
+
+    now = datetime.now(timezone.utc)
+    three_months_ago = now - timedelta(days=90)
+
+    def parse_created_at(o):
+        val = getattr(o, "created_at", None) if hasattr(o, "created_at") else (o.get("created_at") if isinstance(o, dict) else None)
+        if isinstance(val, datetime):
+            return val if val.tzinfo is not None else val.replace(tzinfo=timezone.utc)
+        if isinstance(val, str):
+            try:
+                dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                return now
+        return now
+
+    def get_order_items(o):
+        if hasattr(o, "items_json") and o.items_json:
+            try:
+                parsed = json.loads(o.items_json)
+                if isinstance(parsed, list):
+                    return parsed
+                if isinstance(parsed, dict):
+                    return parsed.get("items", [])
+            except Exception:
+                pass
+        if isinstance(o, dict):
+            if "items" in o and isinstance(o["items"], list):
+                return o["items"]
+            if "items_json" in o and o["items_json"]:
+                try:
+                    parsed = json.loads(o["items_json"])
+                    if isinstance(parsed, list):
+                        return parsed
+                    if isinstance(parsed, dict):
+                        return parsed.get("items", [])
+                except Exception:
+                    pass
+        return []
+
+    all_orders.sort(key=parse_created_at, reverse=True)
+
+    # 4. Xác định nhóm hàng đã mua lần trước (đơn hàng mới nhất)
+    last_order_obj = all_orders[0] if all_orders else None
+    last_order_summary = None
+    last_order_items: List[LastOrderItem] = []
+
+    product_map = {p.id: p for p in db.query(ProductEntity).all()}
+    for rp in RAW_PRODUCTS:
+        if rp.get("id") and rp["id"] not in product_map:
+            product_map[rp["id"]] = type("RawProd", (), rp)()
+
+    if last_order_obj:
+        raw_items = get_order_items(last_order_obj)
+        last_code = getattr(last_order_obj, "order_code", None) if hasattr(last_order_obj, "order_code") else last_order_obj.get("order_code", "")
+        last_dt = parse_created_at(last_order_obj).strftime("%Y-%m-%d %H:%M")
+        for it in raw_items:
+            pid = it.get("product_id")
+            if not pid:
+                continue
+            prod = product_map.get(pid)
+            p_code = getattr(prod, "code", f"SP{pid:03d}") if prod else f"SP{pid:03d}"
+            p_name = it.get("product_name") or (getattr(prod, "name", f"Sản phẩm #{pid}") if prod else f"Sản phẩm #{pid}")
+            last_item = LastOrderItem(
+                product_id=pid,
+                product_code=p_code,
+                product_name=p_name,
+                quantity=float(it.get("quantity", 1)),
+                price=float(it.get("price", 0.0)),
+                unit=it.get("unit") or it.get("unit_name") or getattr(prod, "base_unit", "Cái"),
+                conversion_rate=float(it.get("conversion_rate", 1.0)),
+            )
+            last_order_items.append(last_item)
+
+        last_order_summary = LastOrderSummary(
+            order_code=last_code,
+            created_at=last_dt,
+            items=last_order_items,
+        )
+
+    # 5. Thống kê các mặt hàng đại lý đã mua trong 3 tháng gần nhất kèm số lượng bình quân
+    recent_orders = [o for o in all_orders if parse_created_at(o) >= three_months_ago]
+    product_stats = {}
+    last_order_pids = {it.product_id: it.quantity for it in last_order_items}
+
+    for o in recent_orders:
+        o_date_str = parse_created_at(o).strftime("%Y-%m-%d")
+        items = get_order_items(o)
+        for it in items:
+            pid = it.get("product_id")
+            if not pid:
+                continue
+            qty = float(it.get("quantity", 0))
+            if pid not in product_stats:
+                prod = product_map.get(pid)
+                p_code = getattr(prod, "code", f"SP{pid:03d}") if prod else f"SP{pid:03d}"
+                p_name = it.get("product_name") or (getattr(prod, "name", f"Sản phẩm #{pid}") if prod else f"Sản phẩm #{pid}")
+                product_stats[pid] = {
+                    "product_id": pid,
+                    "product_code": p_code,
+                    "product_name": p_name,
+                    "unit": it.get("unit") or it.get("unit_name") or getattr(prod, "base_unit", "Cái"),
+                    "conversion_rate": float(it.get("conversion_rate", 1.0)),
+                    "price": float(it.get("price", 0.0)),
+                    "total_quantity": qty,
+                    "order_count": 1,
+                    "last_purchased_date": o_date_str,
+                    "last_order_quantity": last_order_pids.get(pid, qty),
+                }
+            else:
+                stat = product_stats[pid]
+                stat["total_quantity"] += qty
+                stat["order_count"] += 1
+                if not stat["last_purchased_date"]:
+                    stat["last_purchased_date"] = o_date_str
+
+    history_items = []
+    for pid, stat in product_stats.items():
+        avg = stat["total_quantity"] / stat["order_count"] if stat["order_count"] > 0 else 0
+        history_items.append(
+            PurchaseHistoryItem(
+                product_id=stat["product_id"],
+                product_code=stat["product_code"],
+                product_name=stat["product_name"],
+                unit=stat["unit"],
+                conversion_rate=stat["conversion_rate"],
+                price=stat["price"],
+                total_quantity=round(stat["total_quantity"], 2),
+                order_count=stat["order_count"],
+                avg_quantity=round(avg, 1),
+                last_order_quantity=round(stat["last_order_quantity"], 2),
+                last_purchased_date=stat["last_purchased_date"],
+            )
+        )
+
+    history_items.sort(key=lambda x: (x.order_count, x.total_quantity), reverse=True)
+
+    return DealerPurchaseHistoryResponse(
+        dealer_id=dealer.id,
+        dealer_name=dealer.name,
+        period="3 tháng gần nhất",
+        has_history=len(history_items) > 0,
+        total_orders_3_months=len(recent_orders),
+        items=history_items,
+        last_order=last_order_summary,
+        last_order_items=last_order_items,
+    )
+
 
 @router.get("", response_model=List[OrderResponse])
 def get_orders(
@@ -539,8 +825,8 @@ def create_order(
 
     # Lỗi tạo đơn chéo / tài khoản đại lý bị khóa:
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
-    if is_customer or current_user.role == "customer":
+    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+    if is_customer:
         customer_dealer = _get_customer_dealer(current_user)
         if customer_dealer:
             if _is_dealer_locked(customer_dealer):
@@ -548,11 +834,9 @@ def create_order(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Đại lý '{customer_dealer.name}' hiện đang bị KHÓA giao dịch. Không thể tạo đơn hàng mới."
                 )
-            if dealer.id != customer_dealer.id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Tài khoản đại lý chỉ được phép tạo đơn hàng cho chính mình."
-                )
+            # Bắt buộc gán dealer_id theo đúng tài khoản đại lý đang đăng nhập (chống gian lận đặt hộ)
+            data.dealer_id = customer_dealer.id
+            dealer = customer_dealer
         else:
             is_own = (dealer.id == current_user.id) or \
                      (dealer.email and dealer.email == current_user.email) or \
@@ -563,6 +847,7 @@ def create_order(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Tài khoản đại lý chỉ được phép tạo đơn hàng cho chính mình."
                 )
+            data.dealer_id = dealer.id
 
     selected_delivery_point_id = None
     if data.delivery_point_id is not None:
@@ -787,10 +1072,11 @@ def create_order(
             )
 
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
-    if is_customer or current_user.role == "customer" or "customer" in user_roles:
+    is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
+    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
+    if is_customer:
         requires_approval = True
-        approval_reasons.append("Đơn hàng do Đại lý tạo từ cổng đặt hàng (Cần quản lý duyệt)")
+        approval_reasons.append("Đơn hàng do Đại lý tự đặt từ Cổng Đại lý (Chờ nhân viên phụ trách xác nhận)")
 
     discount_amount = round(subtotal_amount * effective_pct / 100, 2)
     final_total_amount = subtotal_amount - discount_amount
@@ -806,7 +1092,9 @@ def create_order(
 
     order_code = f"ORD{order_id:05d}"
     now_str = datetime.now(timezone.utc).isoformat()
-    order_status = "PENDING_APPROVAL" if requires_approval else "CONFIRMED"
+    # Nếu là Customer (Đại lý tự đặt): Status BẮT BUỘC bị ép thành "PENDING_APPROVAL" (Chờ duyệt).
+    # Nếu là Sales hoặc Admin: Giữ nguyên logic hiện tại (nếu cần duyệt thì PENDING_APPROVAL, ngược lại CONFIRMED).
+    order_status = "PENDING_APPROVAL" if (is_customer or requires_approval) else "CONFIRMED"
     approval_reason = " | ".join(approval_reasons) if approval_reasons else None
 
     delivery_point_str = data.delivery_point
@@ -1126,10 +1414,11 @@ def create_sales_entry_order(
             )
 
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
-    if is_customer or current_user.role == "customer" or "customer" in user_roles:
+    is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
+    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
+    if is_customer:
         requires_approval = True
-        approval_reasons.append("Đơn hàng do Đại lý tạo từ cổng đặt hàng (Cần quản lý duyệt)")
+        approval_reasons.append("Đơn hàng do Đại lý tự đặt từ Cổng Đại lý (Chờ nhân viên phụ trách xác nhận)")
 
     discount_amount = round(subtotal_amount * effective_pct / 100, 2)
     final_total_amount = subtotal_amount - discount_amount
@@ -1141,7 +1430,7 @@ def create_sales_entry_order(
             f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
         )
 
-    order_status = "PENDING_APPROVAL" if requires_approval else "CONFIRMED"
+    order_status = "PENDING_APPROVAL" if (is_customer or requires_approval) else "CONFIRMED"
     approval_reason = " | ".join(approval_reasons) if approval_reasons else None
 
     created_at = datetime.now(timezone.utc)
@@ -1256,13 +1545,18 @@ def get_order_detail(
         (
             order
             for order in ORDERS_DB.values()
-            if order["order_code"].upper() == order_code.upper()
+            if order.get("order_code", "").upper() == order_code.upper() or str(order.get("id")) == str(order_code)
         ),
         None,
     )
     entity = db.query(OrderEntity).filter(
         func.upper(OrderEntity.order_code) == order_code.upper()
     ).first()
+
+    if entity is None and str(order_code).isdigit():
+        entity = db.query(OrderEntity).filter(OrderEntity.id == int(order_code)).first()
+        if entity is None and order_record is None:
+            order_record = ORDERS_DB.get(int(order_code))
 
     if entity is None and order_record is None:
         raise HTTPException(
@@ -1444,6 +1738,491 @@ def get_order_detail(
         "dealer_address": getattr(d, "address", None) if d else None,
     })
     return SalesOrderResponse(**detail_response)
+
+@router.get("/{order_code}/clone-data", response_model=SalesOrderResponse)
+def get_order_clone_data(
+    order_code: str,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value)),
+):
+    """Lấy dữ liệu để sao chép đơn. Tính lại giá theo bảng sản phẩm (products.sell_price) / price_book hiện tại và discount hiện hành, bỏ SP inactive."""
+    # 1. Load original order
+    original_order = get_order_detail(order_code, db, current_user).dict()
+    
+    # 2. Get current dealer
+    dealer_id = original_order.get("dealer_id")
+    dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+    if not dealer:
+        dealer = DEALERS_DB.get(dealer_id)
+        if not dealer:
+            dealer = next((dl for dl in DEALERS_DB.values() if str(dl.id) == str(dealer_id)), None)
+        
+    customer_group = getattr(dealer, "customer_group", "dai_ly_cap_1") if dealer else "dai_ly_cap_1"
+    
+    from app.api.v1.endpoints.price_books import get_utc_now
+    from app.api.v1.endpoints.products import _find_product_in_raw
+    
+    new_items = []
+    subtotal = 0.0
+    now = get_utc_now()
+    
+    # Normalize group
+    aliases = [customer_group]
+    if str(customer_group).lower() in ["cap_1", "dai_ly_cap_1", "đại lý cấp 1"]:
+        aliases = ["Dai_ly_cap_1", "CAP_1", "Đại lý cấp 1", "dai_ly_cap_1"]
+    elif str(customer_group).lower() in ["cap_2", "dai_ly_cap_2", "đại lý cấp 2"]:
+        aliases = ["Dai_ly_cap_2", "CAP_2", "Đại lý cấp 2", "dai_ly_cap_2"]
+    elif str(customer_group).lower() in ["retail", "khach_le", "khách lẻ"]:
+        aliases = ["Khach_le", "RETAIL", "Khách lẻ", "khach_le"]
+        
+    for item in original_order.get("items", []):
+        product_id = item.get("product_id")
+        sku = item.get("product_code") or item.get("code")
+        
+        # Check product entity & active status
+        prod_entity = None
+        if product_id:
+            try:
+                prod_entity = db.query(ProductEntity).filter(ProductEntity.id == int(product_id)).first()
+            except Exception:
+                pass
+        if not prod_entity and sku:
+            prod_entity = db.query(ProductEntity).filter(ProductEntity.code == sku).first()
+            if prod_entity:
+                product_id = prod_entity.id
+                item["product_id"] = product_id
+
+        raw_p = None
+        if product_id:
+            try:
+                raw_p = _find_product_in_raw(int(product_id))
+            except Exception:
+                raw_p = _find_product_in_raw(product_id)
+        if not raw_p and sku:
+            for p in RAW_PRODUCTS:
+                if p.get("code") == sku:
+                    raw_p = p
+                    break
+
+        prod_status = raw_p.get("status") if raw_p else (getattr(prod_entity, "status", "active") if prod_entity else "active")
+        
+        if str(prod_status).lower() in ["inactive", "ngừng kinh doanh", "ngung_kinh_doanh"]:
+            # Bỏ qua SP ngừng kinh doanh
+            continue
+            
+        # Đảm bảo có product_name và product_code
+        if prod_entity:
+            item["product_name"] = prod_entity.name
+            item["product_code"] = prod_entity.code
+        elif raw_p:
+            item["product_name"] = raw_p.get("name")
+            item["product_code"] = raw_p.get("code")
+
+        # 1. Bắt buộc truy vấn lại giá niêm yết hiện hành từ bảng sản phẩm (products.sell_price)
+        current_sell_price = None
+        if prod_entity and getattr(prod_entity, "sell_price", None) is not None and float(prod_entity.sell_price) > 0:
+            current_sell_price = float(prod_entity.sell_price)
+        elif raw_p and raw_p.get("sell_price") is not None and float(raw_p.get("sell_price")) > 0:
+            current_sell_price = float(raw_p.get("sell_price"))
+            
+        # Fallback từ price_book nếu sản phẩm chưa có sell_price
+        if current_sell_price is None:
+            try:
+                pb_item = db.query(PriceBookItemEntity).join(PriceBookEntity).filter(
+                    PriceBookItemEntity.product_id == (prod_entity.id if prod_entity else product_id),
+                    func.upper(PriceBookEntity.status) == "ACTIVE",
+                    PriceBookEntity.customer_group.in_(aliases),
+                    PriceBookEntity.valid_from <= now,
+                    PriceBookEntity.valid_to >= now
+                ).order_by(PriceBookEntity.id.desc()).first()
+                
+                if pb_item and pb_item.sale_price is not None and float(pb_item.sale_price) > 0:
+                    current_sell_price = float(pb_item.sale_price)
+            except Exception:
+                pass
+
+        if current_sell_price is None:
+            current_sell_price = float(item.get("unit_price") or item.get("price") or 0)
+                
+        # Ghi đè unit_price và price mới nhất vào item trả về
+        item["price"] = current_sell_price
+        item["unit_price"] = current_sell_price
+        qty = float(item.get("quantity", 0))
+        item["subtotal"] = round(current_sell_price * qty, 2)
+        subtotal += current_sell_price * qty
+        new_items.append(item)
+        
+    original_order["items"] = new_items
+    original_order["subtotal_amount"] = round(subtotal, 2)
+    
+    # 2. Áp dụng lại chính sách chiết khấu sản lượng (discounts) theo số lượng sản phẩm hiện có
+    discount_amount = 0.0
+    discount_percent = 0.0
+    try:
+        from app.api.v1.endpoints.discounts import resolve_best_discount
+        total_quantity = sum(float(it.get("quantity", 0)) for it in new_items)
+        discount_res = resolve_best_discount(
+            items=new_items,
+            dealer=dealer,
+            total_quantity=total_quantity,
+            subtotal_amount=subtotal,
+            db=db,
+        )
+        discount_percent = float(discount_res.get("discount_percent", 0.0))
+        discount_amount = float(discount_res.get("discount_amount", 0.0))
+        if discount_percent > 0 and discount_amount == 0:
+            discount_amount = round(subtotal * discount_percent / 100.0, 2)
+        original_order["discount_percent"] = discount_percent
+        original_order["discount_rate"] = discount_percent
+        original_order["discount_amount"] = round(discount_amount, 2)
+        original_order["applied_policy_code"] = discount_res.get("applied_policy_code")
+        original_order["applied_policy_name"] = discount_res.get("applied_policy_name")
+    except Exception:
+        original_order["discount_percent"] = 0.0
+        original_order["discount_rate"] = 0.0
+        original_order["discount_amount"] = 0.0
+        
+    original_order["total_amount"] = max(0.0, round(subtotal - discount_amount, 2))
+    original_order["status"] = "DRAFT" # Luôn ở trạng thái Nháp
+    original_order["id"] = 0 # Xoá id cũ
+    original_order["order_code"] = "" # Xoá mã đơn
+    
+    return SalesOrderResponse(**original_order)
+
+
+def _resolve_current_product_price(db: Session, dealer_id: int, product_id: int) -> tuple[float, Optional[float], Optional[str]]:
+    """
+    Quy tắc giá (Requirement 5):
+    - Không lấy giá từ OrderDetail của đơn cũ.
+    - Lấy giá hiện hành từ bảng giá có hiệu lực của nhóm khách hàng / đại lý nếu có.
+    - Nếu không có bảng giá hoặc sản phẩm không nằm trong bảng giá, lấy giá niêm yết hiện tại của sản phẩm.
+    """
+    now = datetime.now(timezone.utc)
+    dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first() if db else None
+    if not dealer:
+        dealer = DEALERS_DB.get(dealer_id)
+    cust_group = getattr(dealer, "customer_group", None) or "dai_ly_cap_1"
+
+    aliases = [cust_group]
+    if cust_group in ["CAP_1", "Dai_ly_cap_1", "Đại lý cấp 1", "dai_ly_cap_1"]:
+        aliases = ["dai_ly_cap_1", "Dai_ly_cap_1", "CAP_1", "Đại lý cấp 1"]
+    elif cust_group in ["CAP_2", "Dai_ly_cap_2", "Đại lý cấp 2", "dai_ly_cap_2"]:
+        aliases = ["dai_ly_cap_2", "Dai_ly_cap_2", "CAP_2", "Đại lý cấp 2"]
+    elif cust_group in ["RETAIL", "Khach_le", "Khách lẻ", "khach_le"]:
+        aliases = ["khach_le", "Khach_le", "RETAIL", "Khách lẻ"]
+
+    item_match = None
+    if db:
+        item_match = db.query(PriceBookItemEntity, PriceBookEntity).join(
+            PriceBookEntity, PriceBookItemEntity.price_book_id == PriceBookEntity.id
+        ).filter(
+            PriceBookEntity.customer_group.in_(aliases),
+            PriceBookEntity.status == "ACTIVE",
+            PriceBookEntity.valid_from <= now,
+            PriceBookEntity.valid_to >= now,
+            PriceBookItemEntity.product_id == product_id
+        ).order_by(PriceBookEntity.version.desc(), PriceBookEntity.created_at.desc()).first()
+
+    from app.api.v1.endpoints.products import _find_product_in_raw
+    raw_p = _find_product_in_raw(product_id)
+    prod_entity = db.query(ProductEntity).filter(ProductEntity.id == product_id).first() if db else None
+    listed_price = (prod_entity.sell_price if prod_entity and prod_entity.sell_price is not None else (raw_p.get("sell_price") if raw_p else 0.0)) or 0.0
+    floor_price = (prod_entity.floor_price if prod_entity and prod_entity.floor_price is not None else (raw_p.get("floor_price") if raw_p else 0.0)) or 0.0
+
+    if item_match:
+        pbi, pb_matched = item_match
+        sale_val = pbi.sale_price if (pbi.sale_price is not None and pbi.sale_price > 0) else (pbi.price if (pbi.price is not None and pbi.price > 0) else listed_price)
+        floor_val = pbi.floor_price if (pbi.floor_price is not None and pbi.floor_price > 0) else (pbi.min_price if (pbi.min_price is not None and pbi.min_price > 0) else floor_price or sale_val)
+
+        # Bắt buộc đồng bộ với giá niêm yết và giá sàn mới nhất từ sản phẩm nếu có
+        # (trừ khi bảng giá có version > 1 được chỉ định riêng biệt)
+        if listed_price > 0 and getattr(pb_matched, "version", 1) <= 1:
+            sale_val = listed_price
+            if floor_price > 0:
+                floor_val = floor_price
+
+        price_note = pb_matched.name or pb_matched.code
+        return float(sale_val or listed_price), float(floor_val) if floor_val is not None else None, price_note
+
+    return float(listed_price), float(floor_price or listed_price), "Giá niêm yết"
+
+
+def _check_product_reorder_status(db: Session, product_id: int) -> tuple[bool, Optional[str], Optional[dict]]:
+    """
+    Quy tắc trạng thái sản phẩm (Requirement 6):
+    - Kiểm tra sản phẩm có tồn tại và đang kinh doanh hay không.
+    - Trả về (is_active, reason, product_info)
+    """
+    from app.api.v1.endpoints.products import _find_product_in_raw
+    raw_p = _find_product_in_raw(product_id)
+    prod_entity = db.query(ProductEntity).filter(ProductEntity.id == product_id).first() if db else None
+
+    if not raw_p and not prod_entity:
+        return False, "Sản phẩm không còn tồn tại", None
+
+    # Xác định trạng thái
+    status_val = "active"
+    if prod_entity and prod_entity.status is not None:
+        status_val = prod_entity.status
+    if raw_p and raw_p.get("status") is not None:
+        if raw_p.get("status") == "inactive" or status_val == "inactive":
+            status_val = "inactive"
+        elif not prod_entity:
+            status_val = raw_p.get("status")
+
+    prod_code = prod_entity.code if prod_entity else (raw_p.get("code") if raw_p else f"SP#{product_id}")
+    prod_name = prod_entity.name if prod_entity else (raw_p.get("name") if raw_p else f"SP #{product_id}")
+
+    status_str = str(status_val).strip().lower()
+    if status_str in ["inactive", "ngừng kinh doanh", "ngừng giao dịch", "disabled", "tam_ngung"] or status_str != "active":
+        return False, "Sản phẩm đã ngừng kinh doanh", {
+            "id": product_id,
+            "code": prod_code,
+            "name": prod_name,
+        }
+
+    base_unit = (prod_entity.base_unit if prod_entity and prod_entity.base_unit else (raw_p.get("base_unit") if raw_p else "Cái")) or "Cái"
+    units_list = (prod_entity.units if prod_entity and prod_entity.units else (raw_p.get("units") if raw_p else [])) or []
+    stock = (prod_entity.stock if prod_entity and prod_entity.stock is not None else (raw_p.get("stock", 0) if raw_p else 0)) or 0
+
+    return True, None, {
+        "id": product_id,
+        "code": prod_code,
+        "name": prod_name,
+        "base_unit": base_unit,
+        "units": units_list,
+        "stock": stock,
+    }
+
+
+@router.post("/{order_id}/reorder", response_model=ReorderResponse)
+def reorder_order(
+    order_id: str,
+    payload: Optional[ReorderRequest] = None,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_permission(Permission.ORDER_WRITE.value))
+):
+    """
+    Đặt lại đơn hàng cũ (Reorder):
+    Hỗ trợ:
+    - Đặt lại toàn bộ một đơn hàng cũ (payload.product_id is None).
+    - Đặt lại riêng một dòng sản phẩm trong đơn hàng cũ (payload.product_id is not None).
+    - Kiểm tra quyền Đại lý, chặn Đại lý reorder đơn của Đại lý khác.
+    - Loại bỏ sản phẩm ngừng kinh doanh (status != 'active') hoặc không còn tồn tại.
+    - Lấy giá hiện hành của hệ thống, không dùng giá cũ.
+    - Giữ nguyên số lượng của đơn cũ.
+    - Trả về danh sách hợp lệ và danh sách bị loại kèm lý do chi tiết.
+    - Tùy chọn create_immediate=True để tạo luôn đơn hàng mới vào DB.
+    """
+    if payload is None:
+        payload = ReorderRequest()
+
+    load_dealers_db()
+
+    # 1. Tra cứu đơn hàng cũ (theo ID số hoặc mã đơn)
+    target_order_record = None
+    for o in ORDERS_DB.values():
+        if str(o.get("id")) == str(order_id) or str(o.get("order_code", "")).upper() == str(order_id).upper():
+            target_order_record = o
+            break
+
+    entity = None
+    if db:
+        try:
+            num_id = int(order_id)
+            entity = db.query(OrderEntity).filter(OrderEntity.id == num_id).first()
+        except (ValueError, TypeError):
+            pass
+        if not entity:
+            entity = db.query(OrderEntity).filter(func.upper(OrderEntity.order_code) == str(order_id).upper()).first()
+
+    if not entity and not target_order_record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đơn hàng '{order_id}'."
+        )
+
+    order_db_id = entity.id if entity else target_order_record["id"]
+    order_code_val = entity.order_code if entity else target_order_record["order_code"]
+    dealer_id = entity.dealer_id if entity else target_order_record["dealer_id"]
+    dealer_name = entity.dealer_name if entity else target_order_record["dealer_name"]
+    delivery_point_id = entity.delivery_point_id if entity else target_order_record.get("delivery_point_id")
+
+    # 2. Phân quyền Đại lý (Case 7): Chặn Đại lý reorder đơn của Đại lý khác
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+
+    if is_customer or current_user.role == "customer":
+        customer_dealer = _get_customer_dealer(current_user)
+        if customer_dealer:
+            if _is_dealer_locked(customer_dealer):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Đại lý '{customer_dealer.name}' hiện đang bị KHÓA giao dịch. Không thể đặt lại đơn hàng."
+                )
+            if dealer_id != customer_dealer.id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Tài khoản đại lý chỉ được phép đặt lại đơn hàng của chính mình."
+                )
+        else:
+            d_obj = DEALERS_DB.get(dealer_id)
+            is_own = (dealer_id == current_user.id) or \
+                     (d_obj and d_obj.email and d_obj.email == current_user.email) or \
+                     (d_obj and d_obj.phone and d_obj.phone == current_user.phone) or \
+                     (d_obj and d_obj.code and d_obj.code.lower() == current_user.username.lower())
+            if not is_own:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Tài khoản đại lý chỉ được phép đặt lại đơn hàng của chính mình."
+                )
+
+    # 3. Lấy danh sách sản phẩm trong đơn cũ
+    items = []
+    if entity and entity.items_json:
+        try:
+            stored_details = json.loads(entity.items_json)
+            if isinstance(stored_details, list):
+                items = stored_details
+            elif isinstance(stored_details, dict):
+                items = stored_details.get("items", [])
+        except Exception:
+            pass
+    if not items and target_order_record and target_order_record.get("items"):
+        items = target_order_record.get("items", [])
+
+    # Nếu đơn hàng cũ không có dòng sản phẩm nào (Case 9)
+    if not items:
+        return ReorderResponse(
+            order_id=order_db_id,
+            order_code=order_code_val,
+            dealer_id=dealer_id,
+            dealer_name=dealer_name,
+            valid_items=[],
+            excluded_items=[],
+            total_valid=0,
+            total_excluded=0,
+            can_reorder=False,
+            message="Đơn hàng cũ không có sản phẩm nào để đặt lại.",
+        )
+
+    # Nếu đặt lại một dòng hàng cụ thể (Requirement 4)
+    if payload.product_id is not None:
+        matched_items = [it for it in items if it.get("product_id") == payload.product_id]
+        if not matched_items:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy dòng sản phẩm có ID {payload.product_id} trong đơn hàng {order_code_val}."
+            )
+        items = matched_items
+
+    # 4. Kiểm tra từng sản phẩm
+    valid_items: list[ReorderItemDetail] = []
+    excluded_items: list[ExcludedItemDetail] = []
+
+    for item in items:
+        pid = item.get("product_id")
+        old_qty = int(item.get("quantity", 1))
+        old_price = float(item.get("price", 0.0))
+        item_unit = item.get("unit") or item.get("unit_name") or "Cái"
+        item_rate = float(item.get("conversion_rate", 1.0))
+        item_name = item.get("product_name") or f"SP #{pid}"
+        item_code = item.get("product_code")
+
+        is_active, exc_reason, prod_info = _check_product_reorder_status(db, pid)
+        if not is_active:
+            excluded_items.append(ExcludedItemDetail(
+                product_id=pid,
+                product_code=prod_info["code"] if prod_info else item_code,
+                product_name=prod_info["name"] if prod_info else item_name,
+                reason=exc_reason or "Sản phẩm đã ngừng kinh doanh"
+            ))
+            continue
+
+        # Lấy giá hiện hành (Requirement 5)
+        current_price, current_floor, price_note = _resolve_current_product_price(db, dealer_id, pid)
+
+        base_unit = prod_info.get("base_unit", "Cái")
+        raw_units = prod_info.get("units", [])
+        avail_units = [{"unit_name": base_unit, "conversion_rate": 1.0, "is_base": True}]
+        for u in raw_units:
+            if u.get("unit_name") != base_unit:
+                avail_units.append({
+                    "unit_name": u.get("unit_name"),
+                    "conversion_rate": float(u.get("conversion_rate", 1.0)),
+                    "is_base": False
+                })
+
+        valid_items.append(ReorderItemDetail(
+            product_id=pid,
+            product_code=prod_info["code"],
+            product_name=prod_info["name"],
+            quantity=old_qty,
+            price=current_price,
+            old_price=old_price,
+            unit=item_unit,
+            unit_name=item_unit,
+            conversion_rate=item_rate,
+            base_unit=base_unit,
+            stock=prod_info.get("stock", 0),
+            available_units=avail_units,
+            price_note=price_note
+        ))
+
+    total_valid = len(valid_items)
+    total_excluded = len(excluded_items)
+    can_reorder = total_valid > 0
+
+    if not can_reorder:
+        if payload.product_id is not None and total_excluded > 0:
+            message = f"Sản phẩm {excluded_items[0].product_name} hiện đã ngừng kinh doanh và không thể đặt lại."
+        else:
+            message = "Tất cả sản phẩm trong đơn hàng này hiện đã ngừng kinh doanh. Không thể đặt lại đơn."
+    else:
+        if total_excluded > 0:
+            message = "Đặt lại đơn thành công một phần. Một số sản phẩm đã bị loại do ngừng kinh doanh hoặc không còn tồn tại."
+        else:
+            message = "Đặt lại đơn thành công."
+
+    created_order_resp = None
+    if payload.create_immediate and can_reorder:
+        new_order_data = OrderCreate(
+            dealer_id=dealer_id,
+            items=[
+                OrderItemCreate(
+                    product_id=it.product_id,
+                    quantity=it.quantity,
+                    price=it.price,
+                    unit=it.unit,
+                    unit_name=it.unit_name,
+                    conversion_rate=it.conversion_rate,
+                )
+                for it in valid_items
+            ],
+            delivery_point_id=payload.delivery_point_id or delivery_point_id,
+            note=payload.note or f"Đặt lại từ đơn {order_code_val}",
+        )
+        created_order_resp = create_order(
+            data=new_order_data,
+            request=request,
+            db=db,
+            current_user=current_user,
+        )
+
+    return ReorderResponse(
+        order_id=order_db_id,
+        order_code=order_code_val,
+        dealer_id=dealer_id,
+        dealer_name=dealer_name,
+        valid_items=valid_items,
+        excluded_items=excluded_items,
+        total_valid=total_valid,
+        total_excluded=total_excluded,
+        can_reorder=can_reorder,
+        message=message,
+        created_order=created_order_resp,
+    )
 
 
 @router.post("/{order_code}/approve", response_model=OrderResponse)
