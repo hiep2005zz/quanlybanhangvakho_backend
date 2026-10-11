@@ -2794,15 +2794,25 @@ def approve_order(
     order_code: str,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value]))
+    current_user: UserResponse = Depends(get_current_user)
 ):
     """
-    Quyền duyệt đơn hàng khi bán dưới giá sàn: CHỈ sales_manager hoặc admin.
+    Quyền duyệt đơn hàng:
+    - sales_manager và admin: Toàn quyền duyệt mọi đơn hàng.
+    - sales: Được phép duyệt đơn hàng của đại lý do mình phụ trách (hoặc đơn do đại lý tự đặt).
+      (Chặn sales tự duyệt đơn bán dưới giá sàn / chiết khấu cao do chính sales tạo ra hoặc đơn của Admin).
+    - Các vai trò khác (kho, kế toán, mua hàng, customer): Bị chặn 403 Forbidden.
     Triển khai Giữ chỗ tồn kho khi Duyệt đơn (Inventory Reservation Transaction).
-    Chuyển đơn từ PENDING_APPROVAL sang APPROVED.
-    Hỗ trợ tra cứu theo cả order_code (ORD00001) lẫn order id (1).
     """
-    from app.services.inventory_reservation_service import approve_order_and_reserve_stock
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_admin_or_sm = any(r.lower() in ["admin", "sales_manager"] for r in user_roles)
+    is_sales = any(r.lower() == "sales" for r in user_roles)
+
+    if not (is_admin_or_sm or is_sales):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Bạn không có quyền duyệt đơn hàng."
+        )
 
     # Đảm bảo đơn hàng tồn tại trong DB nếu mới chỉ có trong ORDERS_DB
     db_order = db.query(OrderEntity).filter(
@@ -2841,8 +2851,47 @@ def approve_order(
             detail=f"Không tìm thấy đơn hàng có mã hoặc ID {order_code}."
         )
 
+    assigned_id = target.get("assigned_sale_id") if target else (db_order.assigned_sale_id if db_order else None)
+    created_by = target.get("created_by") if target else (db_order.created_by if db_order else "")
+    approval_reason = (target.get("approval_reason") if target else (db_order.approval_reason if db_order else "")) or ""
+    is_floor_price_order = "giá sàn" in approval_reason.lower()
+    is_discount_order = "chiết khấu" in approval_reason.lower()
+
+    if is_sales and not is_admin_or_sm:
+        # 1. Tuyệt đối không cho sales duyệt đơn do Admin hoặc Quản lý cấp trên tạo
+        creator_user = USERS_DB.get(created_by.lower()) if created_by else None
+        creator_roles = creator_user.get_roles() if creator_user else []
+        is_creator_admin_or_sm = any(r.lower() in ["admin", "sales_manager"] for r in creator_roles) or created_by.lower() in ["admin", "sales_manager"]
+        if is_creator_admin_or_sm:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Nhân viên kinh doanh không được phép duyệt đơn hàng do Quản trị viên (Admin) hoặc Quản lý kinh doanh tạo."
+            )
+
+        # 2. Nhân viên bán hàng CHỈ ĐƯỢC DUYỆT đại lý do mình phụ trách
+        if not assigned_id or assigned_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bạn chỉ có quyền duyệt đơn hàng của đại lý do mình phụ trách."
+            )
+
+        # 3. Nếu là đơn do sales tự tạo cần duyệt (giá sàn, chiết khấu, ...) -> Không được tự duyệt
+        if (is_floor_price_order or is_discount_order or "chờ duyệt" in approval_reason.lower()) and (created_by.lower() == current_user.username.lower() or created_by.lower() in ["sales", "tran_ban_hang"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Nhân viên kinh doanh không được phép tự duyệt đơn hàng bán dưới giá sàn của chính mình."
+            )
+
+        # 4. Nếu đơn vi phạm giá sàn hoặc chiết khấu vượt mức -> bắt buộc quản lý duyệt
+        if is_floor_price_order or is_discount_order:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Nhân viên kinh doanh không được phép duyệt đơn hàng bán dưới giá sàn hoặc chiết khấu cao. Chức năng này yêu cầu Quản lý kinh doanh duyệt."
+            )
+
     old_status = db_order.status if db_order else (target.get("status") if target else "PENDING_APPROVAL")
 
+    from app.services.inventory_reservation_service import approve_order_and_reserve_stock
     # Thực thi giữ chỗ tồn kho nguyên tử & duyệt đơn
     approved_order = approve_order_and_reserve_stock(
         db=db,
@@ -2855,7 +2904,7 @@ def approve_order(
     expires_iso = approved_order.reservation_expires_at.isoformat() if approved_order.reservation_expires_at else None
 
     if target:
-        target["status"] = "APPROVED"
+        target["status"] = "CONFIRMED"
         target["requires_approval"] = False
         target["approved_by"] = current_user.username
         target["approved_at"] = now_iso
@@ -2870,7 +2919,7 @@ def approve_order(
             "assigned_sale_id": approved_order.assigned_sale_id,
             "assigned_sale_name": approved_order.assigned_sale_name,
             "total_amount": approved_order.total_amount,
-            "status": "APPROVED",
+            "status": "CONFIRMED",
             "requires_approval": False,
             "approved_by": current_user.username,
             "approved_at": now_iso,
@@ -2886,7 +2935,7 @@ def approve_order(
         entity_type="Order",
         entity_id=approved_order.order_code,
         old_val={"status": old_status},
-        new_val={"status": "APPROVED", "reservation_expires_at": expires_iso},
+        new_val={"status": "CONFIRMED", "reservation_expires_at": expires_iso},
         reason="Duyệt đơn hàng và giữ chỗ tồn kho",
         request=request,
     )
