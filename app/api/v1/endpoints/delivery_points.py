@@ -17,7 +17,7 @@ router = APIRouter(prefix="/{dealer_id}/delivery-points")
 dealers_router = APIRouter()
 
 
-def _sync_to_master(db: Session, label: str, address: str, receiver_name: str = "", receiver_phone: str = "", route_note: str = ""):
+def _sync_to_master(db: Session, label: str, address: str, receiver_name: str = "", receiver_phone: str = "", route_note: str = "", reactivate: bool = False):
     lbl_clean = label.strip()
     addr_clean = address.strip()
     existing = db.scalars(
@@ -27,7 +27,7 @@ def _sync_to_master(db: Session, label: str, address: str, receiver_name: str = 
         )
     ).first()
     if existing:
-        if not existing.is_active:
+        if reactivate and not existing.is_active:
             existing.is_active = True
         if receiver_name and not existing.receiver_name:
             existing.receiver_name = receiver_name
@@ -75,10 +75,12 @@ def list_dealers(user=Depends(get_current_user)):
 @dealers_router.get("/all-delivery-points")
 def list_all_delivery_points(db: Session = Depends(get_db), user=Depends(get_current_user)):
     """Lấy danh sách tất cả các điểm giao hàng hiện có trong danh mục chung."""
-    # Tự động đồng bộ các điểm giao từ dealer_delivery_points vào master_delivery_points nếu chưa có
-    existing_dealers_pts = db.scalars(select(DealerDeliveryPointEntity)).all()
+    # Tự động đồng bộ các điểm giao đang hoạt động từ dealer_delivery_points vào master_delivery_points nếu chưa có
+    existing_dealers_pts = db.scalars(
+        select(DealerDeliveryPointEntity).where(DealerDeliveryPointEntity.is_active == True)  # noqa: E712
+    ).all()
     for dp in existing_dealers_pts:
-        _sync_to_master(db, dp.label, dp.address, dp.receiver_name, dp.receiver_phone, dp.route_note)
+        _sync_to_master(db, dp.label, dp.address, dp.receiver_name, dp.receiver_phone, dp.route_note, reactivate=False)
     db.commit()
 
     q = select(MasterDeliveryPointEntity).where(
@@ -109,7 +111,7 @@ def create_master_point(body: DeliveryPointCreate, db: Session = Depends(get_db)
         raise HTTPException(400, "Vui lòng nhập số điện thoại người nhận.")
     if not re.fullmatch(r"^\d{10}$", phone_clean):
         raise HTTPException(400, "Số điện thoại người nhận phải bao gồm đúng 10 chữ số.")
-    _sync_to_master(db, body.label, body.address, body.receiver_name or "", phone_clean, body.route_note or "")
+    _sync_to_master(db, body.label, body.address, body.receiver_name or "", phone_clean, body.route_note or "", reactivate=True)
     db.commit()
     item = db.scalars(select(MasterDeliveryPointEntity).where(
         MasterDeliveryPointEntity.label == body.label.strip(),
@@ -274,7 +276,7 @@ def create_point(dealer_id: int, body: DeliveryPointCreate,
         _clear_default(db, dealer_id)
     point = DealerDeliveryPointEntity(dealer_id=dealer_id, **data)
     db.add(point)
-    _sync_to_master(db, point.label, point.address, point.receiver_name, point.receiver_phone, point.route_note)
+    _sync_to_master(db, point.label, point.address, point.receiver_name, point.receiver_phone, point.route_note, reactivate=True)
     db.commit()
     db.refresh(point)
     return point
@@ -365,6 +367,12 @@ def delete_point(dealer_id: int, point_id: int,
         raise HTTPException(404, "Không tìm thấy điểm giao")
 
     used = any(o.get("delivery_point_id") == point_id for o in ORDERS_DB.values())
+    if not used:
+        from app.models.entities import OrderEntity
+        has_db_order = db.scalars(select(OrderEntity.id).where(OrderEntity.delivery_point_id == point_id)).first()
+        if has_db_order:
+            used = True
+
     was_default = point.is_default
     if used:
         point.is_active = False      # đã có đơn dùng -> ẩn đi, không xóa cứng
@@ -380,3 +388,15 @@ def delete_point(dealer_id: int, point_id: int,
             .order_by(DealerDeliveryPointEntity.id)).first()
         if nxt:
             nxt.is_default = True
+            dealer = DEALERS_DB.get(dealer_id)
+            if dealer and nxt.address:
+                dealer.address = nxt.address
+                if nxt.receiver_phone:
+                    dealer.phone = nxt.receiver_phone
+                try:
+                    from app.models.dealer import save_dealers_db
+                    save_dealers_db()
+                except Exception:
+                    pass
+
+    db.commit()

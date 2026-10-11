@@ -54,9 +54,11 @@ app.include_router(suppliers.router, prefix="/api/v1/suppliers", tags=["Supplier
 app.include_router(delivery_points.dealers_router, prefix="/api/v1/dealers", tags=["Dealers"])
 app.include_router(delivery_points.router, prefix="/api/v1/dealers", tags=["Delivery Points"])
 app.include_router(dealers.router, prefix="/api/v1/dealers", tags=["Dealers"])
-from app.api.v1.endpoints import price_books, discounts, goods_receipts, stock_audits
+from app.api.v1.endpoints import price_books, discounts, goods_receipts, stock_audits, pricing
 app.include_router(price_books.router, prefix="/api/v1/price-books", tags=["PriceBooks"])
 app.include_router(discounts.router, prefix="/api/v1/discounts", tags=["Discounts"])
+app.include_router(pricing.router, prefix="/api/v1/pricing", tags=["Pricing"])
+app.include_router(pricing.router, prefix="/api/v1/orders/pricing", tags=["Pricing"])
 app.include_router(goods_receipts.router, prefix="/api/v1/goods-receipts", tags=["Goods Receipts"])
 app.include_router(goods_receipts.router, prefix="/goods-receipts", tags=["Goods Receipts"])
 app.include_router(stock_audits.router, prefix="/api/v1/stock-audits", tags=["Stock Audits"])
