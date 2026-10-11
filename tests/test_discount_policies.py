@@ -400,5 +400,99 @@ def test_reject_overlapping_discount_tiers():
     assert "chồng chéo số lượng" in create_res.json()["detail"]
 
 
+def test_fixed_amount_per_unit_discount():
+    """
+    Kiểm tra chiết khấu tính theo số tiền trên đơn vị (đ/sản phẩm):
+    Ví dụ: Mua từ 50 sản phẩm trở lên, giảm 10.000 đ/sp.
+    """
+    admin_token = _admin_login()
+    payload = {
+        "code": "CK-AMT-UNIT-01",
+        "name": "Chiết khấu 10.000đ mỗi đơn vị",
+        "title": "Tất cả sản phẩm",
+        "category": "ALL",
+        "is_active": True,
+        "tiers": [
+            {
+                "min_quantity": 50,
+                "max_quantity": 99,
+                "discount_type": "amount",
+                "discount_amount": 10000.0,
+                "discount_percent": 0.0,
+            },
+            {
+                "min_quantity": 100,
+                "max_quantity": None,
+                "discount_type": "amount",
+                "discount_amount": 20000.0,
+                "discount_percent": 0.0,
+            },
+        ],
+    }
+    create_res = client.post("/api/v1/discounts", json=payload, headers={"Authorization": f"Bearer {admin_token}"})
+    assert create_res.status_code == 201, create_res.text
+    pol_id = create_res.json()["id"]
+
+    try:
+        calc_res = client.post(
+            "/api/v1/discounts/calculate",
+            json={"product_id": 1, "quantity": 60, "base_price": 100000.0},
+            headers={"Authorization": f"Bearer {admin_token}"}
+        )
+        assert calc_res.status_code == 200
+        data = calc_res.json()
+        assert data["applied_policy_code"] == "CK-AMT-UNIT-01"
+        assert data["total_discount_amount"] == 60 * 10000.0
+        assert data["unit_discount_amount"] == 10000.0
+        assert data["final_total_amount"] == 60 * 100000.0 - 60 * 10000.0
+    finally:
+        client.delete(f"/api/v1/discounts/{pol_id}", headers={"Authorization": f"Bearer {admin_token}"})
+
+
+def test_best_discount_rule_highest_benefit():
+    """
+    Quy tắc nghiệp vụ: Khi nhiều chính sách cùng áp dụng, hệ thống tự động
+    chọn chính sách có lợi nhất cho khách hàng (mức tiền chiết khấu cao nhất).
+    - Chính sách A: Giảm 5% (100 sp x 100.000đ x 5% = 500.000đ)
+    - Chính sách B: Giảm 15.000đ/sp (100 sp x 15.000đ = 1.500.000đ)
+    Hệ thống sẽ tự động chọn Chính sách B vì đem lại 1.500.000đ giảm giá cho khách.
+    """
+    admin_token = _admin_login()
+    payload_b = {
+        "code": "CK-BEST-RULE-B",
+        "name": "Chính sách ưu đãi đặc biệt 15.000đ/sp",
+        "title": "Tất cả sản phẩm",
+        "category": "ALL",
+        "is_active": True,
+        "tiers": [
+            {
+                "min_quantity": 100,
+                "max_quantity": None,
+                "discount_type": "amount",
+                "discount_amount": 15000.0,
+                "discount_percent": 0.0,
+            }
+        ],
+    }
+    create_b = client.post("/api/v1/discounts", json=payload_b, headers={"Authorization": f"Bearer {admin_token}"})
+    assert create_b.status_code == 201
+    pol_id_b = create_b.json()["id"]
+
+    try:
+        calc_res = client.post(
+            "/api/v1/discounts/calculate",
+            json={"product_id": 1, "quantity": 100, "base_price": 100000.0},
+            headers={"Authorization": f"Bearer {admin_token}"}
+        )
+        assert calc_res.status_code == 200
+        data = calc_res.json()
+        # So sánh giữa CK-SL-001 (5% = 500.000đ) và CK-BEST-RULE-B (1.500.000đ) -> Phải chọn CK-BEST-RULE-B
+        assert data["applied_policy_code"] == "CK-BEST-RULE-B"
+        assert data["total_discount_amount"] == 1500000.0
+    finally:
+        client.delete(f"/api/v1/discounts/{pol_id_b}", headers={"Authorization": f"Bearer {admin_token}"})
+
+
+
 
 

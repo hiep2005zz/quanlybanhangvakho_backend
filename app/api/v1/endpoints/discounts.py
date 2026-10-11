@@ -20,7 +20,9 @@ class DiscountTierSchema(BaseModel):
     id: Optional[Any] = None
     min_quantity: int = Field(..., ge=0)
     max_quantity: Optional[int] = None
-    discount_percent: float = Field(..., ge=0, le=100)
+    discount_percent: Optional[float] = Field(default=0.0, ge=0, le=100)
+    discount_amount: Optional[float] = Field(default=0.0, ge=0)
+    discount_type: Optional[str] = Field(default="percent")  # 'percent' hoặc 'amount'
 
 
 class DiscountPolicyCreate(BaseModel):
@@ -285,19 +287,31 @@ def resolve_best_discount(
         for tier in policy.get("tiers", []):
             min_q = tier.get("min_quantity", 0)
             max_q = tier.get("max_quantity")
-            tier_pct = float(tier.get("discount_percent", 0.0))
+            tier_pct = float(tier.get("discount_percent", 0.0) or 0.0)
+            tier_amt = float(tier.get("discount_amount", 0.0) or 0.0)
+            tier_type = str(tier.get("discount_type") or ("amount" if tier_amt > 0 and tier_pct == 0 else "percent")).lower()
 
             if qty_to_check >= min_q and (max_q is None or qty_to_check <= max_q):
-                tier_amount = round(subtotal_to_discount * tier_pct / 100.0, 2)
-                # Best price rule: Ưu tiên chính sách đem lại mức giảm tiền cao nhất
+                if tier_type == "amount" or (tier_amt > 0 and tier_pct == 0):
+                    # Chiết khấu tính theo số tiền trên đơn vị (đ/sp)
+                    tier_amount = round(qty_to_check * tier_amt, 2)
+                    tier_pct_effective = round((tier_amount / subtotal_to_discount * 100.0), 2) if subtotal_to_discount > 0 else 0.0
+                    tier_label = f"Từ {min_q}" + (f" đến {max_q}" if max_q else "+") + f" sp: Giảm {int(tier_amt):,}đ/sp"
+                else:
+                    # Chiết khấu tính theo phần trăm (%)
+                    tier_amount = round(subtotal_to_discount * tier_pct / 100.0, 2)
+                    tier_pct_effective = tier_pct
+                    tier_label = f"Từ {min_q}" + (f" đến {max_q}" if max_q else "+") + f" sp: Giảm {tier_pct}%"
+
+                # Best price rule: Ưu tiên chính sách đem lại mức giảm tiền cao nhất (có lợi nhất cho khách hàng)
                 if tier_amount > best_match["discount_amount"] or (
-                    tier_amount == best_match["discount_amount"] and tier_pct > best_match["discount_percent"]
+                    tier_amount == best_match["discount_amount"] and tier_pct_effective > best_match["discount_percent"]
                 ):
                     best_match["applied_policy_id"] = policy.get("id")
                     best_match["applied_policy_code"] = policy.get("code")
                     best_match["applied_policy_name"] = policy.get("name") or policy.get("title")
-                    best_match["applied_tier_label"] = f"Từ {min_q}" + (f" đến {max_q}" if max_q else "+") + f" sp: Giảm {tier_pct}%"
-                    best_match["discount_percent"] = tier_pct
+                    best_match["applied_tier_label"] = tier_label
+                    best_match["discount_percent"] = tier_pct_effective
                     best_match["discount_amount"] = tier_amount
 
     return best_match
@@ -341,6 +355,13 @@ def validate_discount_tiers(tiers: List[DiscountTierSchema]):
                 status_code=400,
                 detail=f"Số lượng tối đa ({t.max_quantity}) phải lớn hơn hoặc bằng số lượng tối thiểu ({t.min_quantity}).",
             )
+        t_type = t.discount_type or ("amount" if (t.discount_amount and t.discount_amount > 0 and (t.discount_percent is None or t.discount_percent == 0)) else "percent")
+        if t_type == "percent":
+            if t.discount_percent is not None and (t.discount_percent < 0 or t.discount_percent > 100):
+                raise HTTPException(status_code=400, detail="Tỷ lệ chiết khấu (%) phải từ 0% đến 100%.")
+        elif t_type == "amount":
+            if t.discount_amount is not None and t.discount_amount < 0:
+                raise HTTPException(status_code=400, detail="Số tiền chiết khấu trên đơn vị phải lớn hơn hoặc bằng 0.")
 
     sorted_tiers = sorted(tiers, key=lambda x: x.min_quantity)
     for i in range(1, len(sorted_tiers)):
@@ -397,11 +418,14 @@ def create_discount_policy(
     db.flush()
 
     for t in sorted(data.tiers, key=lambda x: x.min_quantity):
+        t_type = t.discount_type or ("amount" if (t.discount_amount and t.discount_amount > 0 and (t.discount_percent is None or t.discount_percent == 0)) else "percent")
         tier_entity = DiscountTierEntity(
             policy_id=new_policy.id,
             min_quantity=t.min_quantity,
             max_quantity=t.max_quantity,
-            discount_percent=t.discount_percent,
+            discount_percent=t.discount_percent or 0.0,
+            discount_amount=t.discount_amount or 0.0,
+            discount_type=t_type,
         )
         db.add(tier_entity)
 
@@ -450,11 +474,14 @@ def update_discount_policy(
         validate_discount_tiers(data.tiers)
         db.query(DiscountTierEntity).filter(DiscountTierEntity.policy_id == policy_id).delete()
         for t in sorted(data.tiers, key=lambda x: x.min_quantity):
+            t_type = t.discount_type or ("amount" if (t.discount_amount and t.discount_amount > 0 and (t.discount_percent is None or t.discount_percent == 0)) else "percent")
             tier_entity = DiscountTierEntity(
                 policy_id=policy.id,
                 min_quantity=t.min_quantity,
                 max_quantity=t.max_quantity,
-                discount_percent=t.discount_percent,
+                discount_percent=t.discount_percent or 0.0,
+                discount_amount=t.discount_amount or 0.0,
+                discount_type=t_type,
             )
             db.add(tier_entity)
 
