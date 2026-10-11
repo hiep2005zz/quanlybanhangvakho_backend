@@ -552,13 +552,18 @@ def init_db():
             initial_racks = []
             for z_code, z_name, z_id in [("KA", "Khu A", 1), ("KB", "Khu B", 2), ("KC", "Khu C", 3)]:
                 for a_idx in [1, 2, 3]:
-                    initial_racks.append(
-                        WarehouseRackEntity(warehouse_id=1, rack_code=f"{z_code}-D{a_idx}", rack_name=f"Dãy {a_idx}", rack_type="aisle", zone_id=z_id, max_capacity=1000.0, is_active=True)
-                    )
-                for t_idx in [1, 2]:
-                    initial_racks.append(
-                        WarehouseRackEntity(warehouse_id=1, rack_code=f"{z_code}-T{t_idx}", rack_name=f"Tầng {t_idx}", rack_type="rack", zone_id=z_id, max_capacity=500.0, is_active=True)
-                    )
+                    for t_idx in [1, 2]:
+                        initial_racks.append(
+                            WarehouseRackEntity(
+                                warehouse_id=1,
+                                rack_code=f"{z_code}-D{a_idx}-T{t_idx}",
+                                rack_name=f"Dãy {a_idx} - Tầng {t_idx}",
+                                rack_type="rack",
+                                zone_id=z_id,
+                                max_capacity=500.0,
+                                is_active=True
+                            )
+                        )
             initial_racks.extend([
                 WarehouseRackEntity(warehouse_id=2, rack_code="DN-D1", rack_name="Dãy 1", rack_type="aisle", max_capacity=1000.0, is_active=True),
                 WarehouseRackEntity(warehouse_id=2, rack_code="DN-T1", rack_name="Tầng 1", rack_type="rack", max_capacity=600.0, is_active=True),
