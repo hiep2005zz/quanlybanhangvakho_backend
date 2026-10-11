@@ -40,12 +40,11 @@ def test_accountant_blocked_from_create_sales_entry_order():
     assert res.status_code == 403, f"Expected 403 Forbidden but got {res.status_code}: {res.text}"
     assert "Truy cập bị từ chối" in res.text
 
-def test_accountant_can_read_orders_list():
-    """AC 3: Kế toán (Accountant) vẫn XEM được danh sách đơn hàng bình thường (Read-only)."""
+def test_accountant_blocked_from_read_orders_list():
+    """AC 3: Kế toán (Accountant) bị CHẶN truy cập danh sách đơn hàng (HTTP 403 Forbidden)."""
     token = get_token("ketoan")
     res = client.get("/api/v1/orders", headers={"Authorization": f"Bearer {token}"})
-    assert res.status_code == 200, f"Expected 200 OK but got {res.status_code}: {res.text}"
-    assert isinstance(res.json(), list)
+    assert res.status_code == 403, f"Expected 403 Forbidden but got {res.status_code}: {res.text}"
 
 def test_sales_and_admin_can_access_create_order():
     """Sales và Admin không bị chặn 403 khi gọi API tạo đơn."""

@@ -263,18 +263,22 @@ def require_sales_or_admin_role(current_user: UserResponse = Depends(get_current
     raw_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (current_user.roles or ([current_user.role] if current_user.role else []))
     cleaned_roles: set[str] = set()
     for r in raw_roles:
-        s = str(r).lower()
+        s = str(getattr(r, "value", r)).lower()
         cleaned_roles.add(s)
         for keyword in ["admin", "sales_manager", "sales", "customer", "agent"]:
             if keyword in s:
                 cleaned_roles.add(keyword)
     if current_user.role:
-        cleaned_roles.add(str(current_user.role).lower())
-    ALLOWED = {"sales", "sales_manager", "admin", "customer", "agent"}
-    if not (cleaned_roles & ALLOWED):
+        r_val = str(getattr(current_user.role, "value", current_user.role)).lower()
+        cleaned_roles.add(r_val)
+        for keyword in ["admin", "sales_manager", "sales", "customer", "agent"]:
+            if keyword in r_val:
+                cleaned_roles.add(keyword)
+    ALLOWED_ROLES = {"sales", "sales_manager", "admin", "customer", "agent"}
+    if not (cleaned_roles & ALLOWED_ROLES):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh, Quản trị hệ thống và Đại lý."
+            detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh, Đại lý và Quản trị hệ thống."
         )
     return current_user
 
