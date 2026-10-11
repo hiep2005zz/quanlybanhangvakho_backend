@@ -67,16 +67,15 @@ def test_muahang_strictly_blocked_from_orders(tokens):
     assert res_cancel.status_code == 403, f"Expected 403 for muahang cancel, got {res_cancel.status_code}"
 
 
-def test_read_only_roles_can_view_orders(tokens):
+def test_unauthorized_roles_strictly_blocked_from_orders(tokens):
     """
-    Nhóm Chỉ Xem (Read-Only): kho, warehouse_mgr, ketoan
-    Được hiển thị danh sách và chi tiết đơn hàng để theo dõi tiến độ.
+    Các vai trò không thuộc nhóm kinh doanh/quản trị (kho, warehouse_mgr, ketoan)
+    bị chặn hoàn toàn truy cập danh sách đơn hàng (403 Forbidden).
     """
     for role_name in ["kho", "warehouse_mgr", "ketoan"]:
         token = tokens[role_name]
         res = client.get("/api/v1/orders", headers={"Authorization": f"Bearer {token}"})
-        assert res.status_code == 200, f"Role {role_name} must be allowed to read orders list (got {res.status_code})"
-        assert isinstance(res.json(), list)
+        assert res.status_code == 403, f"Role {role_name} must be blocked from reading orders list (got {res.status_code})"
 
 
 def test_read_only_roles_blocked_from_cancelling(tokens):

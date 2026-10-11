@@ -67,7 +67,7 @@ def test_status_filter_and_kpi_consistency():
 
 def test_legacy_backward_compatibility():
     """AC-6: Gọi không có query params hoặc format=list phải trả về mảng danh sách cho client cũ."""
-    token = get_token("ketoan")
+    token = get_token("sales_manager")
     res = client.get("/api/v1/orders", headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 200
     assert isinstance(res.json(), list)

@@ -1,4 +1,4 @@
-﻿# backend/app/api/v1/endpoints/orders.py
+# backend/app/api/v1/endpoints/orders.py
 from __future__ import annotations
 """
 Order Management Endpoint:
@@ -12,7 +12,7 @@ from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEn
 from typing import List, Optional, Union
 from datetime import date, datetime, timezone
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, status as http_status, Request
 from sqlalchemy import func, case, or_, and_
 from sqlalchemy.orm import Session
 from app.db.init_db import _ensure_legacy_columns
@@ -548,11 +548,18 @@ def get_orders(
     Lấy danh sách đơn hàng / hóa đơn kèm bộ lọc đa tiêu chí và tổng hợp doanh thu.
     Áp dụng Zero-Trust Row-Level Security (RLS) cho vai trò sales.
     """
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (current_user.roles or [current_user.role])
     if current_user.username == "muahang" or "purchasing" in user_roles or current_user.role == "purchasing":
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
+            status_code=403,
             detail="Truy cập bị từ chối (403 Forbidden). Nhân viên mua hàng không có quyền truy cập đơn hàng bán."
+        )
+
+    allowed_roles = {Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value, Role.SALES.value, "admin", "sales_manager", "sales"}
+    if not any(r in allowed_roles for r in user_roles):
+        raise HTTPException(
+            status_code=403,
+            detail="Chức năng chỉ dành cho Quản trị viên, Quản lý kinh doanh và Nhân viên kinh doanh."
         )
 
     # 1. AC: Tự động chạy migration an toàn bổ sung cột SQLite (tránh lỗi 500)
