@@ -100,6 +100,10 @@ def _ensure_legacy_columns(bind=engine):
             "cancelled_by": ("VARCHAR(100)", "NVARCHAR(100)"),
             "cancelled_at": ("DATETIME", "DATETIME"),
         },
+        "discount_tiers": {
+            "discount_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "discount_type": ("VARCHAR(20) DEFAULT 'percent'", "NVARCHAR(20) DEFAULT 'percent'"),
+        },
     }
     inspector = inspect(bind)
     dialect_name = bind.dialect.name
@@ -288,6 +292,8 @@ def init_db():
                 "IF COL_LENGTH('price_book_items', 'floor_price') IS NULL ALTER TABLE price_book_items ADD floor_price FLOAT DEFAULT 0.0;",
                 "IF COL_LENGTH('products', 'min_stock') IS NULL ALTER TABLE products ADD min_stock INT DEFAULT 10;",
                 "IF COL_LENGTH('warehouse_stocks', 'min_stock') IS NULL ALTER TABLE warehouse_stocks ADD min_stock INT DEFAULT 10;",
+                "IF COL_LENGTH('discount_tiers', 'discount_amount') IS NULL ALTER TABLE discount_tiers ADD discount_amount FLOAT DEFAULT 0.0;",
+                "IF COL_LENGTH('discount_tiers', 'discount_type') IS NULL ALTER TABLE discount_tiers ADD discount_type NVARCHAR(20) DEFAULT 'percent';",
             ]:
                 try:
                     conn.execute(text(sql_statement))
@@ -590,6 +596,8 @@ def init_db():
 
         from app.models.dealer import load_dealers_db
         load_dealers_db()
+        from app.api.v1.endpoints.discounts import load_discount_policies
+        load_discount_policies(db)
 
 
     except Exception as e:
