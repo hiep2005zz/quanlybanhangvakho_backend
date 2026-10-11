@@ -260,9 +260,18 @@ def require_sales_or_admin_role(current_user: UserResponse = Depends(get_current
     - Đại lý đặt hàng (Role: customer)
     Các vai trò khác (kho, kế toán, mua hàng) bị CHẶN với HTTP 403 Forbidden.
     """
-    user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
+    raw_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (current_user.roles or ([current_user.role] if current_user.role else []))
+    cleaned_roles: set[str] = set()
+    for r in raw_roles:
+        s = str(r).lower()
+        cleaned_roles.add(s)
+        for keyword in ["admin", "sales_manager", "sales", "customer", "agent"]:
+            if keyword in s:
+                cleaned_roles.add(keyword)
+    if current_user.role:
+        cleaned_roles.add(str(current_user.role).lower())
     ALLOWED = {"sales", "sales_manager", "admin", "customer", "agent"}
-    if not any(r in ALLOWED for r in user_roles):
+    if not (cleaned_roles & ALLOWED):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh, Quản trị hệ thống và Đại lý."

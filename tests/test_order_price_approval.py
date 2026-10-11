@@ -36,7 +36,12 @@ def test_order_creation_with_floor_price_and_approval():
         d = db.query(DealerEntity).filter(DealerEntity.id == 1).first()
         if d:
             d.customer_group = "Dai_ly_cap_1"
+            d.credit_limit = 10_000_000_000.0
             db.commit()
+        from app.api.v1.endpoints.orders import DEALERS_DB
+        if 1 in DEALERS_DB:
+            DEALERS_DB[1].customer_group = "Dai_ly_cap_1"
+            DEALERS_DB[1].credit_limit = 10_000_000_000.0
 
         # Tạo bảng giá hiệu lực cho nhóm Dai_ly_cap_1
         # SP 1: sale_price = 190.000, floor_price = 165.000

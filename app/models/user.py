@@ -33,7 +33,23 @@ class UserInDB(BaseModel):
     def get_roles(self) -> List[str]:
         """Lấy danh sách các vai trò chuẩn hóa."""
         if self.roles and len(self.roles) > 0:
-            return list(self.roles)
+            cleaned: List[str] = []
+            for r in self.roles:
+                if isinstance(r, str) and (r.startswith("[") or r.startswith('"[')):
+                    try:
+                        parsed = json.loads(r)
+                        if isinstance(parsed, str):
+                            parsed = json.loads(parsed)
+                        if isinstance(parsed, list):
+                            cleaned.extend([str(x) for x in parsed])
+                            continue
+                        elif isinstance(parsed, str):
+                            cleaned.append(str(parsed))
+                            continue
+                    except Exception:
+                        pass
+                cleaned.append(str(r))
+            return cleaned
         if self.role:
             return [self.role]
         return [Role.SALES.value]

@@ -39,7 +39,7 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
-    "avatar_url": null
+    "avatar_url": "/uploads/avatars/sales_manager_23bee469a45e_square.png"
   },
   "sales": {
     "id": 3,
@@ -60,7 +60,7 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
-    "avatar_url": null
+    "avatar_url": "/uploads/avatars/sales_aed5c6c4b390_square.png"
   },
   "kho": {
     "id": 4,
@@ -68,9 +68,9 @@
     "full_name": "Lê Thủ Kho",
     "email": "kho@congty.vn",
     "phone": null,
-    "role": "warehouse",
+    "role": "purchasing",
     "roles": [
-      "warehouse"
+      "purchasing"
     ],
     "hashed_password": "$2b$12$icIg/t21TTrW4ojxnQOnu.5dN37KSiOR2ugi75LNsuF/uaCYXbZU6",
     "branch": "Kho Tổng Hà Nội",
@@ -167,6 +167,27 @@
     "token_version": 1,
     "avatar_url": null
   },
+  "test_portal_cust": {
+    "id": 101,
+    "username": "test_portal_cust",
+    "full_name": "Đại Lý Phân Phối Miền Bắc - Sao Mai",
+    "email": "saomai@daily.vn",
+    "phone": "0912345678",
+    "role": "customer",
+    "roles": [
+      "customer"
+    ],
+    "hashed_password": "$2b$12$kIsuAwprviB0RvHMz0x53.Ngu7bywkHEjFr8yaGFP95mzda8M9eTy",
+    "branch": "Đại lý phân phối",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  },
   "test_cust_lock_flow": {
     "id": 998,
     "username": "test_cust_lock_flow",
@@ -241,6 +262,27 @@
       "customer"
     ],
     "hashed_password": "$2b$12$beGxuYgW/7PnX1nL7q7KjOvtpq1x6GMjFU5259o12lV/KDwEEdkVS",
+    "branch": "Toàn quốc",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
+    "avatar_url": null
+  },
+  "dtc245180088": {
+    "id": 1002,
+    "username": "dtc245180088",
+    "full_name": "tranngochuy",
+    "email": "dtc245180088@ictu.edu.vn",
+    "phone": "0938273632",
+    "role": "customer",
+    "roles": [
+      "customer"
+    ],
+    "hashed_password": "$2b$12$s/3jVT0plH/PA66fhRh98.plo2bY8Y4bXDlEQJ6dKXOPfWgYv/YCi",
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",

@@ -193,6 +193,17 @@ def get_products(
       CHỈ ĐƯỢC PHÉP TRẢ VỀ khi người dùng có quyền 'cost:read' (Vai trò: Quản lý kinh doanh hoặc Quản trị hệ thống).
     - Đối với Thủ kho, Nhân viên kinh doanh, Kế toán...: Server BÓC TÁCH & GỠ BỎ HOÀN TOÀN các trường này (None).
     """
+    # 1. Phân lập luồng: Role Customer áp dụng Dynamic Pricing Engine (LEFT OUTER JOIN với bảng giá có hiệu lực)
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = (
+        (current_user.role and current_user.role.lower() == "customer")
+        or ("customer" in [r.lower() for r in user_roles] and not any(r.lower() in ["admin", "sales_manager", "sales", "accountant"] for r in user_roles))
+    )
+
+    if is_customer:
+        from app.services.pricing_service import get_products_for_customer
+        return get_products_for_customer(db=db, current_user=current_user)
+
     from app.models.entities import ProductEntity
 
     can_view_cost = current_user.can_view_cost or (Permission.COST_READ.value in current_user.permissions)
