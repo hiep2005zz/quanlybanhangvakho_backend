@@ -511,72 +511,96 @@ def init_db():
                 wh3.status = "Đang hoạt động"
             db.commit()
 
-        # 7.1 Seed Warehouse Locations (Khu vực / Dãy / Tầng / Ô chứa) nếu chưa có
-        if db.query(WarehouseLocationEntity).count() == 0:
-            print("Seeding initial warehouse locations...")
-            initial_locs = [
-                WarehouseLocationEntity(id=1, warehouse_id=1, location_code="HN-KA-D1-T1", location_name="Khu A - Dãy 1 - Tầng 1 (Ô 01)", zone="Khu A - Thời trang", aisle="Dãy 1", rack="Tầng 1", bin="Ô 01", max_capacity=500.0, is_active=True, status="Đang sử dụng", note="Chuyên áo sơ mi và polo"),
-                WarehouseLocationEntity(id=2, warehouse_id=1, location_code="HN-KA-D1-T2", location_name="Khu A - Dãy 1 - Tầng 2 (Ô 02)", zone="Khu A - Thời trang", aisle="Dãy 1", rack="Tầng 2", bin="Ô 02", max_capacity=500.0, is_active=True, status="Đang sử dụng", note="Dự phòng áo sơ mi"),
-                WarehouseLocationEntity(id=3, warehouse_id=1, location_code="HN-KB-D2-T1", location_name="Khu B - Dãy 2 - Tầng 1 (Ô 01)", zone="Khu B - Quần âu", aisle="Dãy 2", rack="Tầng 1", bin="Ô 01", max_capacity=800.0, is_active=True, status="Đang sử dụng", note="Quần tây và kaki"),
-                WarehouseLocationEntity(id=4, warehouse_id=1, location_code="HN-KB-D2-T2", location_name="Khu B - Dãy 2 - Tầng 2 (Ô 02)", zone="Khu B - Quần âu", aisle="Dãy 2", rack="Tầng 2", bin="Ô 02", max_capacity=800.0, is_active=True, status="Đang sử dụng", note="Hàng xuất buôn"),
-                WarehouseLocationEntity(id=5, warehouse_id=2, location_code="DN-K1-D1-T1", location_name="Khu 1 - Dãy 1 - Tầng 1", zone="Khu Miền Trung", aisle="Dãy 1", rack="Tầng 1", bin="Ô 01", max_capacity=600.0, is_active=True, status="Đang sử dụng", note="Kho trung chuyển Đà Nẵng"),
-                WarehouseLocationEntity(id=6, warehouse_id=3, location_code="HCM-KA-D1-T1", location_name="Khu A - Dãy 1 - Tầng 1", zone="Khu Nam Bộ", aisle="Dãy 1", rack="Tầng 1", bin="Ô 01", max_capacity=1000.0, is_active=True, status="Đang sử dụng", note="Kho phân phối Miền Nam"),
-            ]
-            db.add_all(initial_locs)
-            db.commit()
-            print("Warehouse locations seeded successfully.")
-
-        # 7.2 Seed Location Stocks nếu chưa có
-        if db.query(LocationStockEntity).count() == 0:
-            print("Seeding initial location stocks...")
-            initial_stocks = [
-                # SP1 nằm ở cả Tầng 1 và Tầng 2 của Kho Hà Nội
-                LocationStockEntity(warehouse_id=1, location_id=1, product_id=1, quantity=70),
-                LocationStockEntity(warehouse_id=1, location_id=2, product_id=1, quantity=30),
-                # SP2 nằm ở Khu B
-                LocationStockEntity(warehouse_id=1, location_id=3, product_id=2, quantity=45),
-                # SP3 nằm ở Dãy 2 Tầng 2
-                LocationStockEntity(warehouse_id=1, location_id=4, product_id=3, quantity=55),
-                # SP3 tại HCM
-                LocationStockEntity(warehouse_id=3, location_id=6, product_id=3, quantity=40),
-            ]
-            db.add_all(initial_stocks)
-            db.commit()
-            print("Location stocks seeded successfully.")
-
-        # 7.3 Seed Warehouse Zones (Khu vực lưu kho) nếu chưa có
+        # 7.1 Seed Warehouse Zones (Khu vực lưu kho) nếu chưa có
         if db.query(WarehouseZoneEntity).count() == 0:
             print("Seeding initial warehouse zones...")
             initial_zones = [
-                WarehouseZoneEntity(warehouse_id=1, zone_code="KHU-A", zone_name="Khu A - Thời trang", description="Khu vực lưu trữ các mặt hàng áo sơ mi, polo, thời trang nam", is_active=True),
-                WarehouseZoneEntity(warehouse_id=1, zone_code="KHU-B", zone_name="Khu B - Quần âu", description="Khu vực lưu trữ quần âu, kaki và đồ công sở", is_active=True),
-                WarehouseZoneEntity(warehouse_id=1, zone_code="KHU-C", zone_name="Khu C - Hàng phụ kiện", description="Khu vực lưu trữ thắt lưng, cà vạt, phụ kiện đóng hộp", is_active=True),
-                WarehouseZoneEntity(warehouse_id=2, zone_code="KHU-MT", zone_name="Khu Miền Trung", description="Khu trung chuyển hàng miền Trung", is_active=True),
-                WarehouseZoneEntity(warehouse_id=3, zone_code="KHU-MN", zone_name="Khu Nam Bộ", description="Khu phân phối thị trường miền Nam", is_active=True),
+                WarehouseZoneEntity(id=1, warehouse_id=1, zone_code="KHU-A", zone_name="Khu A", description="Khu vực lưu trữ thời trang, áo sơ mi, áo polo", is_active=True),
+                WarehouseZoneEntity(id=2, warehouse_id=1, zone_code="KHU-B", zone_name="Khu B", description="Khu vực lưu trữ quần âu, quần jeans, kaki", is_active=True),
+                WarehouseZoneEntity(id=3, warehouse_id=1, zone_code="KHU-C", zone_name="Khu C", description="Khu vực lưu trữ phụ kiện, áo khoác, đồ thể thao", is_active=True),
+                WarehouseZoneEntity(id=4, warehouse_id=2, zone_code="KHU-MT", zone_name="Khu Miền Trung", description="Khu trung chuyển hàng miền Trung", is_active=True),
+                WarehouseZoneEntity(id=5, warehouse_id=3, zone_code="KHU-MN", zone_name="Khu Nam Bộ", description="Khu phân phối thị trường miền Nam", is_active=True),
             ]
             db.add_all(initial_zones)
             db.commit()
             print("Warehouse zones seeded successfully.")
 
-        # 7.4 Seed Warehouse Racks (Dãy & Tầng/Kệ) nếu chưa có
+        # 7.2 Seed Warehouse Racks (Dãy & Tầng/Kệ theo từng Khu) nếu chưa có
         if db.query(WarehouseRackEntity).count() == 0:
             print("Seeding initial warehouse racks...")
-            initial_racks = [
-                WarehouseRackEntity(warehouse_id=1, rack_code="DAY-01", rack_name="Dãy 1", rack_type="aisle", max_capacity=1500.0, is_active=True),
-                WarehouseRackEntity(warehouse_id=1, rack_code="DAY-02", rack_name="Dãy 2", rack_type="aisle", max_capacity=1500.0, is_active=True),
-                WarehouseRackEntity(warehouse_id=1, rack_code="DAY-A1", rack_name="Dãy A1", rack_type="aisle", max_capacity=1200.0, is_active=True),
-                WarehouseRackEntity(warehouse_id=1, rack_code="TANG-01", rack_name="Tầng 1", rack_type="rack", max_capacity=500.0, is_active=True),
-                WarehouseRackEntity(warehouse_id=1, rack_code="TANG-02", rack_name="Tầng 2", rack_type="rack", max_capacity=500.0, is_active=True),
-                WarehouseRackEntity(warehouse_id=1, rack_code="TANG-03", rack_name="Tầng 3", rack_type="rack", max_capacity=500.0, is_active=True),
-                WarehouseRackEntity(warehouse_id=1, rack_code="KE-01", rack_name="Kệ 01", rack_type="rack", max_capacity=800.0, is_active=True),
+            initial_racks = []
+            for z_code, z_name, z_id in [("KA", "Khu A", 1), ("KB", "Khu B", 2), ("KC", "Khu C", 3)]:
+                for a_idx in [1, 2, 3]:
+                    initial_racks.append(
+                        WarehouseRackEntity(warehouse_id=1, rack_code=f"{z_code}-D{a_idx}", rack_name=f"Dãy {a_idx}", rack_type="aisle", zone_id=z_id, max_capacity=1000.0, is_active=True)
+                    )
+                for t_idx in [1, 2]:
+                    initial_racks.append(
+                        WarehouseRackEntity(warehouse_id=1, rack_code=f"{z_code}-T{t_idx}", rack_name=f"Tầng {t_idx}", rack_type="rack", zone_id=z_id, max_capacity=500.0, is_active=True)
+                    )
+            initial_racks.extend([
                 WarehouseRackEntity(warehouse_id=2, rack_code="DN-D1", rack_name="Dãy 1", rack_type="aisle", max_capacity=1000.0, is_active=True),
                 WarehouseRackEntity(warehouse_id=2, rack_code="DN-T1", rack_name="Tầng 1", rack_type="rack", max_capacity=600.0, is_active=True),
                 WarehouseRackEntity(warehouse_id=3, rack_code="HCM-D1", rack_name="Dãy 1", rack_type="aisle", max_capacity=2000.0, is_active=True),
                 WarehouseRackEntity(warehouse_id=3, rack_code="HCM-T1", rack_name="Tầng 1", rack_type="rack", max_capacity=1000.0, is_active=True),
-            ]
+            ])
             db.add_all(initial_racks)
             db.commit()
             print("Warehouse racks seeded successfully.")
+
+        # 7.3 Seed Warehouse Locations (Khu vực / Dãy / Tầng / Ô chứa đồng nhất) nếu chưa có
+        if db.query(WarehouseLocationEntity).count() == 0:
+            print("Seeding initial warehouse locations...")
+            initial_locs = []
+            loc_id_counter = 1
+            for z_letter, z_name in [("A", "Khu A"), ("B", "Khu B"), ("C", "Khu C")]:
+                for a_idx in [1, 2, 3]:
+                    for t_idx in [1, 2]:
+                        bin_str = f"Ô 0{t_idx}"
+                        initial_locs.append(
+                            WarehouseLocationEntity(
+                                id=loc_id_counter,
+                                warehouse_id=1,
+                                location_code=f"HN-K{z_letter}-D{a_idx}-T{t_idx}",
+                                location_name=f"{z_name} - Dãy {a_idx} - Tầng {t_idx} - {bin_str}",
+                                zone=z_name,
+                                aisle=f"Dãy {a_idx}",
+                                rack=f"Tầng {t_idx}",
+                                bin=bin_str,
+                                max_capacity=500.0,
+                                is_active=True,
+                                status="Đang sử dụng",
+                                note="",
+                            )
+                        )
+                        loc_id_counter += 1
+            initial_locs.append(WarehouseLocationEntity(id=loc_id_counter, warehouse_id=2, location_code="DN-K1-D1-T1", location_name="Khu 1 - Dãy 1 - Tầng 1 - Ô 01", zone="Khu Miền Trung", aisle="Dãy 1", rack="Tầng 1", bin="Ô 01", max_capacity=600.0, is_active=True, status="Đang sử dụng", note=""))
+            loc_id_counter += 1
+            initial_locs.append(WarehouseLocationEntity(id=loc_id_counter, warehouse_id=3, location_code="HCM-KA-D1-T1", location_name="Khu A - Dãy 1 - Tầng 1 - Ô 01", zone="Khu Nam Bộ", aisle="Dãy 1", rack="Tầng 1", bin="Ô 01", max_capacity=1000.0, is_active=True, status="Đang sử dụng", note=""))
+            db.add_all(initial_locs)
+            db.commit()
+            print("Warehouse locations seeded successfully.")
+
+        # 7.4 Seed Location Stocks (Mỗi vị trí có 2 sản phẩm khác nhau) nếu chưa có
+        if db.query(LocationStockEntity).count() == 0:
+            print("Seeding initial location stocks...")
+            pairs = [
+                (1, 2, 45, 35), (1, 3, 30, 40), (2, 4, 35, 25),
+                (3, 5, 40, 30), (1, 4, 35, 30), (2, 5, 40, 25),
+                (2, 1, 50, 30), (2, 3, 45, 35), (2, 4, 40, 35),
+                (2, 5, 45, 30), (3, 1, 35, 35), (4, 2, 40, 30),
+                (3, 5, 40, 35), (4, 1, 35, 30), (5, 2, 45, 25),
+                (3, 4, 30, 40), (5, 1, 45, 25), (4, 3, 40, 35),
+            ]
+            initial_stocks = []
+            for l_id in range(1, 19):
+                p1_id, p2_id, q1, q2 = pairs[(l_id - 1) % len(pairs)]
+                initial_stocks.append(LocationStockEntity(warehouse_id=1, location_id=l_id, product_id=p1_id, quantity=q1))
+                initial_stocks.append(LocationStockEntity(warehouse_id=1, location_id=l_id, product_id=p2_id, quantity=q2))
+            initial_stocks.append(LocationStockEntity(warehouse_id=3, location_id=20, product_id=3, quantity=40))
+            db.add_all(initial_stocks)
+            db.commit()
+            print("Location stocks seeded successfully.")
 
         # 8. Seed Units of Measure nếu chưa có
         if db.query(UnitOfMeasureEntity).count() == 0:

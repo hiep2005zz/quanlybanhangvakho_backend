@@ -296,3 +296,49 @@ def test_warehouse_master_data_zones_and_racks():
     del_zone = client.delete(f"/api/v1/warehouses/zones/{zone_id}", headers=admin_headers)
     assert del_zone.status_code == 200
 
+
+def test_zone_capacity_validation():
+    client = TestClient(app)
+    admin_token = get_auth_token(client, "admin", "123")
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    # Tạo một vị trí với sức chứa giới hạn trong Khu Test Capacity
+    create_loc_res = client.post("/api/v1/warehouses/1/locations", json={
+        "location_code": "HN-CAP-TEST-01",
+        "location_name": "Khu Sức Chứa - Vị trí 01",
+        "zone": "Khu Test Capacity",
+        "aisle": "Dãy 1",
+        "rack": "Tầng 1",
+        "bin": "Ô 01",
+        "max_capacity": 50,
+        "status": "Đang sử dụng",
+    }, headers=admin_headers)
+    assert create_loc_res.status_code == 201
+    loc_id = create_loc_res.json()["id"]
+
+    # 1. Gán số lượng hợp lệ (30 <= 50)
+    ok_assign = client.post("/api/v1/warehouses/locations/assign-product", json={
+        "location_id": loc_id,
+        "product_id": 1,
+        "quantity": 30,
+    }, headers=admin_headers)
+    assert ok_assign.status_code == 200
+
+    # 2. Gán số lượng vượt quá sức chứa khu vực (60 > 50) -> Phải bị chặn 400
+    over_assign = client.post("/api/v1/warehouses/locations/assign-product", json={
+        "location_id": loc_id,
+        "product_id": 1,
+        "quantity": 60,
+    }, headers=admin_headers)
+    assert over_assign.status_code == 400
+    detail = over_assign.json()["detail"]
+    assert "sức chứa" in detail.lower() or "kho đầy!" in detail.lower()
+
+    # Dọn dẹp: giải phóng về 0 rồi xóa
+    client.post("/api/v1/warehouses/locations/assign-product", json={
+        "location_id": loc_id,
+        "product_id": 1,
+        "quantity": 0,
+    }, headers=admin_headers)
+    client.delete(f"/api/v1/warehouses/locations/{loc_id}", headers=admin_headers)
+
