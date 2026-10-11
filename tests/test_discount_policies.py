@@ -18,18 +18,39 @@ def _admin_login() -> str:
 @pytest.fixture(autouse=True)
 def reset_test_stock():
     from app.core.database import SessionLocal
-    from app.models.entities import WarehouseStockEntity
+    from app.models.entities import WarehouseStockEntity, ProductEntity
     from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
     db = SessionLocal()
     try:
+        ws = db.query(WarehouseStockEntity).filter(
+            WarehouseStockEntity.warehouse_id == "WH01",
+            WarehouseStockEntity.product_id == 1
+        ).first()
+        if not ws:
+            ws = WarehouseStockEntity(
+                warehouse_id="WH01",
+                warehouse_name="Kho Tổng Hà Nội",
+                product_id=1,
+                actual_stock=10000.0,
+                reserved_stock=0.0
+            )
+            db.add(ws)
+        else:
+            ws.actual_stock = max(float(ws.actual_stock or 0), 10000.0)
+            ws.reserved_stock = 0.0
+
         stocks = db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id == 1).all()
         for s in stocks:
-            s.actual_stock = 1000.0
+            s.actual_stock = max(float(s.actual_stock or 0), 10000.0)
             s.reserved_stock = 0.0
 
-        p = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.code == "CK-SL-001").first()
-        if not p:
-            p = DiscountPolicyEntity(
+        p = db.query(ProductEntity).filter(ProductEntity.id == 1).first()
+        if p:
+            p.stock = max(float(p.stock or 0), 10000.0)
+
+        pol = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.code == "CK-SL-001").first()
+        if not pol:
+            pol = DiscountPolicyEntity(
                 code="CK-SL-001",
                 name="Chiết khấu sản lượng toàn hệ thống",
                 title="Tất cả sản phẩm",
@@ -41,14 +62,23 @@ def reset_test_stock():
                 start_date="2026-01-01",
                 end_date="2026-12-31",
             )
-            db.add(p)
+            db.add(pol)
             db.flush()
-            t = DiscountTierEntity(policy_id=p.id, min_quantity=100, max_quantity=499, discount_percent=5.0)
+            t = DiscountTierEntity(policy_id=pol.id, min_quantity=100, max_quantity=499, discount_percent=5.0)
             db.add(t)
         db.commit()
     finally:
         db.close()
     yield
+    db = SessionLocal()
+    try:
+        stocks = db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id == 1).all()
+        for s in stocks:
+            s.actual_stock = 100.0
+            s.reserved_stock = 0.0
+        db.commit()
+    finally:
+        db.close()
 
 def test_get_discount_policies():
     token = _login()

@@ -346,21 +346,32 @@ def test_order_creation_floor_price_and_lock(auth_tokens):
     assert res_approve.json()["status"] == "CONFIRMED"
 
 
-def test_create_price_book_syncs_product_sell_price_globally(auth_tokens):
+def test_create_price_book_does_not_overwrite_product_base_price(auth_tokens):
     """
-    Kiểm tra nghiệp vụ Áp dụng giá toàn hệ thống (Global Price Update):
-    Khi Bảng giá mới được lưu thành công với status=ACTIVE, Backend phải đồng bộ:
-    1. Cập nhật đè sell_price vào ProductEntity trong DB.
-    2. Cập nhật RAW_PRODUCTS cache.
-    3. Khi gọi GET /api/v1/products, giá bán của sản phẩm phải là mức giá mới nhất vừa tạo.
+    Kiểm tra nghiệp vụ Độc lập Bảng giá (Nhiều bảng giá song song):
+    Khi Bảng giá mới được lưu thành công, Backend KHÔNG ĐƯỢC cập nhật đè (ghi đè)
+    lên cột Giá Niêm Yết (sell_price) hay Giá Sàn (floor_price) của Sản phẩm gốc
+    trong bảng ProductEntity hay trang Quản lý kho hàng (GET /api/v1/products).
+    Bảng giá chỉ lưu vào PriceBookEntity và PriceBookItemEntity.
     """
     token = auth_tokens["sales_manager"]
     now = datetime.now(timezone.utc)
     new_sell_price = 249000.0
 
+    # Lấy giá gốc ban đầu của sản phẩm 1
+    db = SessionLocal()
+    try:
+        from app.models.entities import ProductEntity
+        prod = db.query(ProductEntity).filter(ProductEntity.id == 1).first()
+        assert prod is not None
+        original_sell_price = prod.sell_price
+        original_floor_price = prod.floor_price
+    finally:
+        db.close()
+
     payload = {
-        "code": f"BG-SYNC-{int(now.timestamp())}",
-        "name": "Bảng giá Áp dụng Toàn hệ thống",
+        "code": f"BG-INDEP-{int(now.timestamp())}",
+        "name": "Bảng giá Đại lý cấp 1 Độc lập",
         "customer_group": "Dai_ly_cap_1",
         "valid_from": now.isoformat(),
         "valid_to": (now + timedelta(days=30)).isoformat(),
@@ -376,22 +387,25 @@ def test_create_price_book_syncs_product_sell_price_globally(auth_tokens):
 
     res = client.post("/api/v1/price-books", json=payload, headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 201
+    pb_data = res.json()
+    assert pb_data["items"][0]["sale_price"] == new_sell_price
 
-    # 1. Kiểm tra trực tiếp trong SQLite Database
+    # 1. Kiểm tra trực tiếp trong SQLite Database: giá gốc sản phẩm KHÔNG ĐỔI
     db = SessionLocal()
     try:
-        from app.models.entities import ProductEntity
         prod = db.query(ProductEntity).filter(ProductEntity.id == 1).first()
         assert prod is not None
-        assert prod.sell_price == new_sell_price
+        assert prod.sell_price == original_sell_price
+        assert prod.floor_price == original_floor_price
     finally:
         db.close()
 
-    # 2. Kiểm tra API GET /api/v1/products
+    # 2. Kiểm tra API GET /api/v1/products (Quản lý kho hàng): giá niêm yết không đổi
     res_prods = client.get("/api/v1/products", headers={"Authorization": f"Bearer {token}"})
     assert res_prods.status_code == 200
     items = res_prods.json()["items"]
     target_p = next((p for p in items if p["id"] == 1), None)
     assert target_p is not None
-    assert target_p["sell_price"] == new_sell_price
+    assert target_p["sell_price"] == original_sell_price
+
 
