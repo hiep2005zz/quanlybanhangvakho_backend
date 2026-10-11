@@ -15,7 +15,7 @@ from sqlalchemy import (
     UnicodeText,
     ForeignKey,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, synonym
 from app.core.database import Base
 
 def get_utc_now():
@@ -48,9 +48,31 @@ class UserEntity(Base):
             try:
                 res = json.loads(self.roles_json)
                 if isinstance(res, str):
+                    try:
+                        inner = json.loads(res)
+                        if isinstance(inner, list):
+                            return [str(x) for x in inner]
+                    except Exception:
+                        pass
                     return [res]
                 elif isinstance(res, list):
-                    return res
+                    cleaned = []
+                    for item in res:
+                        if isinstance(item, str) and (item.startswith("[") or item.startswith('"[')):
+                            try:
+                                inner = json.loads(item)
+                                if isinstance(inner, str):
+                                    inner = json.loads(inner)
+                                if isinstance(inner, list):
+                                    cleaned.extend([str(x) for x in inner])
+                                    continue
+                                elif isinstance(inner, str):
+                                    cleaned.append(str(inner))
+                                    continue
+                            except Exception:
+                                pass
+                        cleaned.append(str(item))
+                    return cleaned
             except Exception:
                 pass
         return [self.role] if self.role else []
@@ -236,6 +258,10 @@ class OrderEntity(Base):
     cancel_reason = Column(Unicode(500), nullable=True)
     cancelled_by = Column(String(100), nullable=True)
     cancelled_at = Column(DateTime, nullable=True)
+
+    customer_id = synonym("dealer_id")
+
+Order = OrderEntity
 
 class AuditLogEntity(Base):
     __tablename__ = "audit_logs"

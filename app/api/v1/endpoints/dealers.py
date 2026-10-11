@@ -698,6 +698,14 @@ def get_dealer_credit_info_detail(
         )
     if is_customer:
         customer_dealer = DEALERS_DB.get(current_user.id)
+        if not customer_dealer:
+            for d in DEALERS_DB.values():
+                if (d.email and current_user.email and d.email.lower() == current_user.email.lower()) or \
+                   (d.phone and current_user.phone and d.phone == current_user.phone) or \
+                   (d.code and current_user.username and d.code.lower() == current_user.username.lower()) or \
+                   (d.name and current_user.full_name and d.name.lower() == current_user.full_name.lower()):
+                    customer_dealer = d
+                    break
         if not customer_dealer or customer_dealer.id != dealer_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
