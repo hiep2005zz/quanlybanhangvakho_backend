@@ -8,7 +8,7 @@ Nếu tài khoản nhân viên đang ở trạng thái LOCKED, từ chối tạo
 """
 import json
 from uuid import uuid4
-from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEntity, ProductEntity
+from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEntity, Order, ProductEntity
 from typing import List, Optional, Union
 from datetime import date, datetime, timezone, timedelta
 from pydantic import BaseModel, Field
@@ -988,7 +988,23 @@ def get_orders(
     Áp dụng Zero-Trust Row-Level Security (RLS) cho vai trò sales.
     """
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (current_user.roles or [current_user.role])
-    if current_user.username == "muahang" or "purchasing" in user_roles or current_user.role == "purchasing":
+    user_roles_clean = [str(getattr(r, "value", r)).strip() for r in user_roles]
+    user_roles_lower = {r.lower() for r in user_roles_clean}
+    if current_user.role:
+        user_roles_lower.add(str(getattr(current_user.role, "value", current_user.role)).strip().lower())
+
+    is_customer_role = (
+        "customer" in user_roles_lower
+        or "agent" in user_roles_lower
+        or current_user.role == "Customer"
+        or str(getattr(current_user.role, "value", current_user.role)).strip().lower() in ("customer", "agent")
+    )
+
+    if not is_customer_role and (
+        current_user.username == "muahang"
+        or "purchasing" in user_roles_lower
+        or str(getattr(current_user.role, "value", current_user.role)).strip().lower() == "purchasing"
+    ):
         raise HTTPException(
             status_code=403,
             detail="Truy cập bị từ chối (403 Forbidden). Nhân viên mua hàng không có quyền truy cập đơn hàng bán."
@@ -996,9 +1012,10 @@ def get_orders(
 
     allowed_roles = {
         Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value, Role.SALES.value, Role.CUSTOMER.value,
-        "admin", "sales_manager", "sales", "customer", "agent"
+        "admin", "sales_manager", "sales", "customer", "agent",
+        "Admin", "Sales", "Customer", "Agent"
     }
-    if not any(r in allowed_roles for r in user_roles):
+    if not any(r in allowed_roles for r in user_roles_clean) and not any(r in allowed_roles for r in user_roles_lower):
         raise HTTPException(
             status_code=403,
             detail="Chức năng chỉ dành cho Quản trị viên, Quản lý kinh doanh, Nhân viên kinh doanh và Đại lý."
@@ -1022,10 +1039,10 @@ def get_orders(
     )
 
     # Quyền & Roles
-    is_admin = Role.SYSTEM_ADMIN.value in user_roles or current_user.role == Role.SYSTEM_ADMIN.value or "admin" in user_roles or current_user.role == "admin"
-    is_sales_manager = Role.SALES_MANAGER.value in user_roles or current_user.role == Role.SALES_MANAGER.value or "sales_manager" in user_roles or current_user.role == "sales_manager"
-    is_sales = ("sales" in user_roles or current_user.role == "sales" or Role.SALES.value in user_roles) and not (is_admin or is_sales_manager)
-    is_customer = ("customer" in user_roles or current_user.role == "customer" or Role.CUSTOMER.value in user_roles) and not (is_admin or is_sales_manager or is_sales or "accountant" in user_roles)
+    is_admin = "admin" in user_roles_lower
+    is_sales_manager = "sales_manager" in user_roles_lower
+    is_sales = "sales" in user_roles_lower and not (is_admin or is_sales_manager)
+    is_customer = is_customer_role and not (is_admin or is_sales_manager or is_sales or "accountant" in user_roles_lower)
     can_view_cost = is_admin or is_sales_manager or (hasattr(Permission, "COST_READ") and Permission.COST_READ.value in (current_user.permissions or []))
 
     # Đồng bộ các đơn in-memory nếu có vào DB để SQL query aggregation chính xác
@@ -1087,17 +1104,20 @@ def get_orders(
             query = query.filter(OrderEntity.dealer_id == dealer_id)
         else:
             query = query.filter(OrderEntity.dealer_id.in_(list(assigned_dealer_ids)))
-    elif is_customer:
+    elif is_customer or current_user.role == 'Customer' or current_user.role == 'customer' or "customer" in user_roles_lower:
+        # Khách hàng CHỈ được xem đơn hàng do chính họ tạo / thuộc về họ (Data Isolation)
         customer_dealer = _get_customer_dealer(current_user)
-        if customer_dealer:
-            query = query.filter(OrderEntity.dealer_id == customer_dealer.id)
-        else:
-            if is_legacy_request:
-                return []
-            return OrderListFilteredResponse(
-                items=[], total=0, total_count=0, page=cur_page, page_size=cur_page_size,
-                filtered_total_amount=0.0, pending_count=0, confirmed_count=0
-            )
+        target_dealer_id = customer_dealer.id if customer_dealer else current_user.id
+
+        filter_conditions = [OrderEntity.created_by == current_user.username]
+        if hasattr(OrderEntity, "customer_id"):
+            filter_conditions.append(OrderEntity.customer_id == current_user.id)
+            if target_dealer_id:
+                filter_conditions.append(OrderEntity.customer_id == target_dealer_id)
+        if target_dealer_id:
+            filter_conditions.append(OrderEntity.dealer_id == target_dealer_id)
+
+        query = query.filter(or_(*filter_conditions))
     else:
         # Admin / Sales Manager / Accountant
         if dealer_id is not None:

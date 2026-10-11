@@ -15,7 +15,7 @@ from sqlalchemy import (
     UnicodeText,
     ForeignKey,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, synonym
 from app.core.database import Base
 
 def get_utc_now():
@@ -258,6 +258,10 @@ class OrderEntity(Base):
     cancel_reason = Column(Unicode(500), nullable=True)
     cancelled_by = Column(String(100), nullable=True)
     cancelled_at = Column(DateTime, nullable=True)
+
+    customer_id = synonym("dealer_id")
+
+Order = OrderEntity
 
 class AuditLogEntity(Base):
     __tablename__ = "audit_logs"
