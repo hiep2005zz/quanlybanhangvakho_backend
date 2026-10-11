@@ -56,6 +56,8 @@ def setup_test_db():
 @pytest.fixture(autouse=True)
 def reset_test_state():
     """Reset database and memory state before each test run."""
+    if DEV_USERS_JSON.exists():
+        shutil.copyfile(DEV_USERS_JSON, TEST_USERS_JSON)
     db = SessionLocal()
     try:
         # Xóa các user phụ được tạo trong lúc test

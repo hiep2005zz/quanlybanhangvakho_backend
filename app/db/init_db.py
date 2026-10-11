@@ -58,6 +58,10 @@ def _ensure_legacy_columns(bind=engine):
             "images_json": ("TEXT", "NVARCHAR(MAX)"),
             "status": ("VARCHAR(50) DEFAULT 'active'", "NVARCHAR(50) DEFAULT 'active'"),
             "is_batch_managed": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
+            "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
+        },
+        "warehouse_stocks": {
+            "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
         },
         "dealers": {
             "max_debt_days": ("INTEGER DEFAULT 30", "INT DEFAULT 30"),
@@ -86,6 +90,7 @@ def _ensure_legacy_columns(bind=engine):
         },
         "categories": {
             "code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
+            "parent_id": ("INTEGER NULL", "INT NULL"),
             "product_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
             "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
         },
@@ -140,6 +145,20 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (units_json): {ex}")
+            if "min_stock" not in product_cols:
+                try:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN min_stock INTEGER DEFAULT 10;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (products.min_stock): {ex}")
+
+            ws_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(warehouse_stocks)")).fetchall()]
+            if ws_cols and "min_stock" not in ws_cols:
+                try:
+                    conn.execute(text("ALTER TABLE warehouse_stocks ADD COLUMN min_stock INTEGER DEFAULT 10;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (warehouse_stocks.min_stock): {ex}")
 
             dealer_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(dealers)")).fetchall()]
             if "customer_group" not in dealer_cols:
@@ -261,6 +280,8 @@ def init_db():
                 "IF COL_LENGTH('price_books', 'is_locked') IS NULL ALTER TABLE price_books ADD is_locked BIT DEFAULT 0;",
                 "IF COL_LENGTH('price_book_items', 'sale_price') IS NULL ALTER TABLE price_book_items ADD sale_price FLOAT DEFAULT 0.0;",
                 "IF COL_LENGTH('price_book_items', 'floor_price') IS NULL ALTER TABLE price_book_items ADD floor_price FLOAT DEFAULT 0.0;",
+                "IF COL_LENGTH('products', 'min_stock') IS NULL ALTER TABLE products ADD min_stock INT DEFAULT 10;",
+                "IF COL_LENGTH('warehouse_stocks', 'min_stock') IS NULL ALTER TABLE warehouse_stocks ADD min_stock INT DEFAULT 10;",
             ]:
                 try:
                     conn.execute(text(sql_statement))
