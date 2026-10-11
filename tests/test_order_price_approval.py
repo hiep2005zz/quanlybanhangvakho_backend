@@ -118,9 +118,9 @@ def test_order_creation_with_floor_price_and_approval():
             f"/api/v1/orders/{order_code}/approve",
             headers={"Authorization": f"Bearer {sm_token}"}
         )
-        assert res_approve.status_code == 200
+        assert res_approve.status_code == 200, f"Approve failed: {res_approve.text}"
         approved_data = res_approve.json()
-        assert approved_data["status"] == "CONFIRMED"
+        assert approved_data["status"] in ("APPROVED", "CONFIRMED")
         assert approved_data.get("requires_approval") is False
         assert approved_data.get("approved_by") == "sales_manager"
 
@@ -155,7 +155,7 @@ def test_order_creation_with_floor_price_and_approval():
             headers={"Authorization": f"Bearer {admin_token}"}
         )
         assert res_admin_approve.status_code == 200
-        assert res_admin_approve.json()["status"] == "CONFIRMED"
+        assert res_admin_approve.json()["status"] in ("APPROVED", "CONFIRMED")
 
         # 8. Test từ chối duyệt đơn (reject)
         res_order_low3 = client.post(

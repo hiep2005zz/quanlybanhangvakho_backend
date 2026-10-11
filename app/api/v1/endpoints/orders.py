@@ -8,7 +8,7 @@ Nếu tài khoản nhân viên đang ở trạng thái LOCKED, từ chối tạo
 """
 import json
 from uuid import uuid4
-from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEntity, Order, ProductEntity
+from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEntity, Order, ProductEntity, OrderItemEntity
 from typing import List, Optional, Union
 from datetime import date, datetime, timezone, timedelta
 from pydantic import BaseModel, Field
@@ -86,6 +86,7 @@ class OrderResponse(BaseModel):
     delivery_point_id: Optional[int] = None
     desired_delivery_date: Optional[str] = None
     note: Optional[str] = None
+    reservation_expires_at: Optional[str] = None
 
 class OrderListFilteredResponse(BaseModel):
     items: List[OrderResponse]
@@ -1581,6 +1582,22 @@ def create_order(
                 created_at=datetime.fromisoformat(now_str),
             )
             db.add(db_order)
+            db.flush()
+            for pit in processed_items:
+                oi = OrderItemEntity(
+                    order_id=db_order.id,
+                    order_code=db_order.order_code,
+                    product_id=pit.get("product_id"),
+                    sku_id=pit.get("sku_id") or pit.get("product_code") or f"SP{pit.get('product_id'):03d}",
+                    product_name=pit.get("product_name"),
+                    quantity=pit.get("quantity", 1),
+                    base_quantity=pit.get("base_quantity", pit.get("quantity", 1)),
+                    unit_price=pit.get("price", pit.get("unit_price", 0.0)),
+                    unit_name=pit.get("unit") or pit.get("unit_name"),
+                    conversion_rate=pit.get("conversion_rate", 1.0),
+                    is_reserved=False,
+                )
+                db.add(oi)
             db.commit()
         except Exception as db_err:
             print(f"Lưu đơn hàng vào DB SQL thất bại (dự phòng in-memory): {db_err}")
@@ -1993,6 +2010,21 @@ def create_sales_entry_order(
     if code_exists:
         order_code = f"{order_code}-{uuid4().hex[:8]}"
     db_order.order_code = order_code
+    for pit in priced_items:
+        oi = OrderItemEntity(
+            order_id=db_order.id,
+            order_code=order_code,
+            product_id=pit.get("product_id"),
+            sku_id=pit.get("sku_id") or pit.get("product_code") or f"SP{pit.get('product_id'):03d}",
+            product_name=pit.get("product_name"),
+            quantity=pit.get("quantity", 1),
+            base_quantity=pit.get("base_quantity", pit.get("quantity", 1)),
+            unit_price=pit.get("price", pit.get("unit_price", 0.0)),
+            unit_name=pit.get("unit") or pit.get("unit_name"),
+            conversion_rate=pit.get("conversion_rate", 1.0),
+            is_reserved=False,
+        )
+        db.add(oi)
     db.commit()
 
     order_record = {
@@ -2762,24 +2794,20 @@ def approve_order(
     order_code: str,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user)
+    current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value]))
 ):
     """
-    Quyền duyệt đơn hàng:
-    - sales_manager và admin: Toàn quyền duyệt mọi đơn hàng.
-    - sales: Được phép duyệt đơn hàng của đại lý do mình phụ trách (hoặc đơn do đại lý tự đặt).
-      (Chặn sales tự duyệt đơn bán dưới giá sàn do chính sales tạo ra).
-    - Các vai trò khác (kho, kế toán, mua hàng, customer): Bị chặn 403 Forbidden.
+    Quyền duyệt đơn hàng khi bán dưới giá sàn: CHỈ sales_manager hoặc admin.
+    Triển khai Giữ chỗ tồn kho khi Duyệt đơn (Inventory Reservation Transaction).
+    Chuyển đơn từ PENDING_APPROVAL sang APPROVED.
+    Hỗ trợ tra cứu theo cả order_code (ORD00001) lẫn order id (1).
     """
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_admin_or_sm = any(r.lower() in ["admin", "sales_manager"] for r in user_roles)
-    is_sales = any(r.lower() == "sales" for r in user_roles)
+    from app.services.inventory_reservation_service import approve_order_and_reserve_stock
 
-    if not (is_admin_or_sm or is_sales):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Truy cập bị từ chối (403 Forbidden). Bạn không có quyền duyệt đơn hàng."
-        )
+    # Đảm bảo đơn hàng tồn tại trong DB nếu mới chỉ có trong ORDERS_DB
+    db_order = db.query(OrderEntity).filter(
+        (OrderEntity.order_code == order_code) | (OrderEntity.id == (int(order_code) if str(order_code).isdigit() else -1))
+    ).first()
 
     target = None
     for o in ORDERS_DB.values():
@@ -2787,94 +2815,79 @@ def approve_order(
             target = o
             break
 
-    db_order = db.query(OrderEntity).filter(
-        (func.upper(OrderEntity.order_code) == order_code.upper()) | (OrderEntity.id == (target["id"] if target else -1)) | (str(OrderEntity.id) == str(order_code))
-    ).first()
+    if not db_order and target:
+        # Tự động seed OrderEntity từ target
+        db_order = OrderEntity(
+            id=target.get("id"),
+            order_code=target["order_code"],
+            dealer_id=target.get("dealer_id", 1),
+            dealer_name=target.get("dealer_name", ""),
+            created_by=target.get("created_by", "admin"),
+            assigned_sale_id=target.get("assigned_sale_id"),
+            assigned_sale_name=target.get("assigned_sale_name"),
+            total_amount=target.get("total_amount", 0.0),
+            status=target.get("status", "PENDING_APPROVAL"),
+            requires_approval=target.get("requires_approval", True),
+            approval_reason=target.get("approval_reason"),
+            items_json=json.dumps(target.get("items", []), ensure_ascii=False),
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(db_order)
+        db.commit()
 
-    if not target and not db_order:
+    if not db_order and not target:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy đơn hàng có mã hoặc ID {order_code}."
         )
 
-    assigned_id = target.get("assigned_sale_id") if target else (db_order.assigned_sale_id if db_order else None)
-    created_by = target.get("created_by") if target else (db_order.created_by if db_order else "")
-    approval_reason = (target.get("approval_reason") if target else (db_order.approval_reason if db_order else "")) or ""
-    is_floor_price_order = "giá sàn" in approval_reason.lower()
+    old_status = db_order.status if db_order else (target.get("status") if target else "PENDING_APPROVAL")
 
-    if is_sales and not is_admin_or_sm:
-        # 1. Tuyệt đối không cho sales duyệt đơn do Admin hoặc Quản lý cấp trên tạo
-        creator_user = USERS_DB.get(created_by.lower()) if created_by else None
-        creator_roles = creator_user.get_roles() if creator_user else []
-        is_creator_admin_or_sm = any(r.lower() in ["admin", "sales_manager"] for r in creator_roles) or created_by.lower() in ["admin", "sales_manager"]
-        if is_creator_admin_or_sm:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Nhân viên kinh doanh không được phép duyệt đơn hàng do Quản trị viên (Admin) hoặc Quản lý kinh doanh tạo."
-            )
+    # Thực thi giữ chỗ tồn kho nguyên tử & duyệt đơn
+    approved_order = approve_order_and_reserve_stock(
+        db=db,
+        order_identifier=order_code,
+        approved_by=current_user.username,
+        reservation_hours=24,
+    )
 
-        # 2. Nhân viên bán hàng CHỈ ĐƯỢC DUYỆT đại lý do mình phụ trách
-        if not assigned_id or assigned_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Bạn chỉ có quyền duyệt đơn hàng của đại lý do mình phụ trách."
-            )
-
-        # 3. Nếu là đơn do chính sales tự tạo bán dưới giá sàn -> Không được tự duyệt
-        if is_floor_price_order and created_by.lower() == current_user.username.lower():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Nhân viên kinh doanh không được phép tự duyệt đơn hàng bán dưới giá sàn của chính mình."
-            )
-
-    old_status = target.get("status") if target else db_order.status
     now_iso = datetime.now(timezone.utc).isoformat()
+    expires_iso = approved_order.reservation_expires_at.isoformat() if approved_order.reservation_expires_at else None
 
     if target:
-        target["status"] = "CONFIRMED"
+        target["status"] = "APPROVED"
         target["requires_approval"] = False
         target["approved_by"] = current_user.username
         target["approved_at"] = now_iso
-
-    if db_order:
-        db_order.status = "CONFIRMED"
-        db_order.requires_approval = False
-        try:
-            p_dict = json.loads(db_order.items_json) if db_order.items_json else {}
-            p_dict["requires_approval"] = False
-            p_dict["approved_by"] = current_user.username
-            p_dict["approved_at"] = now_iso
-            db_order.items_json = json.dumps(p_dict, ensure_ascii=False)
-        except Exception:
-            pass
-        db.commit()
-
-    if not target and db_order:
+        target["reservation_expires_at"] = expires_iso
+    else:
         target = {
-            "id": db_order.id,
-            "order_code": db_order.order_code,
-            "dealer_id": db_order.dealer_id,
-            "dealer_name": db_order.dealer_name,
-            "created_by": db_order.created_by,
-            "assigned_sale_id": db_order.assigned_sale_id,
-            "assigned_sale_name": db_order.assigned_sale_name,
-            "total_amount": db_order.total_amount,
-            "status": "CONFIRMED",
+            "id": approved_order.id,
+            "order_code": approved_order.order_code,
+            "dealer_id": approved_order.dealer_id,
+            "dealer_name": approved_order.dealer_name,
+            "created_by": approved_order.created_by,
+            "assigned_sale_id": approved_order.assigned_sale_id,
+            "assigned_sale_name": approved_order.assigned_sale_name,
+            "total_amount": approved_order.total_amount,
+            "status": "APPROVED",
             "requires_approval": False,
             "approved_by": current_user.username,
             "approved_at": now_iso,
+            "reservation_expires_at": expires_iso,
+            "created_at": approved_order.created_at.isoformat() if approved_order.created_at else now_iso,
         }
-        ORDERS_DB[db_order.id] = target
+        ORDERS_DB[approved_order.id] = target
 
     log_audit_event(
         db=db,
         user=current_user,
         action_type="ORDER_APPROVE",
         entity_type="Order",
-        entity_id=target["order_code"],
+        entity_id=approved_order.order_code,
         old_val={"status": old_status},
-        new_val={"status": "CONFIRMED"},
-        reason="Duyệt và xác nhận đơn hàng",
+        new_val={"status": "APPROVED", "reservation_expires_at": expires_iso},
+        reason="Duyệt đơn hàng và giữ chỗ tồn kho",
         request=request,
     )
 
@@ -3115,9 +3128,14 @@ def _execute_order_cancellation(
             persisted_order.cancelled_by = current_user.username
             persisted_order.cancelled_at = now_utc
 
-            # 1. Nhả (giảm) số lượng tồn đang giữ chỗ (reserved_stock)
-            from app.services.inventory_availability_service import release_order_stock
-            release_order_stock(db, persisted_order)
+            # 1. Nhả (giảm) số lượng tồn đang giữ chỗ (reserved_stock / reserved_quantity)
+            from app.services.inventory_reservation_service import cancel_order_and_release_stock
+            cancel_order_and_release_stock(
+                db=db,
+                order_identifier=persisted_order.order_code,
+                cancelled_by=current_user.username,
+                reason=clean_reason
+            )
 
             # 2. Hoàn lại tồn kho cho ProductEntity và RAW_PRODUCTS
             if persisted_order.items_json:
@@ -3224,6 +3242,24 @@ def cancel_order(
         request=request,
         db=db,
     )
+
+
+@router.post("/cleanup-expired-reservations")
+def cleanup_expired_reservations_endpoint(
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value]))
+):
+    """
+    UC3: Luồng Quá hạn giữ chỗ & Tự động nhả tồn (Expired Reservation Cleanup).
+    Tìm các đơn APPROVED đã quá hạn reservation_expires_at, nhả tồn kho và chuyển sang EXPIRED.
+    """
+    from app.services.inventory_reservation_service import release_expired_reservations
+    results = release_expired_reservations(db)
+    return {
+        "status": "success",
+        "expired_orders_count": len(results),
+        "details": results,
+    }
 
 
 @router.put("/{order_code}")
