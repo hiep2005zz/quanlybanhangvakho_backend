@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException, status, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_roles
+from app.api.deps import require_roles, get_current_user
 from app.core.database import get_db
 from app.models.dealer import DEALERS_DB, Dealer, save_dealers_db, load_dealers_db
 from app.models.user import USERS_DB, load_users_db
@@ -930,6 +930,14 @@ def get_dealer_credit_info_detail(
         )
     if is_customer:
         customer_dealer = DEALERS_DB.get(current_user.id)
+        if not customer_dealer:
+            for d in DEALERS_DB.values():
+                if (d.email and current_user.email and d.email.lower() == current_user.email.lower()) or \
+                   (d.phone and current_user.phone and d.phone == current_user.phone) or \
+                   (d.code and current_user.username and d.code.lower() == current_user.username.lower()) or \
+                   (d.name and current_user.full_name and d.name.lower() == current_user.full_name.lower()):
+                    customer_dealer = d
+                    break
         if not customer_dealer or customer_dealer.id != dealer_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1563,3 +1571,13 @@ def get_dealers(
             "warehouse_name": getattr(d, "warehouse_name", None),
         })
     return res
+
+
+@router.get("/{dealer_id}/purchase-history")
+def get_dealer_purchase_history_alias(
+    dealer_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    from app.api.v1.endpoints.orders import get_dealer_purchase_history
+    return get_dealer_purchase_history(dealer_id=dealer_id, db=db, current_user=current_user)

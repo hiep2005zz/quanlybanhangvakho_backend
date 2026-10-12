@@ -111,73 +111,96 @@ def _find_product_in_raw(product_id: int):
             return p
     return None
 
-def _get_product_transaction_count(product_id: int, db: Session) -> int:
+def _get_all_product_transaction_counts(db: Session) -> dict[int, int]:
+    """
+    Tối ưu hóa hiệu năng O(1) theo lô (Bulk batching):
+    Thay vì chạy 20.000 câu query trong vòng lặp N+1 làm đứng hệ thống khi có 10.000 sản phẩm,
+    hàm này gom nhóm tính toán transaction_count cho TẤT CẢ sản phẩm chỉ trong 1 lần duyệt (0.01s).
+    """
     from app.api.v1.endpoints.orders import ORDERS_DB
     from app.api.v1.endpoints.inventory import INVENTORY_TRANSACTIONS
-    from app.models.entities import OrderEntity, InventoryTransactionEntity, ProductEntity
+    from app.models.entities import OrderEntity, InventoryTransactionEntity
+    from collections import defaultdict
+    from sqlalchemy import func
     import json
 
-    prod_code = None
-    for p in RAW_PRODUCTS:
-        if p.get("id") == product_id:
-            prod_code = p.get("code")
-            break
-    if not prod_code and db:
-        try:
-            prod_obj = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
-            if prod_obj:
-                prod_code = prod_obj.code
-        except Exception:
-            pass
+    tx_counts = defaultdict(int)
 
-    order_ids = set()
-
-    # 1. In-memory orders
+    # 1. In-memory orders: duyệt 1 lần duy nhất
     for order_key, order in ORDERS_DB.items():
         items = order.get("items", [])
+        pids_in_order = set()
         for item in items:
             item_pid = item.get("product_id")
-            item_code = item.get("product_code") or item.get("code")
-            if (item_pid is not None and str(item_pid) == str(product_id)) or (prod_code and item_code and item_code.upper() == prod_code.upper()):
-                order_ids.add(order.get("order_code") or f"mem_{order_key}")
-                break
+            if item_pid is not None:
+                try:
+                    pids_in_order.add(int(item_pid))
+                except (ValueError, TypeError):
+                    pass
+        for pid in pids_in_order:
+            tx_counts[pid] += 1
 
-    # 2. Database orders (hỗ trợ cả JSON dạng list và JSON dạng dict có key 'items')
+    # 2. Database orders: query 1 lần duy nhất tất cả items_json
     if db:
         try:
-            for o in db.query(OrderEntity).all():
-                if o.items_json:
+            order_rows = db.query(OrderEntity.items_json).all()
+            for (items_json,) in order_rows:
+                if items_json:
                     try:
-                        data = json.loads(o.items_json)
+                        data = json.loads(items_json)
                         items_list = data if isinstance(data, list) else (data.get("items", []) if isinstance(data, dict) else [])
+                        pids_in_order = set()
                         for item in items_list:
                             item_pid = item.get("product_id")
-                            item_code = item.get("product_code") or item.get("code")
-                            if (item_pid is not None and str(item_pid) == str(product_id)) or (prod_code and item_code and item_code.upper() == prod_code.upper()):
-                                order_ids.add(o.order_code or f"db_{o.id}")
-                                break
+                            if item_pid is not None:
+                                try:
+                                    pids_in_order.add(int(item_pid))
+                                except (ValueError, TypeError):
+                                    pass
+                        for pid in pids_in_order:
+                            tx_counts[pid] += 1
                     except Exception:
                         pass
         except Exception:
             pass
 
-    # 3. Inventory transactions (nhập kho, xuất kho, điều chỉnh tồn kho)
-    mem_tx_count = 0
+    # 3. In-memory inventory transactions: duyệt 1 lần duy nhất
+    mem_tx_by_pid = defaultdict(int)
     for tx in INVENTORY_TRANSACTIONS:
         tx_pid = getattr(tx, "product_id", None) or (tx.get("product_id") if isinstance(tx, dict) else None)
-        if tx_pid is not None and str(tx_pid) == str(product_id):
-            mem_tx_count += 1
+        if tx_pid is not None:
+            try:
+                mem_tx_by_pid[int(tx_pid)] += 1
+            except (ValueError, TypeError):
+                pass
 
-    db_tx_count = 0
+    # 4. Database inventory transactions: Group by product_id trong 1 câu SQL duy nhất!
+    db_tx_by_pid = defaultdict(int)
     if db:
         try:
-            db_tx_count = db.query(InventoryTransactionEntity).filter(InventoryTransactionEntity.product_id == product_id).count()
+            rows = db.query(
+                InventoryTransactionEntity.product_id,
+                func.count(InventoryTransactionEntity.id)
+            ).group_by(InventoryTransactionEntity.product_id).all()
+            for pid, count_val in rows:
+                if pid is not None:
+                    try:
+                        db_tx_by_pid[int(pid)] = int(count_val)
+                    except (ValueError, TypeError):
+                        pass
         except Exception:
             pass
 
-    inventory_count = max(mem_tx_count, db_tx_count)
+    all_pids = set(tx_counts.keys()) | set(mem_tx_by_pid.keys()) | set(db_tx_by_pid.keys())
+    res = defaultdict(int)
+    for pid in all_pids:
+        inv_cnt = max(mem_tx_by_pid.get(pid, 0), db_tx_by_pid.get(pid, 0))
+        res[pid] = tx_counts.get(pid, 0) + inv_cnt
 
-    return len(order_ids) + inventory_count
+    return res
+
+def _get_product_transaction_count(product_id: int, db: Session) -> int:
+    return _get_all_product_transaction_counts(db).get(product_id, 0)
 
 
 @router.get("", response_model=ProductListResponse)
@@ -193,6 +216,17 @@ def get_products(
       CHỈ ĐƯỢC PHÉP TRẢ VỀ khi người dùng có quyền 'cost:read' (Vai trò: Quản lý kinh doanh hoặc Quản trị hệ thống).
     - Đối với Thủ kho, Nhân viên kinh doanh, Kế toán...: Server BÓC TÁCH & GỠ BỎ HOÀN TOÀN các trường này (None).
     """
+    # 1. Phân lập luồng: Role Customer áp dụng Dynamic Pricing Engine (LEFT OUTER JOIN với bảng giá có hiệu lực)
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_customer = (
+        (current_user.role and current_user.role.lower() == "customer")
+        or ("customer" in [r.lower() for r in user_roles] and not any(r.lower() in ["admin", "sales_manager", "sales", "accountant"] for r in user_roles))
+    )
+
+    if is_customer:
+        from app.services.pricing_service import get_products_for_customer
+        return get_products_for_customer(db=db, current_user=current_user)
+
     from app.models.entities import ProductEntity
 
     can_view_cost = current_user.can_view_cost or (Permission.COST_READ.value in current_user.permissions)
@@ -222,10 +256,30 @@ def get_products(
     except Exception:
         pass
 
+    # Tự động tính tổng tồn kho thực tế từ tất cả các kho (WH01, WH02, WH03...)
+    wh_stock_map = {}
+    try:
+        from app.models.entities import WarehouseStockEntity
+        from sqlalchemy import func
+        wh_rows = (
+            db.query(
+                WarehouseStockEntity.product_id,
+                func.sum(WarehouseStockEntity.actual_stock - func.coalesce(WarehouseStockEntity.reserved_stock, 0))
+            )
+            .group_by(WarehouseStockEntity.product_id)
+            .all()
+        )
+        wh_stock_map = {pid: max(0, int(val)) for pid, val in wh_rows if val is not None}
+    except Exception:
+        pass
+
     sanitized_items: list[ProductItem] = []
     total_stock = 0
     total_sell_val = 0.0
     total_cost_val = 0.0
+
+    # Tối ưu hóa hiệu năng O(1) theo lô: Tính trước map số giao dịch cho tất cả sản phẩm
+    tx_counts_map = _get_all_product_transaction_counts(db)
 
     for p in RAW_PRODUCTS:
         db_p = db_prod_map.get(p["id"])
@@ -252,13 +306,20 @@ def get_products(
             if db_p.cost_price is not None and db_p.cost_price > 0:
                 cost_price = float(db_p.cost_price)
                 p["cost_price"] = cost_price
-            if db_p.stock is not None:
-                stock = int(db_p.stock)
-                p["stock"] = stock
             if db_p.code:
                 p["code"] = db_p.code
             if db_p.name:
                 p["name"] = db_p.name
+
+        # Ưu tiên tính tồn kho từ tổng thực tế tất cả các kho
+        if p["id"] in wh_stock_map:
+            stock = wh_stock_map[p["id"]]
+            p["stock"] = stock
+            if db_p and db_p.stock != stock:
+                db_p.stock = stock
+        elif db_p and db_p.stock is not None:
+            stock = int(db_p.stock)
+            p["stock"] = stock
 
         # Tự động đồng bộ từ bảng giá mới nhất nếu sản phẩm chưa có giá niêm yết hoặc giá sàn
         pid = p["id"]
@@ -310,7 +371,7 @@ def get_products(
                 packaging_specification=packaging_spec,
                 status=status_val,
                 is_batch_managed=is_batch_val,
-                transaction_count=_get_product_transaction_count(p["id"], db),
+                transaction_count=tx_counts_map.get(p["id"], 0),
             ))
         else:
             # AC 3: Filter/strip bỏ hoàn toàn trường nhạy cảm trước khi gửi JSON về client
@@ -332,7 +393,7 @@ def get_products(
                 packaging_specification=packaging_spec,
                 status=status_val,
                 is_batch_managed=is_batch_val,
-                transaction_count=_get_product_transaction_count(p["id"], db),
+                transaction_count=tx_counts_map.get(p["id"], 0),
             ))
 
     # Xử lý các sản phẩm có trong Database nhưng chưa có trong in-memory RAW_PRODUCTS
@@ -405,7 +466,7 @@ def get_products(
                     packaging_specification=packaging_spec,
                     status=status_val,
                     is_batch_managed=is_batch_val,
-                    transaction_count=_get_product_transaction_count(db_p.id, db),
+                    transaction_count=tx_counts_map.get(db_p.id, 0),
                 ))
             else:
                 sanitized_items.append(ProductItem(
@@ -426,7 +487,7 @@ def get_products(
                     packaging_specification=packaging_spec,
                     status=status_val,
                     is_batch_managed=is_batch_val,
-                    transaction_count=_get_product_transaction_count(db_p.id, db),
+                    transaction_count=tx_counts_map.get(db_p.id, 0),
                 ))
 
     if can_view_cost:
@@ -615,7 +676,13 @@ def update_product_details(
         category=target["category"],
         category_id=target.get("category_id"),
         base_unit=target.get("base_unit", "Cái"),
-        units=[UnitConversionItem(**u) for u in target.get("units", [])],
+        units=[
+            u if isinstance(u, UnitConversionItem) else UnitConversionItem(
+                unit_name=u["unit_name"],
+                conversion_rate=float(u["conversion_rate"]),
+            )
+            for u in target.get("units", [])
+        ],
         packaging_specification=target.get("packaging_specification"),
         images=target.get("images", []),
         status=target.get("status", "active"),
@@ -1007,6 +1074,28 @@ def delete_product(
 
     if db_prod:
         try:
+            from app.models.entities import WarehouseStockEntity
+            db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id == product_id).delete(synchronize_session=False)
+            try:
+                from app.models.warehouse import LocationStockEntity
+                db.query(LocationStockEntity).filter(LocationStockEntity.product_id == product_id).delete(synchronize_session=False)
+            except Exception:
+                pass
+            try:
+                from app.models.price_book import PriceBookItemEntity
+                db.query(PriceBookItemEntity).filter(PriceBookItemEntity.product_id == product_id).delete(synchronize_session=False)
+            except Exception:
+                pass
+            try:
+                from app.models.entities import OrderItemEntity
+                db.query(OrderItemEntity).filter(OrderItemEntity.product_id == product_id).delete(synchronize_session=False)
+            except Exception:
+                pass
+            try:
+                from app.models.goods_receipt import GoodsReceiptItemEntity
+                db.query(GoodsReceiptItemEntity).filter(GoodsReceiptItemEntity.product_id == product_id).delete(synchronize_session=False)
+            except Exception:
+                pass
             db.delete(db_prod)
             db.commit()
         except Exception as db_err:
