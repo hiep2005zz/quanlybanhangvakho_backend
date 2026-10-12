@@ -231,7 +231,9 @@ def get_dealer_stock_summary(db: Session, dealer_id: int) -> Dict[str, Any]:
     warehouse_id, warehouse_name = resolve_dealer_warehouse(dealer)
 
     # Lấy danh sách sản phẩm
-    db_products = db.query(ProductEntity).filter(ProductEntity.status == "active").all()
+    db_products = db.query(ProductEntity).filter(
+        (ProductEntity.status == "active") | (ProductEntity.status.is_(None)) | (ProductEntity.status != "inactive")
+    ).all()
     product_map = {}
     for p in db_products:
         product_map[p.id] = {

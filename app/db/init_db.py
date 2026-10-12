@@ -401,6 +401,7 @@ def init_db():
                 CategoryEntity(id=1, name="Thời trang", parent_id=None),
                 CategoryEntity(id=2, name="Giày dép", parent_id=None),
                 CategoryEntity(id=3, name="Phụ kiện", parent_id=None),
+                CategoryEntity(id=7, name="Đồ điện tử", parent_id=None),
                 CategoryEntity(id=4, name="Áo Nam", parent_id=1),
                 CategoryEntity(id=5, name="Quần Nam", parent_id=1),
                 CategoryEntity(id=6, name="Áo Thun", parent_id=4),
@@ -717,6 +718,8 @@ def init_db():
 
         # 10. Đồng bộ tồn kho tổng của ProductEntity từ tổng tồn thực tế của các chi nhánh kho (warehouse_stocks)
         try:
+            db.execute(text("UPDATE products SET status = 'active' WHERE status IS NULL OR status = ''"))
+            db.commit()
             from sqlalchemy import func
             DEFAULT_WAREHOUSES = {
                 "WH01": "Kho Tổng Hà Nội",
