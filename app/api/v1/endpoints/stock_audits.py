@@ -198,7 +198,9 @@ def preview_audit_products(
 
     warehouse_name = DEFAULT_WAREHOUSES[warehouse_id]
 
-    query = db.query(ProductEntity).filter(ProductEntity.status == "active")
+    query = db.query(ProductEntity).filter(
+        (ProductEntity.status == "active") | (ProductEntity.status.is_(None)) | (ProductEntity.status != "inactive")
+    )
     if scope_type == "CATEGORY":
         if not category_id:
             raise HTTPException(
@@ -371,7 +373,9 @@ def create_stock_audit(
         category_name = cat.name
 
     # Lấy danh sách sản phẩm thuộc phạm vi
-    prod_query = db.query(ProductEntity).filter(ProductEntity.status == "active")
+    prod_query = db.query(ProductEntity).filter(
+        (ProductEntity.status == "active") | (ProductEntity.status.is_(None)) | (ProductEntity.status != "inactive")
+    )
     if data.scope_type == "CATEGORY" and data.category_id:
         cat_ids = get_all_descendant_category_ids(db, data.category_id)
         cat_names = {c.name for c in db.query(CategoryEntity).filter(CategoryEntity.id.in_(cat_ids)).all()}

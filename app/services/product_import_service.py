@@ -397,6 +397,47 @@ class ProductBulkImportService:
 
             db.commit()
 
+            # Đồng bộ WarehouseStockEntity cho các sản phẩm
+            try:
+                from app.models.entities import WarehouseStockEntity
+                for row in target_rows:
+                    sku_key = row.sku.strip().upper()
+                    prod_obj = existing_by_sku.get(sku_key)
+                    if not prod_obj:
+                        continue
+                    target_stock = row.stock if (row.stock is not None and row.stock >= 0) else (prod_obj.stock or 0)
+                    ws_wh01 = db.query(WarehouseStockEntity).filter(
+                        WarehouseStockEntity.warehouse_id == "WH01",
+                        WarehouseStockEntity.product_id == prod_obj.id
+                    ).first()
+                    if ws_wh01:
+                        ws_wh01.actual_stock = target_stock
+                        ws_wh01.quantity_on_hand = target_stock
+                    else:
+                        ws_wh01 = WarehouseStockEntity(
+                            warehouse_id="WH01",
+                            warehouse_name="Kho Tổng Hà Nội",
+                            product_id=prod_obj.id,
+                            actual_stock=target_stock,
+                            quantity_on_hand=target_stock,
+                            reserved_stock=0,
+                            reserved_quantity=0,
+                            min_stock=10,
+                        )
+                        db.add(ws_wh01)
+
+                    # Đảm bảo các kho phụ không làm đội tổng tồn kho vượt quá số lượng import
+                    other_ws = db.query(WarehouseStockEntity).filter(
+                        WarehouseStockEntity.warehouse_id != "WH01",
+                        WarehouseStockEntity.product_id == prod_obj.id
+                    ).all()
+                    for ows in other_ws:
+                        ows.actual_stock = 0
+                        ows.quantity_on_hand = 0
+                db.commit()
+            except Exception:
+                pass
+
             # 3. Đồng bộ lại vào in-memory RAW_PRODUCTS
             # Lấy danh sách ID lớn nhất hiện tại trong RAW_PRODUCTS
             existing_raw_skus = {p["code"].strip().upper(): p for p in RAW_PRODUCTS if "code" in p}
@@ -419,9 +460,10 @@ class ProductBulkImportService:
                     if row.stock is not None and row.stock >= 0:
                         raw_item["stock"] = row.stock
                 else:
-                    max_id += 1
+                    db_prod_entity = existing_by_sku.get(sku_key)
+                    actual_pid = db_prod_entity.id if (db_prod_entity and db_prod_entity.id) else (max_id + 1)
                     new_raw_item = {
-                        "id": max_id,
+                        "id": actual_pid,
                         "code": row.sku,
                         "name": row.name,
                         "category": cat_name,
