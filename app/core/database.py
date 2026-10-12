@@ -7,12 +7,17 @@ from sqlalchemy.pool import NullPool
 
 # Engine kết nối cơ sở dữ liệu
 is_sqlite = "sqlite" in settings.DATABASE_URL
-engine = create_engine(
-    settings.DATABASE_URL,
-    echo=False,
-    connect_args={"check_same_thread": False} if is_sqlite else {},
-    poolclass=NullPool if is_sqlite else None
-)
+is_mssql = "mssql" in settings.DATABASE_URL
+
+engine_kwargs = {
+    "echo": False,
+    "connect_args": {"check_same_thread": False} if is_sqlite else {},
+    "poolclass": NullPool if is_sqlite else None,
+}
+if is_mssql:
+    engine_kwargs["fast_executemany"] = True
+
+engine = create_engine(settings.DATABASE_URL, **engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

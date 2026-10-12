@@ -643,15 +643,18 @@ def get_inventory_thresholds(
 
     results: List[WarehouseThresholdItem] = []
 
-    for w_id, w_name in warehouses_to_query.items():
-        ws_records = (
-            {ws.product_id: ws for ws in db.query(WarehouseStockEntity).filter(WarehouseStockEntity.warehouse_id == w_id).all()}
-            if db else {}
-        )
+    # Gom query WarehouseStockEntity 1 lần duy nhất cho toàn bộ kho cần lấy
+    ws_all = (
+        db.query(WarehouseStockEntity)
+        .filter(WarehouseStockEntity.warehouse_id.in_(list(warehouses_to_query.keys())))
+        .all()
+    ) if db else []
+    ws_by_wh_prod = {(ws.warehouse_id, ws.product_id): ws for ws in ws_all}
 
+    for w_id, w_name in warehouses_to_query.items():
         for prod in all_prods:
             pid = prod["id"]
-            ws = ws_records.get(pid)
+            ws = ws_by_wh_prod.get((w_id, pid))
             if ws:
                 actual = ws.actual_stock or 0
                 reserved = ws.reserved_stock or 0
@@ -812,8 +815,11 @@ def get_low_stock_alerts_summary(
             "low_stock_count": len(wh_items),
         })
 
+    unique_pids = set(it.product_id for it in low_stock_items)
+
     return LowStockAlertSummary(
-        total_low_stock=len(low_stock_items),
+        total_low_stock=len(unique_pids),
+        total_alerts=len(low_stock_items),
         total_products=len(threshold_items),
         warehouses=wh_stats,
         items=low_stock_items,
@@ -826,6 +832,8 @@ def get_stock_book(
     category: Optional[str] = None,
     stock_status: Optional[str] = None,
     search: Optional[str] = None,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.INVENTORY_READ.value)),
 ):
@@ -837,74 +845,165 @@ def get_stock_book(
     - Tồn khả dụng bán được (available_stock = actual_stock - reserved_stock)
     Bộ lọc: Kho, Nhóm hàng/Ngành hàng, Trạng thái tồn (Tất cả, Còn hàng bán, Hết hàng bán, Dưới định mức), Tìm kiếm SKU/Tên SP.
     """
-    threshold_items = get_inventory_thresholds(warehouse_id=warehouse_id, db=db, current_user=current_user)
+    # 1. Chỉ nạp các cột cần thiết của Product để tăng tốc truy vấn CSDL
+    prods_raw = db.query(
+        ProductEntity.id,
+        ProductEntity.code,
+        ProductEntity.name,
+        ProductEntity.category,
+        ProductEntity.base_unit,
+        ProductEntity.stock,
+        ProductEntity.min_stock
+    ).all() if db else []
 
-    # Thu thập danh mục phân loại duy nhất
-    all_categories = sorted(list(set(it.category for it in threshold_items if it.category)))
+    seen_ids = set()
+    all_prods = []
+    for p in prods_raw:
+        all_prods.append((
+            p[0],
+            p[1],
+            p[2],
+            p[3] or "Thời trang",
+            p[4] or "Cái",
+            p[5] or 0,
+            p[6] if p[6] is not None else 10
+        ))
+        seen_ids.add(p[0])
 
-    # Tạo danh sách kho
+    for rp in RAW_PRODUCTS:
+        if rp["id"] not in seen_ids and rp.get("status") != "inactive":
+            all_prods.append((
+                rp["id"],
+                rp["code"],
+                rp["name"],
+                rp.get("category", "Thời trang"),
+                rp.get("base_unit", "Cái"),
+                rp.get("stock", 0),
+                10
+            ))
+            seen_ids.add(rp["id"])
+
+    # Danh mục duy nhất
+    all_categories = sorted(list(set(cat for _, _, _, cat, _, _, _ in all_prods if cat)))
+
+    # Kho cần truy vấn
+    warehouses_to_query = (
+        {warehouse_id: DEFAULT_WAREHOUSES[warehouse_id]}
+        if warehouse_id and warehouse_id in DEFAULT_WAREHOUSES
+        else DEFAULT_WAREHOUSES
+    )
     warehouses_info = [
         WarehouseInfo(warehouse_id=wid, warehouse_name=wname)
         for wid, wname in DEFAULT_WAREHOUSES.items()
     ]
 
-    items: List[StockBookItem] = []
+    # 2. Chỉ nạp các cột cần thiết của bảng tồn kho
+    ws_rows = (
+        db.query(
+            WarehouseStockEntity.warehouse_id,
+            WarehouseStockEntity.product_id,
+            WarehouseStockEntity.actual_stock,
+            WarehouseStockEntity.reserved_stock,
+            WarehouseStockEntity.min_stock
+        )
+        .filter(WarehouseStockEntity.warehouse_id.in_(list(warehouses_to_query.keys())))
+        .all()
+    ) if db else []
+    ws_map = {(r[0], r[1]): (r[2] or 0, r[3] or 0, r[4]) for r in ws_rows}
+
     search_term = (search or "").strip().lower()
 
-    for it in threshold_items:
-        # Lọc kho nếu người dùng chọn cụ thể
-        if warehouse_id and warehouse_id != "all" and it.warehouse_id != warehouse_id:
-            continue
+    summary_actual = 0
+    summary_reserved = 0
+    summary_available = 0
+    matching_rows = []
 
-        # Lọc danh mục / ngành hàng
-        if category and category != "all" and it.category != category:
-            continue
+    for w_id, w_name in warehouses_to_query.items():
+        for pid, code, name, cat, unit, base_stock, min_stk_prod in all_prods:
+            # Lọc danh mục / ngành hàng
+            if category and category != "all" and cat != category:
+                continue
 
-        # Xác định trạng thái nghiệp vụ
-        if it.available_stock <= 0:
+            # Lọc tìm kiếm theo mã sản phẩm hoặc tên sản phẩm
+            if search_term:
+                match_code = search_term in code.lower()
+                match_name = search_term in name.lower()
+                if not (match_code or match_name):
+                    continue
+
+            ws_info = ws_map.get((w_id, pid))
+            if ws_info:
+                actual = ws_info[0]
+                reserved = ws_info[1]
+                min_stk = ws_info[2] if ws_info[2] is not None else min_stk_prod
+            else:
+                if w_id == "WH01":
+                    actual = max(10, base_stock)
+                elif w_id == "WH02":
+                    actual = max(10, int(base_stock * 0.7))
+                elif w_id == "WH03":
+                    actual = max(5, int(base_stock * 0.5))
+                else:
+                    actual = max(10, base_stock)
+                reserved = 0
+                min_stk = min_stk_prod
+
+            avail = max(0, actual - reserved)
+            is_low = actual <= min_stk
+
+            # Lọc theo trạng thái tồn
+            if stock_status and stock_status != "all":
+                if stock_status == "available" and avail <= 0:
+                    continue
+                elif stock_status == "out_of_stock" and avail > 0:
+                    continue
+                elif stock_status == "low_stock" and not is_low:
+                    continue
+
+            summary_actual += actual
+            summary_reserved += reserved
+            summary_available += avail
+            matching_rows.append((w_id, w_name, pid, code, name, cat, unit, actual, reserved, avail, min_stk, is_low))
+
+    total_count = len(matching_rows)
+    if page is not None and page_size is not None and page > 0 and page_size > 0:
+        start_idx = (page - 1) * page_size
+        slice_to_instantiate = matching_rows[start_idx : start_idx + page_size]
+    else:
+        slice_to_instantiate = matching_rows
+
+    items: List[StockBookItem] = []
+    for r in slice_to_instantiate:
+        avail_val = r[9]
+        is_low_val = r[11]
+        if avail_val <= 0:
             status_label = "out_of_stock"
-        elif it.is_low_stock:
+        elif is_low_val:
             status_label = "low_stock"
         else:
             status_label = "available"
 
-        # Lọc theo trạng thái
-        if stock_status and stock_status != "all":
-            if stock_status == "available" and it.available_stock <= 0:
-                continue
-            elif stock_status == "out_of_stock" and it.available_stock > 0:
-                continue
-            elif stock_status == "low_stock" and not it.is_low_stock:
-                continue
-
-        # Lọc tìm kiếm theo mã sản phẩm hoặc tên sản phẩm
-        if search_term:
-            match_code = search_term in it.product_code.lower()
-            match_name = search_term in it.product_name.lower()
-            if not (match_code or match_name):
-                continue
-
         items.append(StockBookItem(
-            warehouse_id=it.warehouse_id,
-            warehouse_name=it.warehouse_name,
-            product_id=it.product_id,
-            product_code=it.product_code,
-            product_name=it.product_name,
-            category=it.category,
-            base_unit=it.base_unit,
-            actual_stock=it.actual_stock,
-            reserved_stock=it.reserved_stock,
-            available_stock=it.available_stock,
-            min_stock=it.min_stock,
-            is_low_stock=it.is_low_stock,
+            warehouse_id=r[0],
+            warehouse_name=r[1],
+            product_id=r[2],
+            product_code=r[3],
+            product_name=r[4],
+            category=r[5],
+            base_unit=r[6],
+            actual_stock=r[7],
+            reserved_stock=r[8],
+            available_stock=avail_val,
+            min_stock=r[10],
+            is_low_stock=is_low_val,
             status=status_label,
         ))
 
     summary = StockBookSummary(
-        total_actual_stock=sum(it.actual_stock for it in items),
-        total_reserved_stock=sum(it.reserved_stock for it in items),
-        total_available_stock=sum(it.available_stock for it in items),
-        total_skus=len(items),
+        total_actual_stock=summary_actual,
+        total_reserved_stock=summary_reserved,
+        total_available_stock=summary_available,
+        total_skus=total_count,
     )
 
     return StockBookResponse(
@@ -912,6 +1011,9 @@ def get_stock_book(
         items=items,
         warehouses=warehouses_info,
         categories=all_categories,
+        total=total_count,
+        page=page,
+        page_size=page_size,
     )
 
 

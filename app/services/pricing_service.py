@@ -288,6 +288,12 @@ def get_products_for_customer(db: Session, current_user: UserResponse) -> Produc
     total_stock = 0
     total_sell_val = 0.0
 
+    try:
+        from app.api.v1.endpoints.products import _get_all_product_transaction_counts
+        tx_counts_map = _get_all_product_transaction_counts(db)
+    except Exception:
+        tx_counts_map = {}
+
     for db_p, eff_sell, eff_floor in rows:
         units_raw = getattr(db_p, "units", None) or []
         units_converted: list[UnitConversionItem] = []
@@ -326,7 +332,7 @@ def get_products_for_customer(db: Session, current_user: UserResponse) -> Produc
                 images=db_p.images or [],
                 status=db_p.status or "active",
                 is_batch_managed=bool(db_p.is_batch_managed),
-                transaction_count=get_product_transaction_count(db_p.id, db),
+                transaction_count=tx_counts_map.get(db_p.id, 0),
                 # AC 3 & Zero-Trust: Tuyệt đối giấu giá vốn và biên lợi nhuận đối với Customer
                 cost_price=None,
                 profit_margin=None,

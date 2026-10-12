@@ -354,15 +354,22 @@ class ProductBulkImportService:
         categories = db.query(CategoryEntity).all()
         cat_map = {c.name.strip().lower(): (c.id, c.name) for c in categories}
 
-        # 2. Bulk fetch existing products by SKU
+        # 2. Bulk fetch existing products by SKU theo từng chunk 1.000 SKU
+        # (Ngăn ngừa lỗi SQL Server [Microsoft][ODBC Driver 17 for SQL Server]COUNT field incorrect or syntax error / 2.100 parameters limit)
         skus_to_check = [r.sku for r in target_rows if r.sku]
-        existing_products = db.query(ProductEntity).filter(ProductEntity.code.in_(skus_to_check)).all()
+        CHUNK_SIZE = 1000
+        existing_products = []
+        for i in range(0, len(skus_to_check), CHUNK_SIZE):
+            chunk = skus_to_check[i:i + CHUNK_SIZE]
+            existing_products.extend(
+                db.query(ProductEntity).filter(ProductEntity.code.in_(chunk)).all()
+            )
         existing_by_sku = {p.code.strip().upper(): p for p in existing_products}
 
         from app.api.v1.endpoints.products import RAW_PRODUCTS
 
         try:
-            for row in target_rows:
+            for idx, row in enumerate(target_rows, start=1):
                 sku_key = row.sku.strip().upper()
                 cat_info = cat_map.get(row.category.strip().lower())
                 cat_id = cat_info[0] if cat_info else None
@@ -394,6 +401,10 @@ class ProductBulkImportService:
                     db.add(new_prod)
                     existing_by_sku[sku_key] = new_prod
                     created_count += 1
+
+                # Flush định kỳ mỗi 1.000 bản ghi để tối ưu bộ nhớ đệm
+                if idx % 1000 == 0:
+                    db.flush()
 
             db.commit()
 
