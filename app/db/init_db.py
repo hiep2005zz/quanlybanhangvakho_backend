@@ -15,6 +15,7 @@ from app.models.entities import (
     AuditLogEntity,
     WarehouseStockEntity,
     StockAuditEntity,
+    StockTransferEntity,
 )
 from app.models.supplier import SupplierEntity
 from app.models.goods_receipt import (
@@ -174,12 +175,39 @@ def init_db():
                     print(f"SQLite migration notice (products.min_stock): {ex}")
 
             ws_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(warehouse_stocks)")).fetchall()]
-            if ws_cols and "min_stock" not in ws_cols:
+            if ws_cols:
+                if "min_stock" not in ws_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE warehouse_stocks ADD COLUMN min_stock INTEGER DEFAULT 10;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (warehouse_stocks.min_stock): {ex}")
+                if "quantity_on_hand" not in ws_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE warehouse_stocks ADD COLUMN quantity_on_hand INTEGER DEFAULT 0;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (warehouse_stocks.quantity_on_hand): {ex}")
+                if "reserved_quantity" not in ws_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE warehouse_stocks ADD COLUMN reserved_quantity INTEGER DEFAULT 0;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (warehouse_stocks.reserved_quantity): {ex}")
                 try:
-                    conn.execute(text("ALTER TABLE warehouse_stocks ADD COLUMN min_stock INTEGER DEFAULT 10;"))
+                    conn.execute(text("UPDATE warehouse_stocks SET quantity_on_hand = actual_stock WHERE (quantity_on_hand IS NULL OR quantity_on_hand = 0) AND actual_stock > 0;"))
+                    conn.execute(text("UPDATE warehouse_stocks SET reserved_quantity = reserved_stock WHERE reserved_quantity IS NULL;"))
                     conn.commit()
                 except Exception as ex:
-                    print(f"SQLite migration notice (warehouse_stocks.min_stock): {ex}")
+                    print(f"SQLite migration notice (warehouse_stocks sync): {ex}")
+
+            order_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(orders)")).fetchall()]
+            if order_cols and "reservation_expires_at" not in order_cols:
+                try:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN reservation_expires_at DATETIME;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (orders.reservation_expires_at): {ex}")
 
             dealer_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(dealers)")).fetchall()]
             if "customer_group" not in dealer_cols:
@@ -303,8 +331,15 @@ def init_db():
                 "IF COL_LENGTH('price_books', 'is_locked') IS NULL ALTER TABLE price_books ADD is_locked BIT DEFAULT 0;",
                 "IF COL_LENGTH('price_book_items', 'sale_price') IS NULL ALTER TABLE price_book_items ADD sale_price FLOAT DEFAULT 0.0;",
                 "IF COL_LENGTH('price_book_items', 'floor_price') IS NULL ALTER TABLE price_book_items ADD floor_price FLOAT DEFAULT 0.0;",
+                "IF COL_LENGTH('products', 'min_stock') IS NULL ALTER TABLE products ADD min_stock INT DEFAULT 10;",
+                "IF COL_LENGTH('warehouse_stocks', 'min_stock') IS NULL ALTER TABLE warehouse_stocks ADD min_stock INT DEFAULT 10;",
+                "IF COL_LENGTH('warehouse_stocks', 'quantity_on_hand') IS NULL ALTER TABLE warehouse_stocks ADD quantity_on_hand INT DEFAULT 0;",
+                "IF COL_LENGTH('warehouse_stocks', 'reserved_quantity') IS NULL ALTER TABLE warehouse_stocks ADD reserved_quantity INT DEFAULT 0;",
+                "IF COL_LENGTH('orders', 'reservation_expires_at') IS NULL ALTER TABLE orders ADD reservation_expires_at DATETIME;",
                 "IF COL_LENGTH('discount_tiers', 'discount_amount') IS NULL ALTER TABLE discount_tiers ADD discount_amount FLOAT DEFAULT 0.0;",
                 "IF COL_LENGTH('discount_tiers', 'discount_type') IS NULL ALTER TABLE discount_tiers ADD discount_type NVARCHAR(20) DEFAULT 'percent';",
+                "UPDATE warehouse_stocks SET quantity_on_hand = actual_stock WHERE quantity_on_hand IS NULL OR quantity_on_hand = 0;",
+                "UPDATE warehouse_stocks SET reserved_quantity = reserved_stock WHERE reserved_quantity IS NULL;",
             ]:
                 try:
                     conn.execute(text(sql_statement))
@@ -674,6 +709,56 @@ def init_db():
             db.add_all(policies)
             db.commit()
             print("Discount policies seeded successfully.")
+
+        from app.models.dealer import load_dealers_db
+        load_dealers_db()
+        from app.api.v1.endpoints.discounts import load_discount_policies
+        load_discount_policies(db)
+
+        # 10. Đồng bộ tồn kho tổng của ProductEntity từ tổng tồn thực tế của các chi nhánh kho (warehouse_stocks)
+        try:
+            from sqlalchemy import func
+            DEFAULT_WAREHOUSES = {
+                "WH01": "Kho Tổng Hà Nội",
+                "WH02": "Kho Chi Nhánh TP.HCM",
+                "WH03": "Kho Chi Nhánh Đà Nẵng",
+            }
+            existing_ws = {(ws.product_id, ws.warehouse_id) for ws in db.query(WarehouseStockEntity).all()}
+            prods = db.query(ProductEntity).all()
+            for p in prods:
+                base_stk = p.stock or 100
+                for wid, wname in DEFAULT_WAREHOUSES.items():
+                    if (p.id, wid) not in existing_ws:
+                        if wid == "WH01":
+                            act = max(10, base_stk)
+                        elif wid == "WH02":
+                            act = max(10, int(base_stk * 0.7))
+                        elif wid == "WH03":
+                            act = max(5, int(base_stk * 0.5))
+                        else:
+                            act = max(10, base_stk)
+                        ws_new = WarehouseStockEntity(
+                            warehouse_id=wid,
+                            warehouse_name=wname,
+                            product_id=p.id,
+                            actual_stock=act,
+                            reserved_stock=0,
+                            min_stock=p.min_stock or 10,
+                        )
+                        db.add(ws_new)
+                        existing_ws.add((p.id, wid))
+            db.flush()
+
+            wh_rows = db.query(WarehouseStockEntity.product_id, func.sum(WarehouseStockEntity.actual_stock)).group_by(WarehouseStockEntity.product_id).all()
+            wh_map = {pid: int(val) for pid, val in wh_rows if val is not None}
+            for p in prods:
+                if p.id in wh_map and wh_map[p.id] is not None:
+                    if p.stock != wh_map[p.id]:
+                        p.stock = wh_map[p.id]
+            db.commit()
+            print("Product stocks synchronized from warehouses successfully.")
+        except Exception as sync_err:
+            print(f"Error syncing product stocks from warehouses: {sync_err}")
 
         print("Database initialization completed successfully.")
     except Exception as e:

@@ -131,6 +131,8 @@ def get_or_create_warehouse_stock(
         product_id=product_id,
         actual_stock=actual,
         reserved_stock=reserved,
+        quantity_on_hand=actual,
+        reserved_quantity=reserved,
     )
 
     # Nếu sản phẩm không tồn tại trong bảng products của DB, không insert để tránh lỗi Foreign Key
@@ -388,6 +390,9 @@ def validate_and_reserve_order_stock(
     # Cập nhật tăng tồn giữ chỗ cho tất cả sản phẩm hợp lệ
     for stock_rec, base_qty, itm in locked_stocks:
         stock_rec.reserved_stock = (stock_rec.reserved_stock or 0) + base_qty
+        stock_rec.reserved_quantity = stock_rec.reserved_stock
+        if stock_rec.quantity_on_hand is None:
+            stock_rec.quantity_on_hand = stock_rec.actual_stock or 0
 
     db.flush()
 
