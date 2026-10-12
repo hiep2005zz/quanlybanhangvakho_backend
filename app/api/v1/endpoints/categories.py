@@ -29,7 +29,7 @@ def build_category_tree(categories: List[CategoryEntity], parent_id: Optional[in
 @router.get("/tree", response_model=List[CategoryTreeResponse])
 def get_categories_tree(
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value]))
+    current_user: UserResponse = Depends(get_current_user)
 ):
     categories = db.query(CategoryEntity).all()
     return build_category_tree(categories)
@@ -37,7 +37,7 @@ def get_categories_tree(
 @router.get("", response_model=List[CategoryResponse])
 def get_categories(
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value]))
+    current_user: UserResponse = Depends(get_current_user)
 ):
     return db.query(CategoryEntity).all()
 

@@ -715,12 +715,58 @@ def assign_product_to_location(
 
     if payload.quantity <= 0:
         if stock_record:
+            old_qty = stock_record.quantity
             db.delete(stock_record)
+            if old_qty > 0:
+                prod.stock = max(0, (prod.stock or 0) - old_qty)
+                try:
+                    from app.api.v1.endpoints.products import RAW_PRODUCTS
+                    for raw_p in RAW_PRODUCTS:
+                        if raw_p.get("id") == prod.id:
+                            raw_p["stock"] = prod.stock
+                            break
+                except Exception:
+                    pass
             db.commit()
         return {
             "message": f"Đã giải phóng sản phẩm '{prod.name}' khỏi vị trí '{loc.location_code}'.",
             "quantity": 0,
         }
+
+    old_qty = stock_record.quantity if stock_record else 0
+    net_increase = payload.quantity - old_qty
+
+    if net_increase > 0:
+        # 1. Kiểm tra sức chứa & tải trọng tối đa của vị trí kệ (Location Capacity & Payload)
+        current_loc_stock = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
+            LocationStockEntity.location_id == loc.id
+        ).scalar() or 0
+        loc_max_cap = loc.max_capacity if loc.max_capacity is not None else 500.0
+
+        if loc_max_cap > 0 and (current_loc_stock + net_increase > loc_max_cap):
+            avail = max(0, int(loc_max_cap - current_loc_stock))
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Vượt quá sức chứa và tải trọng của kệ! Vị trí {loc.location_code} chỉ có sức chứa tối đa là {int(loc_max_cap)} SP (hiện đang chứa {int(current_loc_stock)} SP, chỉ còn chỗ cho {avail} SP). Không thể nhập thêm {net_increase} SP."
+            )
+
+        # 2. Kiểm tra ràng buộc sức chứa của toàn bộ Khu vực (Zone Capacity)
+        if loc.zone:
+            zone_locs = db.query(WarehouseLocationEntity).filter(
+                WarehouseLocationEntity.warehouse_id == loc.warehouse_id,
+                func.lower(WarehouseLocationEntity.zone) == loc.zone.lower()
+            ).all()
+            total_zone_cap = sum(l.max_capacity or 0 for l in zone_locs)
+            zone_loc_ids = [l.id for l in zone_locs]
+            current_zone_stock = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
+                LocationStockEntity.location_id.in_(zone_loc_ids)
+            ).scalar() or 0
+
+            if total_zone_cap > 0 and (current_zone_stock + net_increase > total_zone_cap):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Kho đầy! Khu vực {loc.zone} đã đạt giới hạn sức chứa tối đa ({int(total_zone_cap)} SP). Vui lòng sắp xếp vị trí khác hoặc mở thêm kho mới."
+                )
 
     if stock_record:
         stock_record.quantity = payload.quantity
@@ -734,6 +780,18 @@ def assign_product_to_location(
             created_at=datetime.now(timezone.utc),
         )
         db.add(stock_record)
+
+    # Đồng bộ tổng tồn kho của sản phẩm (dữ liệu giả lập & DB) khi cập nhật tồn kệ
+    if net_increase != 0:
+        prod.stock = max(0, (prod.stock or 0) + net_increase)
+        try:
+            from app.api.v1.endpoints.products import RAW_PRODUCTS
+            for raw_p in RAW_PRODUCTS:
+                if raw_p.get("id") == prod.id:
+                    raw_p["stock"] = prod.stock
+                    break
+        except Exception:
+            pass
 
     db.commit()
 
@@ -776,6 +834,18 @@ def transfer_product_between_locations(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Số lượng tại vị trí nguồn '{source_loc.location_code}' không đủ để chuyển (Hiện có: {avail}, yêu cầu chuyển: {payload.quantity})."
+        )
+
+    # Kiểm tra sức chứa vị trí đích
+    dest_loc_stock = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
+        LocationStockEntity.location_id == dest_loc.id
+    ).scalar() or 0
+    dest_max_cap = dest_loc.max_capacity if dest_loc.max_capacity is not None else 500.0
+    if dest_max_cap > 0 and (dest_loc_stock + payload.quantity > dest_max_cap):
+        avail_dest = max(0, int(dest_max_cap - dest_loc_stock))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Vượt quá sức chứa và tải trọng của kệ đích! Vị trí '{dest_loc.location_code}' chỉ còn trống {avail_dest} SP (sức chứa tối đa: {int(dest_max_cap)} SP, hiện có: {int(dest_loc_stock)} SP)."
         )
 
     # Trừ nguồn
@@ -1099,13 +1169,13 @@ def get_warehouse_master_data(
             rack_items.append(MasterDataOptionItem(code=f"R-{len(rack_items)+1}", name=lr.strip(), type="rack"))
             seen_racks.add(lr.strip().lower())
 
-    # Gợi ý mặc định nếu chưa có
+    # Gợi ý mặc định chuẩn hóa cấu trúc: 3 Dãy x 2 Tầng
     if not aisle_items:
-        for a in ["Dãy 1", "Dãy 2", "Dãy 3", "Dãy A1", "Dãy B1"]:
+        for a in ["Dãy 1", "Dãy 2", "Dãy 3"]:
             aisle_items.append(MasterDataOptionItem(code=a.replace(" ", "-"), name=a, type="aisle"))
 
     if not rack_items:
-        for rk in ["Tầng 1", "Tầng 2", "Tầng 3", "Tầng 4", "Kệ 01", "Kệ 02"]:
+        for rk in ["Tầng 1", "Tầng 2"]:
             rack_items.append(MasterDataOptionItem(code=rk.replace(" ", "-"), name=rk, type="rack"))
 
     # 3. Ô chứa hàng (Bins)
@@ -1166,26 +1236,11 @@ def get_warehouse_zones(
                 )
                 db.add(z_entity)
                 created_zones.append(z_entity)
-        if not created_zones:
-            default_samples = [
-                ("KHU-A", "Khu A - Thời trang", "Khu vực trưng bày và lưu kho quần áo"),
-                ("KHU-B", "Khu B - Hàng may mặc", "Khu lưu kho phụ kiện thời trang"),
-                ("KHU-C", "Khu C - Hàng phụ kiện", "Khu vực hàng nhỏ, phụ kiện đóng gói"),
-            ]
-            for zc, zn, zd in default_samples:
-                z_entity = WarehouseZoneEntity(
-                    warehouse_id=warehouse_id,
-                    zone_code=zc,
-                    zone_name=zn,
-                    description=zd,
-                    is_active=True,
-                )
-                db.add(z_entity)
-                created_zones.append(z_entity)
-        db.commit()
-        zones = db.query(WarehouseZoneEntity).filter(
-            WarehouseZoneEntity.warehouse_id == warehouse_id
-        ).order_by(WarehouseZoneEntity.id.asc()).all()
+        if created_zones:
+            db.commit()
+            zones = db.query(WarehouseZoneEntity).filter(
+                WarehouseZoneEntity.warehouse_id == warehouse_id
+            ).order_by(WarehouseZoneEntity.id.asc()).all()
 
     results: List[WarehouseZoneResponse] = []
     for z in zones:
@@ -1359,41 +1414,29 @@ def get_warehouse_racks(
 
     racks = query.order_by(WarehouseRackEntity.id.asc()).all()
 
-    # Khởi tạo mặc định nếu chưa có
-    if not racks and not rack_type and not zone_id:
-        default_racks = [
-            ("DAY-01", "Dãy 1", "aisle", 1000.0),
-            ("DAY-02", "Dãy 2", "aisle", 1000.0),
-            ("DAY-A1", "Dãy A1", "aisle", 1200.0),
-            ("TANG-01", "Tầng 1", "rack", 500.0),
-            ("TANG-02", "Tầng 2", "rack", 500.0),
-            ("TANG-03", "Tầng 3", "rack", 500.0),
-            ("KE-01", "Kệ 01", "rack", 800.0),
-        ]
-        created = []
-        for rc, rn, rt, cap in default_racks:
-            r_ent = WarehouseRackEntity(
-                warehouse_id=warehouse_id,
-                rack_code=rc,
-                rack_name=rn,
-                rack_type=rt,
-                max_capacity=cap,
-                is_active=True,
-            )
-            db.add(r_ent)
-            created.append(r_ent)
-        db.commit()
-        racks = db.query(WarehouseRackEntity).filter(
-            WarehouseRackEntity.warehouse_id == warehouse_id
-        ).order_by(WarehouseRackEntity.id.asc()).all()
+    # Không tự động tạo racks nếu rỗng để người dùng tự do thêm theo nhu cầu
 
     results: List[WarehouseRackResponse] = []
     for r in racks:
-        # Đếm số location đang dùng tên rack/aisle này
-        loc_count = db.query(WarehouseLocationEntity).filter(
+        if " - " in r.rack_name:
+            parts = r.rack_name.split(" - ")
+            aisle_part = parts[0].strip()
+            rack_part = parts[1].strip()
+            name_cond = (
+                (WarehouseLocationEntity.aisle == aisle_part) & (WarehouseLocationEntity.rack == rack_part)
+            ) | (WarehouseLocationEntity.location_name.contains(r.rack_name))
+        else:
+            name_cond = (
+                (WarehouseLocationEntity.aisle == r.rack_name) | (WarehouseLocationEntity.rack == r.rack_name)
+            ) | (WarehouseLocationEntity.location_name.contains(r.rack_name))
+
+        loc_filter = [
             WarehouseLocationEntity.warehouse_id == warehouse_id,
-            (WarehouseLocationEntity.aisle == r.rack_name) | (WarehouseLocationEntity.rack == r.rack_name)
-        ).count()
+            name_cond
+        ]
+        if r.zone:
+            loc_filter.append(WarehouseLocationEntity.zone == r.zone.zone_name)
+        loc_count = db.query(WarehouseLocationEntity).filter(*loc_filter).count()
 
         results.append(WarehouseRackResponse(
             id=r.id,
@@ -1439,12 +1482,49 @@ def create_warehouse_rack(
         rack_code=clean_code,
         rack_name=payload.rack_name.strip(),
         rack_type=payload.rack_type or "rack",
-        max_capacity=payload.max_capacity if payload.max_capacity is not None else 1000.0,
+        max_capacity=payload.max_capacity if payload.max_capacity is not None else 500.0,
         is_active=payload.is_active if payload.is_active is not None else True,
     )
     db.add(new_rack)
     db.commit()
     db.refresh(new_rack)
+
+    # ĐỒNG BỘ: Tự động tạo vị trí kệ lưu kho tương ứng trong danh sách vị trí kệ (Tab 1)
+    target_zone = db.query(WarehouseZoneEntity).filter(WarehouseZoneEntity.id == payload.zone_id).first() if payload.zone_id else None
+    zone_name = target_zone.zone_name if target_zone else None
+
+    wh_prefix = wh.code.replace("KHO_", "").replace("KHO-", "").strip().upper()
+    loc_code = f"{wh_prefix}-{clean_code}" if not clean_code.startswith(f"{wh_prefix}-") else clean_code
+
+    aisle_name = None
+    rack_layer_name = payload.rack_name.strip()
+    if " - " in payload.rack_name:
+        parts = payload.rack_name.split(" - ")
+        aisle_name = parts[0].strip()
+        rack_layer_name = parts[1].strip()
+
+    loc_name = f"{zone_name} - {payload.rack_name.strip()}" if zone_name else payload.rack_name.strip()
+
+    existing_loc = db.query(WarehouseLocationEntity).filter(
+        WarehouseLocationEntity.warehouse_id == warehouse_id,
+        func.lower(WarehouseLocationEntity.location_code) == loc_code.lower()
+    ).first()
+
+    if not existing_loc:
+        new_loc = WarehouseLocationEntity(
+            warehouse_id=warehouse_id,
+            location_code=loc_code,
+            location_name=loc_name,
+            zone=zone_name,
+            aisle=aisle_name,
+            rack=rack_layer_name,
+            max_capacity=payload.max_capacity if payload.max_capacity is not None else 500.0,
+            is_active=payload.is_active if payload.is_active is not None else True,
+            status="Đang sử dụng",
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(new_loc)
+        db.commit()
 
     return WarehouseRackResponse(
         id=new_rack.id,
@@ -1457,7 +1537,7 @@ def create_warehouse_rack(
         max_capacity=new_rack.max_capacity,
         is_active=new_rack.is_active,
         created_at=new_rack.created_at,
-        locations_count=0,
+        locations_count=1,
     )
 
 
@@ -1472,7 +1552,11 @@ def update_warehouse_rack(
     if not rack:
         raise HTTPException(status_code=404, detail="Không tìm thấy kệ/dãy.")
 
+    old_code = rack.rack_code
     old_name = rack.rack_name
+    wh = db.query(WarehouseEntity).filter(WarehouseEntity.id == rack.warehouse_id).first()
+    wh_prefix = wh.code.replace("KHO_", "").replace("KHO-", "").strip().upper() if wh else ""
+    old_loc_code = f"{wh_prefix}-{old_code}"
 
     if payload.rack_code is not None:
         clean_code = payload.rack_code.strip().upper()
@@ -1486,20 +1570,7 @@ def update_warehouse_rack(
         rack.rack_code = clean_code
 
     if payload.rack_name is not None and payload.rack_name.strip():
-        new_name = payload.rack_name.strip()
-        # Đồng bộ cập nhật vị trí tương ứng
-        if old_name != new_name:
-            if rack.rack_type == "aisle":
-                db.query(WarehouseLocationEntity).filter(
-                    WarehouseLocationEntity.warehouse_id == rack.warehouse_id,
-                    WarehouseLocationEntity.aisle == old_name
-                ).update({"aisle": new_name}, synchronize_session=False)
-            else:
-                db.query(WarehouseLocationEntity).filter(
-                    WarehouseLocationEntity.warehouse_id == rack.warehouse_id,
-                    WarehouseLocationEntity.rack == old_name
-                ).update({"rack": new_name}, synchronize_session=False)
-        rack.rack_name = new_name
+        rack.rack_name = payload.rack_name.strip()
 
     if payload.rack_type is not None:
         rack.rack_type = payload.rack_type
@@ -1509,6 +1580,27 @@ def update_warehouse_rack(
         rack.max_capacity = payload.max_capacity
     if payload.is_active is not None:
         rack.is_active = payload.is_active
+
+    # Đồng bộ vị trí tương ứng trong warehouse_locations
+    loc = db.query(WarehouseLocationEntity).filter(
+        WarehouseLocationEntity.warehouse_id == rack.warehouse_id,
+        (WarehouseLocationEntity.location_code == old_loc_code) | (WarehouseLocationEntity.location_code == old_code)
+    ).first()
+    if loc:
+        loc.location_code = f"{wh_prefix}-{rack.rack_code}" if not rack.rack_code.startswith(f"{wh_prefix}-") else rack.rack_code
+        if " - " in rack.rack_name:
+            parts = rack.rack_name.split(" - ")
+            loc.aisle = parts[0].strip()
+            loc.rack = parts[1].strip()
+        else:
+            loc.rack = rack.rack_name
+        if rack.zone:
+            loc.zone = rack.zone.zone_name
+            loc.location_name = f"{rack.zone.zone_name} - {rack.rack_name}"
+        else:
+            loc.location_name = rack.rack_name
+        loc.max_capacity = rack.max_capacity
+        loc.is_active = rack.is_active
 
     db.commit()
     db.refresh(rack)
@@ -1543,16 +1635,26 @@ def delete_warehouse_rack(
     if not rack:
         raise HTTPException(status_code=404, detail="Không tìm thấy kệ/dãy.")
 
-    loc_count = db.query(WarehouseLocationEntity).filter(
-        WarehouseLocationEntity.warehouse_id == rack.warehouse_id,
-        (WarehouseLocationEntity.aisle == rack.rack_name) | (WarehouseLocationEntity.rack == rack.rack_name)
-    ).count()
+    wh = db.query(WarehouseEntity).filter(WarehouseEntity.id == rack.warehouse_id).first()
+    wh_prefix = wh.code.replace("KHO_", "").replace("KHO-", "").strip().upper() if wh else ""
+    loc_code = f"{wh_prefix}-{rack.rack_code}"
 
-    if loc_count > 0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Kệ/Dãy '{rack.rack_name}' đang được liên kết trong {loc_count} vị trí lưu kho. Vui lòng chuyển các vị trí trước khi xóa."
-        )
+    # Tìm vị trí lưu kho liên kết
+    loc = db.query(WarehouseLocationEntity).filter(
+        WarehouseLocationEntity.warehouse_id == rack.warehouse_id,
+        (WarehouseLocationEntity.location_code == loc_code) | (WarehouseLocationEntity.location_code == rack.rack_code)
+    ).first()
+
+    if loc:
+        current_qty = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
+            LocationStockEntity.location_id == loc.id
+        ).scalar() or 0
+        if current_qty > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Vị trí '{loc.location_code}' tương ứng đang chứa {current_qty} sản phẩm. Hãy dọn hàng trước khi xóa kệ."
+            )
+        db.delete(loc)
 
     db.delete(rack)
     db.commit()

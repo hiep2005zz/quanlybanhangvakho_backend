@@ -339,6 +339,12 @@ def resolve_price(
     sale_val = pb_item.sale_price if pb_item.sale_price is not None else pb_item.price
     floor_val = pb_item.floor_price if pb_item.floor_price is not None else pb_item.min_price
 
+    # Đồng bộ với giá niêm yết và giá sàn mới nhất từ sản phẩm nếu bảng giá chưa thiết lập giá cụ thể
+    if prod and (sale_val is None or sale_val == 0) and prod.sell_price is not None and prod.sell_price > 0:
+        sale_val = prod.sell_price
+    if prod and (floor_val is None or floor_val == 0) and prod.floor_price is not None and prod.floor_price > 0:
+        floor_val = prod.floor_price
+
     return ResolvePriceResponse(
         price_book_id=pb.id,
         price_book_code=pb.code,
