@@ -8,7 +8,7 @@ Nếu tài khoản nhân viên đang ở trạng thái LOCKED, từ chối tạo
 """
 import json
 from uuid import uuid4
-from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEntity, ProductEntity
+from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEntity, ProductEntity, Order, OrderStatus
 from typing import List, Optional, Union
 from datetime import date, datetime, timezone, timedelta
 from pydantic import BaseModel, Field
@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, status as http_st
 from sqlalchemy import func, case, or_, and_
 from sqlalchemy.orm import Session
 from app.db.init_db import _ensure_legacy_columns
-from app.api.deps import get_current_user, require_permission, require_roles, require_sales_or_admin_role
+from app.api.deps import get_current_user, require_permission, require_roles, require_sales_or_admin_role, RoleChecker
 from app.core.database import get_db
 from app.core.rbac import Permission, Role
 from app.schemas.auth import UserResponse
@@ -888,7 +888,8 @@ def get_order_regions(
     return sorted(list(regions))
 
 
-@router.get("", response_model=Union[OrderListFilteredResponse, List[OrderResponse]])
+@router.get("", response_model=Union[OrderListFilteredResponse, List[OrderResponse]], dependencies=[Depends(RoleChecker(['Admin', 'Sales', 'Customer']))])
+@router.get("/", response_model=Union[OrderListFilteredResponse, List[OrderResponse]], dependencies=[Depends(RoleChecker(['Admin', 'Sales', 'Customer']))], include_in_schema=False)
 def get_orders(
     request: Request,
     status: Optional[str] = None,
@@ -902,14 +903,20 @@ def get_orders(
     search: Optional[str] = None,
     format: Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value))
+    current_user: UserResponse = Depends(RoleChecker(['Admin', 'Sales', 'Customer']))
 ):
     """
     Lấy danh sách đơn hàng / hóa đơn kèm bộ lọc đa tiêu chí và tổng hợp doanh thu.
-    Áp dụng Zero-Trust Row-Level Security (RLS) cho vai trò sales.
+    Áp dụng Zero-Trust Row-Level Security (RLS) cho vai trò sales và đại lý (customer).
     """
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (current_user.roles or [current_user.role])
-    if current_user.username == "muahang" or "purchasing" in user_roles or current_user.role == "purchasing":
+    user_roles_lower = [str(r).lower() for r in user_roles]
+    if current_user.role:
+        user_roles_lower.append(str(current_user.role).lower())
+    is_customer = ("customer" in user_roles_lower) or (str(current_user.role).lower() in ("customer", "agent")) or current_user.role == "Customer"
+    is_purchasing = ("purchasing" in user_roles_lower) or (str(current_user.role).lower() == "purchasing")
+
+    if is_purchasing and not is_customer:
         raise HTTPException(
             status_code=403,
             detail="Truy cập bị từ chối (403 Forbidden). Nhân viên mua hàng không có quyền truy cập đơn hàng bán."
@@ -917,9 +924,9 @@ def get_orders(
 
     allowed_roles = {
         Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value, Role.SALES.value, Role.CUSTOMER.value,
-        "admin", "sales_manager", "sales", "customer", "agent"
+        "admin", "sales_manager", "sales", "customer", "agent", "Admin", "Sales", "Customer"
     }
-    if not any(r in allowed_roles for r in user_roles):
+    if not (any(r in allowed_roles for r in user_roles_lower) or current_user.role in allowed_roles or is_customer):
         raise HTTPException(
             status_code=403,
             detail="Chức năng chỉ dành cho Quản trị viên, Quản lý kinh doanh, Nhân viên kinh doanh và Đại lý."
@@ -943,10 +950,10 @@ def get_orders(
     )
 
     # Quyền & Roles
-    is_admin = Role.SYSTEM_ADMIN.value in user_roles or current_user.role == Role.SYSTEM_ADMIN.value or "admin" in user_roles or current_user.role == "admin"
-    is_sales_manager = Role.SALES_MANAGER.value in user_roles or current_user.role == Role.SALES_MANAGER.value or "sales_manager" in user_roles or current_user.role == "sales_manager"
-    is_sales = ("sales" in user_roles or current_user.role == "sales" or Role.SALES.value in user_roles) and not (is_admin or is_sales_manager)
-    is_customer = ("customer" in user_roles or current_user.role == "customer" or Role.CUSTOMER.value in user_roles) and not (is_admin or is_sales_manager or is_sales or "accountant" in user_roles)
+    is_admin = Role.SYSTEM_ADMIN.value in user_roles_lower or "admin" in user_roles_lower or str(current_user.role).lower() in (Role.SYSTEM_ADMIN.value, "admin")
+    is_sales_manager = Role.SALES_MANAGER.value in user_roles_lower or "sales_manager" in user_roles_lower or str(current_user.role).lower() in (Role.SALES_MANAGER.value, "sales_manager")
+    is_sales = ("sales" in user_roles_lower or str(current_user.role).lower() == "sales" or Role.SALES.value in user_roles_lower) and not (is_admin or is_sales_manager)
+    is_customer = ("customer" in user_roles_lower or str(current_user.role).lower() in ("customer", "agent") or Role.CUSTOMER.value in user_roles_lower or current_user.role == "Customer") and not (is_admin or is_sales_manager or is_sales or "accountant" in user_roles_lower)
     can_view_cost = is_admin or is_sales_manager or (hasattr(Permission, "COST_READ") and Permission.COST_READ.value in (current_user.permissions or []))
 
     # Đồng bộ các đơn in-memory nếu có vào DB để SQL query aggregation chính xác
@@ -1001,30 +1008,42 @@ def get_orders(
 
 
     # 3. Xây dựng Query cơ sở
-    query = db.query(OrderEntity)
+    query = db.query(Order)
 
-    if is_sales:
-        if dealer_id is not None:
-            query = query.filter(OrderEntity.dealer_id == dealer_id)
-        else:
-            query = query.filter(OrderEntity.dealer_id.in_(list(assigned_dealer_ids)))
+    if current_user.role == 'Customer':
+        # Khách hàng CHỈ được xem đơn hàng do chính họ tạo / thuộc về họ
+        customer_dealer = _get_customer_dealer(current_user)
+        target_cust_id = customer_dealer.id if customer_dealer else current_user.id
+        query = query.filter(
+            or_(
+                Order.customer_id == current_user.id,
+                Order.customer_id == target_cust_id,
+                Order.dealer_id == target_cust_id,
+                Order.created_by == current_user.username
+            )
+        )
     elif is_customer:
         customer_dealer = _get_customer_dealer(current_user)
-        if customer_dealer:
-            query = query.filter(OrderEntity.dealer_id == customer_dealer.id)
-        else:
-            if is_legacy_request:
-                return []
-            return OrderListFilteredResponse(
-                items=[], total=0, total_count=0, page=cur_page, page_size=cur_page_size,
-                filtered_total_amount=0.0, pending_count=0, confirmed_count=0
+        target_cust_id = customer_dealer.id if customer_dealer else current_user.id
+        query = query.filter(
+            or_(
+                Order.customer_id == current_user.id,
+                Order.customer_id == target_cust_id,
+                Order.dealer_id == target_cust_id,
+                Order.created_by == current_user.username
             )
-    else:
-        # Admin / Sales Manager / Accountant
+        )
+    elif is_sales:
         if dealer_id is not None:
-            query = query.filter(OrderEntity.dealer_id == dealer_id)
+            query = query.filter(Order.dealer_id == dealer_id)
+        else:
+            query = query.filter(Order.dealer_id.in_(list(assigned_dealer_ids)))
+    else:
+        # Admin (xem tất cả) / Sales Manager / Accountant
+        if dealer_id is not None:
+            query = query.filter(Order.dealer_id == dealer_id)
         if sales_rep_id is not None:
-            query = query.filter(OrderEntity.assigned_sale_id == sales_rep_id)
+            query = query.filter(Order.assigned_sale_id == sales_rep_id)
 
     # 4. Bộ lọc trạng thái
     if status and status.strip() and status.strip().upper() != "ALL":
@@ -2914,6 +2933,33 @@ def _execute_order_cancellation(
                 detail="Đại lý chỉ được phép hủy đơn hàng khi đơn chưa được duyệt (trạng thái Chờ duyệt)."
             )
 
+    # 3. State Guard: Đơn đã xuất kho thì không hủy được (phải đi đường trả hàng).
+    # Chặn ngay đầu API trước phần xử lý lý do và nhả tồn kho.
+    order_status = (persisted_order.status if persisted_order else target.get("status", "")).strip()
+    EXPORTED_STATUS_LIST = [
+        "Đã xuất", "Đã giao", "Đóng", "Hoàn thành",
+        OrderStatus.EXPORTED.value, OrderStatus.DELIVERED.value, OrderStatus.CLOSED.value,
+        "EXPORTED", "SHIPPED", "DISPATCHED", "DELIVERED", "CLOSED", "COMPLETED",
+        "ĐÃ XUẤT", "ĐÃ GIAO", "ĐÓNG", "HOÀN THÀNH"
+    ]
+    rank = ORDER_STATUS_RANKS.get(order_status.upper(), 0)
+    if (
+        order_status in ['Đã xuất', 'Đã giao', 'Đóng']
+        or order_status.upper() in [s.upper() for s in EXPORTED_STATUS_LIST]
+        or rank >= 5
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đơn hàng đã xuất kho, không thể hủy. Vui lòng đi đường trả hàng."
+        )
+
+    if order_status.upper() in ("CANCELLED", "REJECTED", "ĐÃ HỦY", "TỪ CHỐI"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đơn hàng đã ở trạng thái hủy hoặc từ chối, không thể hủy lại."
+        )
+
+    # 4. Reason Validation: Bắt buộc nhập lý do hủy
     clean_reason = (reason or "").strip()
     if not clean_reason:
         raise HTTPException(
@@ -2921,19 +2967,7 @@ def _execute_order_cancellation(
             detail="Lý do hủy đơn hàng là bắt buộc. Vui lòng nhập lý do hủy."
         )
 
-    cur_status = (persisted_order.status if persisted_order else target.get("status", "")).upper()
-    if cur_status in ("CANCELLED", "REJECTED"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Đơn hàng đã ở trạng thái hủy hoặc từ chối, không thể hủy lại."
-        )
-
-    rank = ORDER_STATUS_RANKS.get(cur_status, 0)
-    if rank >= 5:  # >= EXPORTED (Đã xuất)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Đơn hàng đã ở trạng thái '{cur_status}' (từ 'Đã xuất' trở lên), không thể hủy đơn. Vui lòng thực hiện quy trình trả hàng."
-        )
+    cur_status = order_status.upper()
 
     old_status = cur_status
     now_utc = datetime.now(timezone.utc)

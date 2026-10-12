@@ -243,6 +243,8 @@ def has_roles_permission(roles: List[str], permission: str) -> bool:
         return False
     for r in roles:
         perms = ROLE_PERMISSIONS.get(r)
+        if perms is None and isinstance(r, str):
+            perms = ROLE_PERMISSIONS.get(r.lower())
         if perms is not None:
             if "*" in perms or permission in perms:
                 return True
