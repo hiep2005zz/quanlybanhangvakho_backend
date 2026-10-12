@@ -44,26 +44,18 @@ def test_update_threshold_and_alerts():
     token = get_token("admin")
     headers = {"Authorization": f"Bearer {token}"}
 
-    cur_resp = client.get("/api/v1/inventory/thresholds?warehouse_id=WH01", headers=headers)
-    cur_stock = 100
-    if cur_resp.status_code == 200:
-        found = next((x for x in cur_resp.json() if x["product_id"] == 1), None)
-        if found:
-            cur_stock = found["actual_stock"]
-    high_min_stock = max(500, cur_stock + 100)
-
     # Đặt min_stock cao hơn tồn kho thực tế để kích hoạt cảnh báo
     update_payload = {
         "warehouse_id": "WH01",
         "product_id": 1,
-        "min_stock": high_min_stock,
+        "min_stock": 500,  # Tồn thực tế của SP001 khoảng 100-120 < 500
     }
     resp = client.put("/api/v1/inventory/thresholds", json=update_payload, headers=headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["warehouse_id"] == "WH01"
     assert data["product_id"] == 1
-    assert data["min_stock"] == high_min_stock
+    assert data["min_stock"] == 500
     assert data["is_low_stock"] is True
     assert data["shortage_quantity"] > 0
 
