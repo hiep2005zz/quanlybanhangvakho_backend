@@ -181,6 +181,18 @@ def adjust_stock(
 
     # Lưu vào database nếu có session
     if db:
+        ws = db.query(WarehouseStockEntity).filter(
+            WarehouseStockEntity.warehouse_id == "WH01",
+            WarehouseStockEntity.product_id == data.product_id
+        ).first()
+        if ws:
+            ws.actual_stock = max(0, (ws.actual_stock or 0) + int(base_adjustment))
+            if ws.quantity_on_hand is not None:
+                ws.quantity_on_hand = max(0, ws.quantity_on_hand + int(base_adjustment))
+            else:
+                ws.quantity_on_hand = ws.actual_stock
+            ws.updated_at = datetime.now(timezone.utc)
+
         db_tx = InventoryTransactionEntity(
             product_id=data.product_id,
             product_name=prod_name,
@@ -286,6 +298,18 @@ def create_stock_receipt(
     INVENTORY_TRANSACTIONS.insert(0, tx)
 
     if db:
+        ws = db.query(WarehouseStockEntity).filter(
+            WarehouseStockEntity.warehouse_id == "WH01",
+            WarehouseStockEntity.product_id == data.product_id
+        ).first()
+        if ws:
+            ws.actual_stock = (ws.actual_stock or 0) + int(base_qty)
+            if ws.quantity_on_hand is not None:
+                ws.quantity_on_hand += int(base_qty)
+            else:
+                ws.quantity_on_hand = ws.actual_stock
+            ws.updated_at = datetime.now(timezone.utc)
+
         db_tx = InventoryTransactionEntity(
             product_id=data.product_id,
             product_name=prod_name,
@@ -396,6 +420,18 @@ def create_stock_issue(
     INVENTORY_TRANSACTIONS.insert(0, tx)
 
     if db:
+        ws = db.query(WarehouseStockEntity).filter(
+            WarehouseStockEntity.warehouse_id == "WH01",
+            WarehouseStockEntity.product_id == data.product_id
+        ).first()
+        if ws:
+            ws.actual_stock = max(0, (ws.actual_stock or 0) - int(base_qty))
+            if ws.quantity_on_hand is not None:
+                ws.quantity_on_hand = max(0, ws.quantity_on_hand - int(base_qty))
+            else:
+                ws.quantity_on_hand = ws.actual_stock
+            ws.updated_at = datetime.now(timezone.utc)
+
         db_tx = InventoryTransactionEntity(
             product_id=data.product_id,
             product_name=prod_name,

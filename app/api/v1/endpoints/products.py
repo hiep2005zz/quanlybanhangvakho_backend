@@ -138,6 +138,8 @@ def _get_product_transaction_count(product_id: int, db: Session) -> int:
         for item in items:
             item_pid = item.get("product_id")
             item_code = item.get("product_code") or item.get("code")
+            if prod_code and item_code and item_code.strip().upper() != prod_code.strip().upper():
+                continue
             if (item_pid is not None and str(item_pid) == str(product_id)) or (prod_code and item_code and item_code.upper() == prod_code.upper()):
                 order_ids.add(order.get("order_code") or f"mem_{order_key}")
                 break
@@ -153,6 +155,8 @@ def _get_product_transaction_count(product_id: int, db: Session) -> int:
                         for item in items_list:
                             item_pid = item.get("product_id")
                             item_code = item.get("product_code") or item.get("code")
+                            if prod_code and item_code and item_code.strip().upper() != prod_code.strip().upper():
+                                continue
                             if (item_pid is not None and str(item_pid) == str(product_id)) or (prod_code and item_code and item_code.upper() == prod_code.upper()):
                                 order_ids.add(o.order_code or f"db_{o.id}")
                                 break
@@ -164,6 +168,9 @@ def _get_product_transaction_count(product_id: int, db: Session) -> int:
     # 3. Inventory transactions (nhập kho, xuất kho, điều chỉnh tồn kho)
     mem_tx_count = 0
     for tx in INVENTORY_TRANSACTIONS:
+        tx_code = getattr(tx, "product_code", None) or (tx.get("product_code") if isinstance(tx, dict) else None)
+        if tx_code and prod_code and tx_code.strip().upper() != prod_code.strip().upper():
+            continue
         tx_pid = getattr(tx, "product_id", None) or (tx.get("product_id") if isinstance(tx, dict) else None)
         if tx_pid is not None and str(tx_pid) == str(product_id):
             mem_tx_count += 1
@@ -239,11 +246,14 @@ def get_products(
         from app.models.entities import WarehouseStockEntity
         from sqlalchemy import func
         wh_rows = (
-            db.query(WarehouseStockEntity.product_id, func.sum(WarehouseStockEntity.actual_stock))
+            db.query(
+                WarehouseStockEntity.product_id,
+                func.sum(WarehouseStockEntity.actual_stock - func.coalesce(WarehouseStockEntity.reserved_stock, 0))
+            )
             .group_by(WarehouseStockEntity.product_id)
             .all()
         )
-        wh_stock_map = {pid: int(val) for pid, val in wh_rows if val is not None}
+        wh_stock_map = {pid: max(0, int(val)) for pid, val in wh_rows if val is not None}
     except Exception:
         pass
 
@@ -647,7 +657,13 @@ def update_product_details(
         category=target["category"],
         category_id=target.get("category_id"),
         base_unit=target.get("base_unit", "Cái"),
-        units=[UnitConversionItem(**u) for u in target.get("units", [])],
+        units=[
+            u if isinstance(u, UnitConversionItem) else UnitConversionItem(
+                unit_name=u["unit_name"],
+                conversion_rate=float(u["conversion_rate"]),
+            )
+            for u in target.get("units", [])
+        ],
         packaging_specification=target.get("packaging_specification"),
         images=target.get("images", []),
         status=target.get("status", "active"),
@@ -1039,6 +1055,28 @@ def delete_product(
 
     if db_prod:
         try:
+            from app.models.entities import WarehouseStockEntity
+            db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id == product_id).delete(synchronize_session=False)
+            try:
+                from app.models.warehouse import LocationStockEntity
+                db.query(LocationStockEntity).filter(LocationStockEntity.product_id == product_id).delete(synchronize_session=False)
+            except Exception:
+                pass
+            try:
+                from app.models.price_book import PriceBookItemEntity
+                db.query(PriceBookItemEntity).filter(PriceBookItemEntity.product_id == product_id).delete(synchronize_session=False)
+            except Exception:
+                pass
+            try:
+                from app.models.entities import OrderItemEntity
+                db.query(OrderItemEntity).filter(OrderItemEntity.product_id == product_id).delete(synchronize_session=False)
+            except Exception:
+                pass
+            try:
+                from app.models.goods_receipt import GoodsReceiptItemEntity
+                db.query(GoodsReceiptItemEntity).filter(GoodsReceiptItemEntity.product_id == product_id).delete(synchronize_session=False)
+            except Exception:
+                pass
             db.delete(db_prod)
             db.commit()
         except Exception as db_err:

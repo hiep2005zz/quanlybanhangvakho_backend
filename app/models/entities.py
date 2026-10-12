@@ -349,11 +349,11 @@ class WarehouseStockEntity(Base):
 
     @property
     def on_hand(self) -> int:
-        return self.quantity_on_hand if self.quantity_on_hand is not None else (self.actual_stock or 0)
+        return self.actual_stock if self.actual_stock is not None else (self.quantity_on_hand or 0)
 
     @property
     def reserved(self) -> int:
-        return self.reserved_quantity if self.reserved_quantity is not None else (self.reserved_stock or 0)
+        return self.reserved_stock if self.reserved_stock is not None else (self.reserved_quantity or 0)
 
     @property
     def available(self) -> int:

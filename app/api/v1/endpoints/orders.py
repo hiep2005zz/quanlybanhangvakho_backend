@@ -1390,6 +1390,7 @@ def create_order(
         if prod_entity:
             prod_entity.stock = max(0, (prod_entity.stock or 0) - base_quantity)
 
+
         prod_cat = raw_p.get("category") if raw_p else (prod_entity.category if prod_entity else None)
         processed_items.append({
             "product_id": item.product_id,
@@ -2985,8 +2986,36 @@ def reject_order(
             detail=f"Không tìm thấy đơn hàng có mã hoặc ID {order_code}."
         )
 
-    assigned_id = target.get("assigned_sale_id") if target else (db_order.assigned_sale_id if db_order else None)
-    created_by = target.get("created_by") if target else (db_order.created_by if db_order else "")
+    if target is None:
+        assert db_order is not None
+        now_iso = datetime.now(timezone.utc).isoformat()
+        items = []
+        if db_order.items_json:
+            try:
+                items_data = json.loads(db_order.items_json)
+                items = items_data if isinstance(items_data, list) else (items_data.get("items", []) if isinstance(items_data, dict) else [])
+            except Exception:
+                items = []
+
+        target = {
+            "id": db_order.id,
+            "order_code": db_order.order_code,
+            "dealer_id": db_order.dealer_id,
+            "dealer_name": db_order.dealer_name,
+            "created_by": db_order.created_by,
+            "assigned_sale_id": db_order.assigned_sale_id,
+            "assigned_sale_name": db_order.assigned_sale_name,
+            "total_amount": db_order.total_amount,
+            "status": db_order.status or "PENDING_APPROVAL",
+            "requires_approval": getattr(db_order, "requires_approval", False),
+            "approval_reason": getattr(db_order, "approval_reason", None),
+            "items": items,
+            "created_at": db_order.created_at.isoformat() if db_order.created_at else now_iso,
+        }
+        ORDERS_DB[db_order.id] = target
+
+    assigned_id = target.get("assigned_sale_id")
+    created_by = target.get("created_by") or ""
 
     if is_sales and not is_admin_or_sm:
         # 1. Tuyệt đối không cho sales thao tác trên đơn do Admin hoặc Quản lý tạo
