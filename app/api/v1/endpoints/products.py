@@ -1,5 +1,6 @@
 from __future__ import annotations
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
+import json
 import os
 import base64
 import uuid
@@ -290,7 +291,7 @@ def get_products(
     limit: Optional[int] = Query(None, ge=1, le=100, description="Alias cho page_size"),
     search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
     category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
-    only_low_stock: Optional[bool] = Query(False, description="Chỉ lấy sản phẩm sắp hết hàng"),
+    only_low_stock: Optional[bool] = Query(False, description="Chỉ lấy sản phẩm dưới định mức"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_READ.value))
 ):
@@ -637,14 +638,14 @@ def get_products(
             ]
 
     total_filtered = len(filtered_items)
-    effective_page_size = page_size if page_size is not None else limit
+    effective_size = page_size if page_size is not None else limit
 
-    if effective_page_size and effective_page_size > 0:
+    if effective_size and effective_size > 0:
         import math
-        total_pages = max(1, math.ceil(total_filtered / effective_page_size))
+        total_pages = max(1, math.ceil(total_filtered / effective_size))
         cur_page = min(max(1, page or 1), total_pages)
-        start_idx = (cur_page - 1) * effective_page_size
-        end_idx = start_idx + effective_page_size
+        start_idx = (cur_page - 1) * effective_size
+        end_idx = start_idx + effective_size
         paged_items = filtered_items[start_idx:end_idx]
 
         return ProductListResponse(
@@ -655,8 +656,8 @@ def get_products(
             is_cost_price_visible=can_view_cost,
             summary=summary,
             page=cur_page,
-            page_size=effective_page_size,
-            limit=effective_page_size,
+            page_size=effective_size,
+            limit=effective_size,
             total_pages=total_pages,
         )
 
