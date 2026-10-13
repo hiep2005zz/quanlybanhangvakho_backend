@@ -1236,26 +1236,11 @@ def get_warehouse_zones(
                 )
                 db.add(z_entity)
                 created_zones.append(z_entity)
-        if not created_zones:
-            default_samples = [
-                ("KHU-A", "Khu A - Thời trang", "Khu vực trưng bày và lưu kho quần áo"),
-                ("KHU-B", "Khu B - Hàng may mặc", "Khu lưu kho phụ kiện thời trang"),
-                ("KHU-C", "Khu C - Hàng phụ kiện", "Khu vực hàng nhỏ, phụ kiện đóng gói"),
-            ]
-            for zc, zn, zd in default_samples:
-                z_entity = WarehouseZoneEntity(
-                    warehouse_id=warehouse_id,
-                    zone_code=zc,
-                    zone_name=zn,
-                    description=zd,
-                    is_active=True,
-                )
-                db.add(z_entity)
-                created_zones.append(z_entity)
-        db.commit()
-        zones = db.query(WarehouseZoneEntity).filter(
-            WarehouseZoneEntity.warehouse_id == warehouse_id
-        ).order_by(WarehouseZoneEntity.id.asc()).all()
+        if created_zones:
+            db.commit()
+            zones = db.query(WarehouseZoneEntity).filter(
+                WarehouseZoneEntity.warehouse_id == warehouse_id
+            ).order_by(WarehouseZoneEntity.id.asc()).all()
 
     results: List[WarehouseZoneResponse] = []
     for z in zones:
