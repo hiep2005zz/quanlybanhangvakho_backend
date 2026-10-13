@@ -1069,6 +1069,8 @@ def get_orders(
                     delivery_point_id=mem_order.get("delivery_point_id"),
                     discount_rate=mem_order.get("discount_percent", 0.0),
                     discount_amount=mem_order.get("discount_amount", 0.0),
+                    requires_approval=mem_order.get("requires_approval", False),
+                    approval_reason=mem_order.get("approval_reason"),
                     items_json=json.dumps(mem_order.get("items", []), ensure_ascii=False),
                     created_at=c_at,
                 ))
@@ -1131,7 +1133,9 @@ def get_orders(
     if status and status.strip() and status.strip().upper() != "ALL":
         st = status.strip().upper()
         if st in ("PENDING_APPROVAL", "PENDING"):
-            query = query.filter(OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING"]))
+            query = query.filter(OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING", "REVISION_REQUIRED"]))
+        elif st == "REVISION_REQUIRED":
+            query = query.filter(func.upper(OrderEntity.status) == "REVISION_REQUIRED")
         elif st == "CONFIRMED":
             query = query.filter(func.upper(OrderEntity.status) == "CONFIRMED")
         elif st == "COMPLETED":
@@ -1206,7 +1210,7 @@ def get_orders(
     stats = query.with_entities(
         func.coalesce(func.sum(OrderEntity.total_amount), 0.0),
         func.count(OrderEntity.id),
-        func.coalesce(func.sum(case((OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING"]), 1), else_=0)), 0),
+        func.coalesce(func.sum(case((OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING", "REVISION_REQUIRED"]), 1), else_=0)), 0),
         func.coalesce(func.sum(case((OrderEntity.status == "CONFIRMED", 1), else_=0)), 0)
     ).first()
 
@@ -1215,8 +1219,8 @@ def get_orders(
     pending_count = int(stats[2] or 0) if stats else 0
     confirmed_count = int(stats[3] or 0) if stats else 0
 
-    # 9. Sắp xếp (Ưu tiên PENDING_APPROVAL lên đầu, sau đó theo ID giảm dần)
-    is_pending_expr = case((OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING"]), 1), else_=0)
+    # 9. Sắp xếp (Ưu tiên PENDING_APPROVAL và REVISION_REQUIRED lên đầu, sau đó theo ID giảm dần)
+    is_pending_expr = case((OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING", "REVISION_REQUIRED"]), 1), else_=0)
     items_query = query.order_by(is_pending_expr.desc(), OrderEntity.id.desc())
 
     # 10. Phân trang
