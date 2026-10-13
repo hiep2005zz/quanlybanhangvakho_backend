@@ -143,7 +143,7 @@ def get_audit_logs(
 
         total = query.count()
         offset = (page - 1) * page_size
-        records = query.order_by(desc(AuditLogEntity.created_at)).offset(offset).limit(page_size).all()
+        records = query.order_by(desc(AuditLogEntity.id), desc(AuditLogEntity.created_at)).offset(offset).limit(page_size).all()
 
         items = [
             AuditLogItem(
@@ -270,7 +270,7 @@ def get_entity_audit_logs(
                 AuditLogEntity.entity_id == str(entity_id),
                 AuditLogEntity.action_type.in_(ALLOWED_ACTION_TYPES),
             )
-            .order_by(desc(AuditLogEntity.created_at))
+            .order_by(desc(AuditLogEntity.id), desc(AuditLogEntity.created_at))
             .limit(100)
             .all()
         )

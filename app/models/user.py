@@ -1,4 +1,5 @@
 # backend/app/models/user.py - Seed Database Fresh v3 with 7 Roles
+from __future__ import annotations
 import os
 import json
 import re
@@ -32,7 +33,23 @@ class UserInDB(BaseModel):
     def get_roles(self) -> List[str]:
         """Lấy danh sách các vai trò chuẩn hóa."""
         if self.roles and len(self.roles) > 0:
-            return list(self.roles)
+            cleaned: List[str] = []
+            for r in self.roles:
+                if isinstance(r, str) and (r.startswith("[") or r.startswith('"[')):
+                    try:
+                        parsed = json.loads(r)
+                        if isinstance(parsed, str):
+                            parsed = json.loads(parsed)
+                        if isinstance(parsed, list):
+                            cleaned.extend([str(x) for x in parsed])
+                            continue
+                        elif isinstance(parsed, str):
+                            cleaned.append(str(parsed))
+                            continue
+                    except Exception:
+                        pass
+                cleaned.append(str(r))
+            return cleaned
         if self.role:
             return [self.role]
         return [Role.SALES.value]
@@ -108,14 +125,14 @@ USERS_DB: dict[str, UserInDB] = {
         hashed_password=DEFAULT_HASH,
         branch="Trụ sở chính",
     ),
-    # 7. Nhân viên mua hàng (Purchasing Staff)
+    # 7. Khách hàng / Đại lý (Customer)
     "muahang": UserInDB(
         id=7,
         username="muahang",
         full_name="Vũ Mua Hàng",
         email="muahang@congty.vn",
-        role=Role.PURCHASING_STAFF.value,
-        roles=[Role.PURCHASING_STAFF.value],
+        role=Role.CUSTOMER.value,
+        roles=[Role.CUSTOMER.value],
         hashed_password=DEFAULT_HASH,
         branch="Trụ sở chính",
     ),

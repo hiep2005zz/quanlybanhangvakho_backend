@@ -194,6 +194,31 @@ def create_price_book(
 
         db.commit()
         db.refresh(new_pb)
+
+        # Ghi log Audit Event
+        try:
+            from app.services.audit_service import log_audit_event
+            log_audit_event(
+                db=db,
+                user=current_user,
+                action_type="PRICE_BOOK_CREATE",
+                entity_type="PriceBook",
+                entity_id=new_pb.code,
+                old_val=None,
+                new_val={
+                    "code": new_pb.code,
+                    "name": new_pb.name,
+                    "customer_group": new_pb.customer_group,
+                    "items_count": len(data.items),
+                },
+                reason=f"Tạo mới bảng giá {new_pb.name} ({len(data.items)} sản phẩm)",
+            )
+        except Exception:
+            pass
+
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as ex:
         db.rollback()
         raise ex
@@ -283,6 +308,12 @@ def resolve_price(
 
     sale_val = pb_item.sale_price if pb_item.sale_price is not None else pb_item.price
     floor_val = pb_item.floor_price if pb_item.floor_price is not None else pb_item.min_price
+
+    # Đồng bộ với giá niêm yết và giá sàn mới nhất từ sản phẩm nếu bảng giá chưa thiết lập giá cụ thể
+    if prod and (sale_val is None or sale_val == 0) and prod.sell_price is not None and prod.sell_price > 0:
+        sale_val = prod.sell_price
+    if prod and (floor_val is None or floor_val == 0) and prod.floor_price is not None and prod.floor_price > 0:
+        floor_val = prod.floor_price
 
     return ResolvePriceResponse(
         price_book_id=pb.id,

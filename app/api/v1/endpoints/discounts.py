@@ -1,21 +1,29 @@
+# backend/app/api/v1/endpoints/discounts.py
 import json
 import os
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.api.deps import get_current_user
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db, SessionLocal
+from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
+from app.models.entities import ProductEntity
+from app.api.deps import get_current_user, require_roles
 from app.schemas.auth import UserResponse
 
 router = APIRouter()
 
-DISCOUNTS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "models", "discounts_data.json")
 
 class DiscountTierSchema(BaseModel):
     id: Optional[Any] = None
     min_quantity: int = Field(..., ge=0)
     max_quantity: Optional[int] = None
-    discount_percent: float = Field(..., ge=0, le=100)
+    discount_percent: Optional[float] = Field(default=0.0, ge=0, le=100)
+    discount_amount: Optional[float] = Field(default=0.0, ge=0)
+    discount_type: Optional[str] = Field(default="percent")  # 'percent' hoặc 'amount'
+
 
 class DiscountPolicyCreate(BaseModel):
     name: Optional[str] = None
@@ -31,11 +39,13 @@ class DiscountPolicyCreate(BaseModel):
     status: Optional[str] = "active"
     tiers: List[DiscountTierSchema] = []
 
+
 class DiscountCalculateRequest(BaseModel):
     product_id: Optional[int] = None
     quantity: int = Field(..., gt=0)
     base_price: Optional[float] = None
     dealer_id: Optional[int] = None
+
 
 class DiscountCalculateResponse(BaseModel):
     product_id: Optional[int] = None
@@ -53,68 +63,113 @@ class DiscountCalculateResponse(BaseModel):
     total_discount_amount: float
     final_total_amount: float
 
+
 _POLICIES_STORE: List[Dict[str, Any]] = []
 
-def load_discount_policies() -> List[Dict[str, Any]]:
+
+def load_discount_policies(db: Optional[Session] = None) -> List[Dict[str, Any]]:
+    """Tải danh sách chính sách chiết khấu từ Database vào in-memory store."""
     global _POLICIES_STORE
-    if os.path.exists(DISCOUNTS_FILE):
+    owns_session = False
+    if db is None:
         try:
-            with open(DISCOUNTS_FILE, "r", encoding="utf-8") as f:
-                _POLICIES_STORE = json.load(f)
+            db = SessionLocal()
+            owns_session = True
+        except Exception:
+            pass
+
+    if db is not None:
+        try:
+            entities = db.query(DiscountPolicyEntity).order_by(DiscountPolicyEntity.id.asc()).all()
+            if entities:
+                _POLICIES_STORE = [e.to_dict() for e in entities]
                 return _POLICIES_STORE
         except Exception as e:
-            print(f"Error loading {DISCOUNTS_FILE}: {e}")
-    _POLICIES_STORE = [
-        {
-            "id": 1,
-            "code": "CK-SL-001",
-            "name": "Chiết khấu sản lượng toàn hệ thống",
-            "title": "Tất cả sản phẩm",
-            "category": "ALL",
-            "target_dealer_type": "ALL",
-            "target_group": "all",
-            "description": "Giảm giá theo sản lượng đặt hàng áp dụng toàn hệ thống",
-            "is_active": True,
-            "status": "active",
-            "start_date": "2026-01-01",
-            "end_date": "2026-12-31",
-            "tiers": [
-                {"id": 1, "min_quantity": 100, "max_quantity": 499, "discount_percent": 5.0},
-                {"id": 2, "min_quantity": 500, "max_quantity": 999, "discount_percent": 10.0},
-                {"id": 3, "min_quantity": 1000, "max_quantity": None, "discount_percent": 15.0},
-            ],
-            "created_by": "admin",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-    ]
-    save_discount_policies()
+            print(f"Error loading discount policies from DB: {e}")
+        finally:
+            if owns_session:
+                db.close()
+
+    if not _POLICIES_STORE:
+        _POLICIES_STORE = [
+            {
+                "id": 1,
+                "code": "CK-SL-001",
+                "name": "Chiết khấu sản lượng toàn hệ thống",
+                "title": "Tất cả sản phẩm",
+                "category": "ALL",
+                "target_dealer_type": "ALL",
+                "target_group": "all",
+                "description": "Giảm giá theo sản lượng đặt hàng áp dụng toàn hệ thống",
+                "is_active": True,
+                "status": "active",
+                "start_date": "2026-01-01",
+                "end_date": "2026-12-31",
+                "tiers": [
+                    {"id": 1, "min_quantity": 100, "max_quantity": 499, "discount_percent": 5.0},
+                    {"id": 2, "min_quantity": 500, "max_quantity": 999, "discount_percent": 10.0},
+                    {"id": 3, "min_quantity": 1000, "max_quantity": None, "discount_percent": 15.0},
+                ],
+                "created_by": "admin",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
     return _POLICIES_STORE
 
-def save_discount_policies():
-    global _POLICIES_STORE
-    try:
-        os.makedirs(os.path.dirname(DISCOUNTS_FILE), exist_ok=True)
-        with open(DISCOUNTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(_POLICIES_STORE, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Error saving {DISCOUNTS_FILE}: {e}")
 
-load_discount_policies()
+def save_discount_policies():
+    """Backward compatibility stub."""
+    pass
+
+
+# Initial load
+try:
+    load_discount_policies()
+except Exception:
+    pass
+
 
 def resolve_best_discount(
     items: List[Dict[str, Any]],
     dealer: Optional[Any] = None,
     total_quantity: Optional[int] = None,
-    subtotal_amount: Optional[float] = None
+    subtotal_amount: Optional[float] = None,
+    db: Optional[Session] = None,
 ) -> Dict[str, Any]:
     """
     Quy tắc giá tốt nhất (Best Price Rule):
-    Tìm chính sách chiết khấu mang lại số tiền giảm cao nhất cho khách hàng.
+    Tìm chính sách chiết khấu mang lại số tiền giảm cao nhất cho khách hàng từ Database.
     """
-    global _POLICIES_STORE
-    if not _POLICIES_STORE:
-        load_discount_policies()
+    policies_to_check: List[Dict[str, Any]] = []
+
+    if db is not None:
+        try:
+            entities = (
+                db.query(DiscountPolicyEntity)
+                .filter(DiscountPolicyEntity.is_active == True, DiscountPolicyEntity.status == "active")
+                .order_by(DiscountPolicyEntity.id.asc())
+                .all()
+            )
+            policies_to_check = [e.to_dict() for e in entities]
+        except Exception:
+            policies_to_check = []
+
+    if not policies_to_check:
+        try:
+            with SessionLocal() as db_session:
+                entities = (
+                    db_session.query(DiscountPolicyEntity)
+                    .filter(DiscountPolicyEntity.is_active == True, DiscountPolicyEntity.status == "active")
+                    .order_by(DiscountPolicyEntity.id.asc())
+                    .all()
+                )
+                policies_to_check = [e.to_dict() for e in entities]
+        except Exception:
+            pass
+
+    if not policies_to_check:
+        policies_to_check = [p for p in _POLICIES_STORE if p.get("is_active", True) and p.get("status") == "active"]
 
     if total_quantity is None:
         total_quantity = sum(item.get("quantity", 0) for item in items)
@@ -135,7 +190,7 @@ def resolve_best_discount(
 
     now_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    for policy in _POLICIES_STORE:
+    for policy in policies_to_check:
         is_active = policy.get("is_active", True) and policy.get("status", "active") == "active"
         if not is_active:
             continue
@@ -158,21 +213,77 @@ def resolve_best_discount(
                 if "cấp 2" not in dealer_group_str and "cap_2" not in dealer_group_str and "cap 2" not in dealer_group_str:
                     continue
 
-        # Xác định số lượng áp dụng: theo sản phẩm cụ thể hay tổng đơn
-        pol_title = policy.get("title") or policy.get("name") or ""
-        pol_cat = policy.get("category") or "ALL"
+        # Xác định số lượng và giá trị áp dụng
+        pol_title = str(policy.get("title") or policy.get("name") or "")
+        pol_cat = str(policy.get("category") or "ALL")
 
         qty_to_check = total_quantity
-        # Nếu chính sách gắn với 1 sản phẩm cụ thể
-        if pol_cat != "ALL" and pol_title != "Tất cả sản phẩm":
-            matched_qty = 0
+        subtotal_to_discount = subtotal_amount
+
+        is_category_policy = (
+            (pol_cat not in ["ALL", "all", "PRODUCT", "product"] and pol_cat != "")
+            or "nhóm hàng:" in pol_title.lower()
+            or "nhóm:" in pol_title.lower()
+        )
+
+        # 1. Ưu tiên kiểm tra: Chính sách áp dụng cho 1 Sản phẩm cụ thể (Title chứa mã SP hoặc tên SP)
+        is_product_specific = False
+        matched_qty = 0
+        matched_subtotal = 0.0
+        if pol_title and pol_title != "Tất cả sản phẩm" and "nhóm" not in pol_title.lower():
             for it in items:
                 prod_name = it.get("product_name") or ""
                 prod_code = it.get("product_code") or ""
-                if prod_code in pol_title or prod_name in pol_title:
-                    matched_qty += it.get("quantity", 0)
+                if (prod_code and prod_code in pol_title) or (prod_name and prod_name in pol_title):
+                    is_product_specific = True
+                    it_qty = it.get("quantity", 0)
+                    it_price = it.get("price", 0.0)
+                    matched_qty += it_qty
+                    matched_subtotal += it_qty * it_price
+
+        if is_product_specific:
             if matched_qty > 0:
                 qty_to_check = matched_qty
+                subtotal_to_discount = matched_subtotal
+            else:
+                qty_to_check = 0
+        # 2. Trường hợp chính sách áp dụng cho 1 Nhóm hàng (Category)
+        elif is_category_policy and pol_cat not in ["ALL", "all"]:
+            cat_name = pol_cat
+            if "nhóm hàng:" in pol_title.lower():
+                cat_name = pol_title.split(":", 1)[-1].strip()
+            elif "nhóm:" in pol_title.lower():
+                cat_name = pol_title.split(":", 1)[-1].strip()
+
+            cat_qty = 0
+            cat_subtotal = 0.0
+            from app.api.v1.endpoints.products import RAW_PRODUCTS
+
+            for it in items:
+                it_cat = it.get("category")
+                if not it_cat and db is not None:
+                    p_id = it.get("product_id")
+                    if p_id:
+                        p_ent = db.query(ProductEntity).filter(ProductEntity.id == p_id).first()
+                        if p_ent:
+                            it_cat = p_ent.category
+                if not it_cat:
+                    p_id = it.get("product_id")
+                    p_code = it.get("product_code")
+                    for raw_p in RAW_PRODUCTS:
+                        if (p_id and raw_p.get("id") == p_id) or (p_code and raw_p.get("code") == p_code):
+                            it_cat = raw_p.get("category")
+                            break
+
+                if it_cat and (it_cat.lower().strip() == cat_name.lower().strip() or cat_name.lower().strip() in it_cat.lower().strip()):
+                    it_qty = it.get("quantity", 0)
+                    it_price = it.get("price", 0.0)
+                    cat_qty += it_qty
+                    cat_subtotal += it_qty * it_price
+
+            if cat_qty > 0:
+                qty_to_check = cat_qty
+                subtotal_to_discount = cat_subtotal
             else:
                 qty_to_check = 0
 
@@ -180,130 +291,249 @@ def resolve_best_discount(
         for tier in policy.get("tiers", []):
             min_q = tier.get("min_quantity", 0)
             max_q = tier.get("max_quantity")
-            tier_pct = float(tier.get("discount_percent", 0.0))
+            tier_pct = float(tier.get("discount_percent", 0.0) or 0.0)
+            tier_amt = float(tier.get("discount_amount", 0.0) or 0.0)
+            tier_type = str(tier.get("discount_type") or ("amount" if tier_amt > 0 and tier_pct == 0 else "percent")).lower()
 
             if qty_to_check >= min_q and (max_q is None or qty_to_check <= max_q):
-                tier_amount = round(subtotal_amount * tier_pct / 100.0, 2)
-                # Best price rule: Ưu tiên chính sách đem lại mức giảm tiền cao nhất
+                if tier_type == "amount" or (tier_amt > 0 and tier_pct == 0):
+                    # Chiết khấu tính theo số tiền trên đơn vị (đ/sp)
+                    tier_amount = round(qty_to_check * tier_amt, 2)
+                    tier_pct_effective = round((tier_amount / subtotal_to_discount * 100.0), 2) if subtotal_to_discount > 0 else 0.0
+                    tier_label = f"Từ {min_q}" + (f" đến {max_q}" if max_q else "+") + f" sp: Giảm {int(tier_amt):,}đ/sp"
+                else:
+                    # Chiết khấu tính theo phần trăm (%)
+                    tier_amount = round(subtotal_to_discount * tier_pct / 100.0, 2)
+                    tier_pct_effective = tier_pct
+                    tier_label = f"Từ {min_q}" + (f" đến {max_q}" if max_q else "+") + f" sp: Giảm {tier_pct}%"
+
+                # Best price rule: Ưu tiên chính sách đem lại mức giảm tiền cao nhất (có lợi nhất cho khách hàng)
                 if tier_amount > best_match["discount_amount"] or (
-                    tier_amount == best_match["discount_amount"] and tier_pct > best_match["discount_percent"]
+                    tier_amount == best_match["discount_amount"] and tier_pct_effective > best_match["discount_percent"]
                 ):
                     best_match["applied_policy_id"] = policy.get("id")
                     best_match["applied_policy_code"] = policy.get("code")
                     best_match["applied_policy_name"] = policy.get("name") or policy.get("title")
-                    best_match["applied_tier_label"] = f"Từ {min_q}" + (f" đến {max_q}" if max_q else "+") + f" sp: Giảm {tier_pct}%"
-                    best_match["discount_percent"] = tier_pct
+                    best_match["applied_tier_label"] = tier_label
+                    best_match["discount_percent"] = tier_pct_effective
                     best_match["discount_amount"] = tier_amount
 
     return best_match
+
 
 @router.get("", response_model=dict)
 def get_discount_policies(
     category: Optional[str] = None,
     is_active: Optional[bool] = None,
-    current_user: UserResponse = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
 ):
-    items = list(_POLICIES_STORE)
+    query = db.query(DiscountPolicyEntity)
     if category and category != "ALL":
-        items = [p for p in items if p.get("category") == category or p.get("category") == "ALL"]
+        query = query.filter(
+            (DiscountPolicyEntity.category == category) | (DiscountPolicyEntity.category == "ALL")
+        )
     if is_active is not None:
-        items = [p for p in items if p.get("is_active") == is_active or (is_active and p.get("status") == "active")]
+        if is_active:
+            query = query.filter(
+                (DiscountPolicyEntity.is_active == True) & (DiscountPolicyEntity.status == "active")
+            )
+        else:
+            query = query.filter(DiscountPolicyEntity.is_active == False)
+
+    entities = query.order_by(DiscountPolicyEntity.id.asc()).all()
+    items = [e.to_dict() for e in entities]
+    load_discount_policies(db)
     return {"items": items, "total": len(items)}
+
+
+def validate_discount_tiers(tiers: List[DiscountTierSchema]):
+    """Kiểm tra tính hợp lệ và chống chồng chéo số lượng (overlapping tiers)."""
+    if not tiers:
+        return
+    for t in tiers:
+        if t.min_quantity < 0:
+            raise HTTPException(status_code=400, detail="Số lượng tối thiểu phải lớn hơn hoặc bằng 0.")
+        if t.max_quantity is not None and t.max_quantity < t.min_quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Số lượng tối đa ({t.max_quantity}) phải lớn hơn hoặc bằng số lượng tối thiểu ({t.min_quantity}).",
+            )
+        t_type = t.discount_type or ("amount" if (t.discount_amount and t.discount_amount > 0 and (t.discount_percent is None or t.discount_percent == 0)) else "percent")
+        if t_type == "percent":
+            if t.discount_percent is not None and (t.discount_percent < 0 or t.discount_percent > 100):
+                raise HTTPException(status_code=400, detail="Tỷ lệ chiết khấu (%) phải từ 0% đến 100%.")
+        elif t_type == "amount":
+            if t.discount_amount is not None and t.discount_amount < 0:
+                raise HTTPException(status_code=400, detail="Số tiền chiết khấu trên đơn vị phải lớn hơn hoặc bằng 0.")
+
+    sorted_tiers = sorted(tiers, key=lambda x: x.min_quantity)
+    for i in range(1, len(sorted_tiers)):
+        prev = sorted_tiers[i - 1]
+        curr = sorted_tiers[i]
+        if prev.max_quantity is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Mốc trước (từ {prev.min_quantity}+) không giới hạn số lượng tối đa, không thể khai báo thêm mốc tiếp theo.",
+            )
+        if curr.min_quantity <= prev.max_quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Bị chồng chéo số lượng sản phẩm: Mốc trước kết thúc ở {prev.max_quantity} sp, "
+                    f"nhưng mốc tiếp theo bắt đầu từ {curr.min_quantity} sp. "
+                    f"Mốc tiếp theo phải bắt đầu từ {prev.max_quantity + 1} sp trở lên."
+                ),
+            )
+
 
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_discount_policy(
     data: DiscountPolicyCreate,
-    current_user: UserResponse = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager"])),
 ):
-    global _POLICIES_STORE
-    new_id = max([p.get("id", 0) for p in _POLICIES_STORE], default=0) + 1
-    now_iso = datetime.now(timezone.utc).isoformat()
-    name = data.name or data.title or f"Chính sách chiết khấu #{new_id}"
-    code = data.code or f"CK-SL-{new_id:03d}"
-    new_policy = {
-        "id": new_id,
-        "code": code,
-        "name": name,
-        "title": data.title or name,
-        "category": data.category or "ALL",
-        "target_dealer_type": data.target_dealer_type or "ALL",
-        "target_group": data.target_group or "all",
-        "description": data.description,
-        "start_date": data.start_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        "end_date": data.end_date,
-        "is_active": data.is_active if data.is_active is not None else True,
-        "status": data.status or ("active" if data.is_active else "expired"),
-        "tiers": [t.dict() for t in data.tiers],
-        "created_by": current_user.username,
-        "created_at": now_iso,
-        "updated_at": now_iso,
-    }
-    _POLICIES_STORE.insert(0, new_policy)
-    save_discount_policies()
-    return new_policy
+    if data.tiers:
+        validate_discount_tiers(data.tiers)
+
+    count = db.query(DiscountPolicyEntity).count()
+    code = data.code or f"CK-SL-{count + 1:03d}"
+    name = data.name or data.title or f"Chính sách chiết khấu #{count + 1}"
+    title = data.title or name
+    start_date = data.start_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    is_active = data.is_active if data.is_active is not None else True
+    status_val = data.status or ("active" if is_active else "expired")
+
+    new_policy = DiscountPolicyEntity(
+        code=code,
+        name=name,
+        title=title,
+        category=data.category or "ALL",
+        target_dealer_type=data.target_dealer_type or "ALL",
+        target_group=data.target_group or "all",
+        description=data.description,
+        start_date=start_date,
+        end_date=data.end_date,
+        is_active=is_active,
+        status=status_val,
+        created_by=current_user.username,
+    )
+    db.add(new_policy)
+    db.flush()
+
+    for t in sorted(data.tiers, key=lambda x: x.min_quantity):
+        t_type = t.discount_type or ("amount" if (t.discount_amount and t.discount_amount > 0 and (t.discount_percent is None or t.discount_percent == 0)) else "percent")
+        tier_entity = DiscountTierEntity(
+            policy_id=new_policy.id,
+            min_quantity=t.min_quantity,
+            max_quantity=t.max_quantity,
+            discount_percent=t.discount_percent or 0.0,
+            discount_amount=t.discount_amount or 0.0,
+            discount_type=t_type,
+        )
+        db.add(tier_entity)
+
+    db.commit()
+    db.refresh(new_policy)
+    load_discount_policies(db)
+    return new_policy.to_dict()
+
 
 @router.put("/{policy_id}", response_model=dict)
 def update_discount_policy(
     policy_id: int,
     data: DiscountPolicyCreate,
-    current_user: UserResponse = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager"])),
 ):
-    policy = next((p for p in _POLICIES_STORE if p.get("id") == policy_id), None)
+    policy = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.id == policy_id).first()
     if not policy:
         raise HTTPException(status_code=404, detail="Không tìm thấy chính sách chiết khấu.")
-    name = data.name or data.title or policy.get("name")
-    policy["name"] = name
-    policy["title"] = data.title or name
+
+    if data.name or data.title:
+        name = data.name or data.title
+        policy.name = name
+        policy.title = data.title or name
     if data.code:
-        policy["code"] = data.code
-    policy["category"] = data.category or policy.get("category", "ALL")
-    policy["target_dealer_type"] = data.target_dealer_type or policy.get("target_dealer_type", "ALL")
-    policy["target_group"] = data.target_group or policy.get("target_group", "all")
-    policy["description"] = data.description
-    if data.start_date:
-        policy["start_date"] = data.start_date
+        policy.code = data.code
+    if data.category is not None:
+        policy.category = data.category
+    if data.target_dealer_type is not None:
+        policy.target_dealer_type = data.target_dealer_type
+    if data.target_group is not None:
+        policy.target_group = data.target_group
+    if data.description is not None:
+        policy.description = data.description
+    if data.start_date is not None:
+        policy.start_date = data.start_date
     if data.end_date is not None:
-        policy["end_date"] = data.end_date
+        policy.end_date = data.end_date
     if data.is_active is not None:
-        policy["is_active"] = data.is_active
-        policy["status"] = "active" if data.is_active else "expired"
-    if data.tiers:
-        policy["tiers"] = [t.dict() for t in data.tiers]
-    policy["updated_at"] = datetime.now(timezone.utc).isoformat()
-    save_discount_policies()
-    return policy
+        policy.is_active = data.is_active
+        policy.status = "active" if data.is_active else "expired"
+    if data.status is not None:
+        policy.status = data.status
+
+    if data.tiers is not None:
+        validate_discount_tiers(data.tiers)
+        db.query(DiscountTierEntity).filter(DiscountTierEntity.policy_id == policy_id).delete()
+        for t in sorted(data.tiers, key=lambda x: x.min_quantity):
+            t_type = t.discount_type or ("amount" if (t.discount_amount and t.discount_amount > 0 and (t.discount_percent is None or t.discount_percent == 0)) else "percent")
+            tier_entity = DiscountTierEntity(
+                policy_id=policy.id,
+                min_quantity=t.min_quantity,
+                max_quantity=t.max_quantity,
+                discount_percent=t.discount_percent or 0.0,
+                discount_amount=t.discount_amount or 0.0,
+                discount_type=t_type,
+            )
+            db.add(tier_entity)
+
+    policy.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(policy)
+    load_discount_policies(db)
+    return policy.to_dict()
+
 
 @router.patch("/{policy_id}/toggle-status", response_model=dict)
 def toggle_policy_status(
     policy_id: int,
-    current_user: UserResponse = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager"])),
 ):
-    policy = next((p for p in _POLICIES_STORE if p.get("id") == policy_id), None)
+    policy = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.id == policy_id).first()
     if not policy:
         raise HTTPException(status_code=404, detail="Không tìm thấy chính sách chiết khấu.")
-    policy["is_active"] = not policy.get("is_active", True)
-    policy["status"] = "active" if policy["is_active"] else "expired"
-    policy["updated_at"] = datetime.now(timezone.utc).isoformat()
-    save_discount_policies()
-    return policy
+    policy.is_active = not policy.is_active
+    policy.status = "active" if policy.is_active else "expired"
+    policy.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(policy)
+    load_discount_policies(db)
+    return policy.to_dict()
+
 
 @router.delete("/{policy_id}", response_model=dict)
 def delete_discount_policy(
     policy_id: int,
-    current_user: UserResponse = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager"])),
 ):
-    global _POLICIES_STORE
-    policy = next((p for p in _POLICIES_STORE if p.get("id") == policy_id), None)
+    policy = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.id == policy_id).first()
     if not policy:
         raise HTTPException(status_code=404, detail="Không tìm thấy chính sách chiết khấu.")
-    _POLICIES_STORE = [p for p in _POLICIES_STORE if p.get("id") != policy_id]
-    save_discount_policies()
+    db.delete(policy)
+    db.commit()
+    load_discount_policies(db)
     return {"message": "Đã xóa chính sách chiết khấu", "deleted_id": policy_id}
+
 
 @router.post("/calculate", response_model=DiscountCalculateResponse)
 def calculate_discount(
     data: DiscountCalculateRequest,
-    current_user: UserResponse = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
 ):
     base_price = data.base_price or 100000.0
     items = [{
@@ -311,7 +541,12 @@ def calculate_discount(
         "quantity": data.quantity,
         "price": base_price,
     }]
-    best = resolve_best_discount(items=items, total_quantity=data.quantity, subtotal_amount=base_price * data.quantity)
+    best = resolve_best_discount(
+        items=items,
+        total_quantity=data.quantity,
+        subtotal_amount=base_price * data.quantity,
+        db=db,
+    )
 
     discount_pct = best["discount_percent"]
     unit_discount = base_price * (discount_pct / 100.0)
