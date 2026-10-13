@@ -107,6 +107,18 @@ class WarehouseThresholdItem(BaseModel):
     shortage_quantity: int
 
 
+class WarehouseThresholdPageResponse(BaseModel):
+    items: List[WarehouseThresholdItem]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    total_count: Optional[int] = 0
+    low_count: Optional[int] = 0
+    safe_count: Optional[int] = 0
+    active_warehouses: Optional[int] = 3
+
+
 class UpdateThresholdRequest(BaseModel):
     warehouse_id: str
     product_id: int
@@ -117,8 +129,13 @@ class LowStockAlertSummary(BaseModel):
     total_low_stock: int
     total_alerts: int = 0
     total_products: int
+    out_of_stock_count: Optional[int] = 0
+    near_depleted_count: Optional[int] = 0
     warehouses: List[dict]
     items: List[WarehouseThresholdItem]
+    page: Optional[int] = None
+    page_size: Optional[int] = None
+    total_pages: Optional[int] = None
 
 
 class StockBookItem(BaseModel):
