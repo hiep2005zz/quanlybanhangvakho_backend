@@ -487,6 +487,7 @@ def get_order_dealer_credit_info(
 
 
 
+
 class PurchaseHistoryItem(BaseModel):
     product_id: int
     product_code: str
@@ -728,7 +729,6 @@ def get_dealer_purchase_history(
         last_order=last_order_summary,
         last_order_items=last_order_items,
     )
-
 
 def _format_order_response(
     order: OrderEntity,
