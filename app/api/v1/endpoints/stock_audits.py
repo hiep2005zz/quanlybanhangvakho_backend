@@ -188,11 +188,15 @@ def preview_audit_products(
     warehouse_id: str = Query(..., description="Mã kho cần kiểm kê"),
     scope_type: str = Query("WAREHOUSE", description="Phạm vi: WAREHOUSE hoặc CATEGORY"),
     category_id: Optional[int] = Query(None, description="ID nhóm hàng nếu scope_type == CATEGORY"),
+    page: int = Query(1, ge=1, description="Trang hiện tại"),
+    page_size: int = Query(20, ge=1, le=100, description="Số sản phẩm mỗi trang (mặc định 20)"),
+    search: Optional[str] = Query(None, description="Tìm theo mã hoặc tên sản phẩm"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_warehouse_read),
 ):
     """
     Xem trước danh sách sản phẩm và số lượng tồn chốt dự kiến theo phạm vi kiểm kê.
+    Hỗ trợ phân trang 20 sản phẩm/trang để tải nhanh từng trang theo yêu cầu.
     """
     if warehouse_id not in DEFAULT_WAREHOUSES:
         raise HTTPException(
@@ -221,7 +225,18 @@ def preview_audit_products(
         cat_names = {c.name for c in db.query(CategoryEntity).filter(CategoryEntity.id.in_(cat_ids)).all()}
         query = query.filter((ProductEntity.category_id.in_(cat_ids)) | (ProductEntity.category.in_(cat_names)))
 
-    products = query.order_by(ProductEntity.id.asc()).all()
+    if search and search.strip():
+        search_kw = f"%{search.strip()}%"
+        query = query.filter(
+            (ProductEntity.code.ilike(search_kw)) | 
+            (ProductEntity.name.ilike(search_kw)) | 
+            (ProductEntity.category.ilike(search_kw))
+        )
+
+    total_items = query.count()
+    total_pages = max(1, (total_items + page_size - 1) // page_size) if total_items > 0 else 1
+
+    products = query.order_by(ProductEntity.id.asc()).offset((page - 1) * page_size).limit(page_size).all()
 
     items = []
     for prod in products:
@@ -242,7 +257,10 @@ def preview_audit_products(
         "warehouse_name": warehouse_name,
         "scope_type": scope_type,
         "category_id": category_id,
-        "total_items": len(items),
+        "total_items": total_items,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
         "items": items,
     }
 
