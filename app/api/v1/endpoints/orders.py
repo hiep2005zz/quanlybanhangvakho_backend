@@ -8,7 +8,7 @@ Nếu tài khoản nhân viên đang ở trạng thái LOCKED, từ chối tạo
 """
 import json
 from uuid import uuid4
-from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEntity, Order, ProductEntity, OrderItemEntity
+from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEntity, Order, ProductEntity, OrderItemEntity, OrderStatus
 from typing import List, Optional, Union
 from datetime import date, datetime, timezone, timedelta
 from pydantic import BaseModel, Field
@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, status as http_st
 from sqlalchemy import func, case, or_, and_
 from sqlalchemy.orm import Session
 from app.db.init_db import _ensure_legacy_columns
-from app.api.deps import get_current_user, require_permission, require_roles, require_sales_or_admin_role
+from app.api.deps import get_current_user, require_permission, require_roles, require_sales_or_admin_role, RoleChecker
 from app.core.database import get_db
 from app.core.rbac import Permission, Role
 from app.schemas.auth import UserResponse
@@ -969,7 +969,8 @@ def get_order_regions(
     return sorted(list(regions))
 
 
-@router.get("", response_model=Union[OrderListFilteredResponse, List[OrderResponse]])
+@router.get("", response_model=Union[OrderListFilteredResponse, List[OrderResponse]], dependencies=[Depends(RoleChecker(['Admin', 'Sales', 'Customer']))])
+@router.get("/", response_model=Union[OrderListFilteredResponse, List[OrderResponse]], dependencies=[Depends(RoleChecker(['Admin', 'Sales', 'Customer']))], include_in_schema=False)
 def get_orders(
     request: Request,
     status: Optional[str] = None,
@@ -983,11 +984,11 @@ def get_orders(
     search: Optional[str] = None,
     format: Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value))
+    current_user: UserResponse = Depends(RoleChecker(['Admin', 'Sales', 'Customer']))
 ):
     """
     Lấy danh sách đơn hàng / hóa đơn kèm bộ lọc đa tiêu chí và tổng hợp doanh thu.
-    Áp dụng Zero-Trust Row-Level Security (RLS) cho vai trò sales.
+    Áp dụng Zero-Trust Row-Level Security (RLS) cho vai trò sales và đại lý (customer).
     """
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (current_user.roles or [current_user.role])
     user_roles_clean = [str(getattr(r, "value", r)).strip() for r in user_roles]
@@ -1041,9 +1042,9 @@ def get_orders(
     )
 
     # Quyền & Roles
-    is_admin = "admin" in user_roles_lower
-    is_sales_manager = "sales_manager" in user_roles_lower
-    is_sales = "sales" in user_roles_lower and not (is_admin or is_sales_manager)
+    is_admin = "admin" in user_roles_lower or Role.SYSTEM_ADMIN.value in user_roles_lower or str(getattr(current_user.role, "value", current_user.role)).strip().lower() in (Role.SYSTEM_ADMIN.value, "admin")
+    is_sales_manager = "sales_manager" in user_roles_lower or Role.SALES_MANAGER.value in user_roles_lower or str(getattr(current_user.role, "value", current_user.role)).strip().lower() in (Role.SALES_MANAGER.value, "sales_manager")
+    is_sales = ("sales" in user_roles_lower or Role.SALES.value in user_roles_lower or str(getattr(current_user.role, "value", current_user.role)).strip().lower() == "sales") and not (is_admin or is_sales_manager)
     is_customer = is_customer_role and not (is_admin or is_sales_manager or is_sales or "accountant" in user_roles_lower)
     can_view_cost = is_admin or is_sales_manager or (hasattr(Permission, "COST_READ") and Permission.COST_READ.value in (current_user.permissions or []))
 
@@ -1099,7 +1100,7 @@ def get_orders(
 
 
     # 3. Xây dựng Query cơ sở
-    query = db.query(OrderEntity)
+    query = db.query(Order)
 
     if is_sales:
         if dealer_id is not None:
@@ -3174,6 +3175,33 @@ def _execute_order_cancellation(
                 detail="Đại lý chỉ được phép hủy đơn hàng khi đơn chưa được duyệt (trạng thái Chờ duyệt)."
             )
 
+    # 3. State Guard: Đơn đã xuất kho thì không hủy được (phải đi đường trả hàng).
+    # Chặn ngay đầu API trước phần xử lý lý do và nhả tồn kho.
+    order_status = (persisted_order.status if persisted_order else target.get("status", "")).strip()
+    EXPORTED_STATUS_LIST = [
+        "Đã xuất", "Đã giao", "Đóng", "Hoàn thành",
+        OrderStatus.EXPORTED.value, OrderStatus.DELIVERED.value, OrderStatus.CLOSED.value,
+        "EXPORTED", "SHIPPED", "DISPATCHED", "DELIVERED", "CLOSED", "COMPLETED",
+        "ĐÃ XUẤT", "ĐÃ GIAO", "ĐÓNG", "HOÀN THÀNH"
+    ]
+    rank = ORDER_STATUS_RANKS.get(order_status.upper(), 0)
+    if (
+        order_status in ['Đã xuất', 'Đã giao', 'Đóng']
+        or order_status.upper() in [s.upper() for s in EXPORTED_STATUS_LIST]
+        or rank >= 5
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đơn hàng đã xuất kho, không thể hủy. Vui lòng đi đường trả hàng."
+        )
+
+    if order_status.upper() in ("CANCELLED", "REJECTED", "ĐÃ HỦY", "TỪ CHỐI"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đơn hàng đã ở trạng thái hủy hoặc từ chối, không thể hủy lại."
+        )
+
+    # 4. Reason Validation: Bắt buộc nhập lý do hủy
     clean_reason = (reason or "").strip()
     if not clean_reason:
         raise HTTPException(
@@ -3181,19 +3209,7 @@ def _execute_order_cancellation(
             detail="Lý do hủy đơn hàng là bắt buộc. Vui lòng nhập lý do hủy."
         )
 
-    cur_status = (persisted_order.status if persisted_order else target.get("status", "")).upper()
-    if cur_status in ("CANCELLED", "REJECTED"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Đơn hàng đã ở trạng thái hủy hoặc từ chối, không thể hủy lại."
-        )
-
-    rank = ORDER_STATUS_RANKS.get(cur_status, 0)
-    if rank >= 5:  # >= EXPORTED (Đã xuất)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Đơn hàng đã ở trạng thái '{cur_status}' (từ 'Đã xuất' trở lên), không thể hủy đơn. Vui lòng thực hiện quy trình trả hàng."
-        )
+    cur_status = order_status.upper()
 
     old_status = cur_status
     now_utc = datetime.now(timezone.utc)
