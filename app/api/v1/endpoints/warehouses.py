@@ -39,8 +39,8 @@ router = APIRouter()
 
 # Quyền quản lý cấu hình kho: Admin, Quản lý kho, Thủ kho
 WAREHOUSE_MANAGE_ROLES = ["admin", "warehouse", "warehouse_manager"]
-# Quyền xem kho & tra cứu soạn đơn: Toàn bộ nhân sự nghiệp vụ
-WAREHOUSE_VIEW_ROLES = ["admin", "warehouse", "warehouse_manager", "sales", "sales_manager", "accountant"]
+# Quyền xem kho: Admin, Quản lý kho, Thủ kho, Kế toán (Nhân viên kinh doanh sales, sales_manager không có quyền xem)
+WAREHOUSE_VIEW_ROLES = ["admin", "warehouse", "warehouse_manager", "accountant"]
 
 
 # ==========================================================
