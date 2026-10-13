@@ -206,7 +206,7 @@ def approve_order_and_reserve_stock(
 
     # Kiểm tra trạng thái hợp lệ
     cur_status = (order.status or "").upper()
-    if cur_status not in ("PENDING_APPROVAL", "PENDING", "DRAFT"):
+    if cur_status not in ("PENDING_APPROVAL", "PENDING", "DRAFT", "REVISION_REQUIRED"):
         raise OrderNotEligibleForApprovalException(cur_status)
 
     # Xác định đại lý & kho phụ trách
