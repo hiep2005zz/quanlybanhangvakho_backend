@@ -192,12 +192,22 @@ def _find_product_in_raw(product_id: int):
             return p
     return None
 
+_TX_COUNTS_CACHE = None
+_TX_COUNTS_CACHE_TIME = 0.0
+
 def _get_all_product_transaction_counts(db: Session) -> dict[int, int]:
     """
     Tối ưu hóa hiệu năng O(1) theo lô (Bulk batching):
     Thay vì chạy 20.000 câu query trong vòng lặp N+1 làm đứng hệ thống khi có 10.000 sản phẩm,
-    hàm này gom nhóm tính toán transaction_count cho TẤT CẢ sản phẩm chỉ trong 1 lần duyệt (0.01s).
+    hàm này gom nhóm tính toán transaction_count cho TẤT CẢ sản phẩm chỉ trong 1 lần duyệt (0.01s),
+    kết hợp in-memory TTL cache 20s.
     """
+    import time
+    global _TX_COUNTS_CACHE, _TX_COUNTS_CACHE_TIME
+    now = time.time()
+    if _TX_COUNTS_CACHE is not None and (now - _TX_COUNTS_CACHE_TIME) < 20:
+        return _TX_COUNTS_CACHE
+
     from app.api.v1.endpoints.orders import ORDERS_DB
     from app.api.v1.endpoints.inventory import INVENTORY_TRANSACTIONS
     from app.models.entities import OrderEntity, InventoryTransactionEntity
@@ -278,6 +288,8 @@ def _get_all_product_transaction_counts(db: Session) -> dict[int, int]:
         inv_cnt = max(mem_tx_by_pid.get(pid, 0), db_tx_by_pid.get(pid, 0))
         res[pid] = tx_counts.get(pid, 0) + inv_cnt
 
+    _TX_COUNTS_CACHE = res
+    _TX_COUNTS_CACHE_TIME = now
     return res
 
 def _get_product_transaction_count(product_id: int, db: Session) -> int:
@@ -328,6 +340,9 @@ def get_products(
     # Đồng bộ từ DB nếu có
     db_products = db.query(ProductEntity).all()
     db_prod_map = {p.id: p for p in db_products}
+    if db_products:
+        # Tự động loại bỏ các sản phẩm đã xóa khỏi CSDL ra khỏi in-memory RAW_PRODUCTS
+        RAW_PRODUCTS[:] = [p for p in RAW_PRODUCTS if p.get("id") in db_prod_map]
 
     # Tự động lấy bảng giá mới nhất map theo product_id để fallback nếu sản phẩm chưa có giá
     pb_price_map = {}
@@ -350,9 +365,11 @@ def get_products(
     except Exception:
         pass
 
-    # Tự động tính tổng tồn kho thực tế từ tất cả các kho (WH01, WH02, WH03...)
+    # Tự động đồng bộ và tính tổng tồn kho thực tế từ tất cả các kho (WH01, WH02, WH03...)
     wh_stock_map = {}
     try:
+        from app.services.inventory_availability_service import sync_missing_warehouse_stocks
+        sync_missing_warehouse_stocks(db)
         from app.models.entities import WarehouseStockEntity
         from sqlalchemy import func
         wh_rows = (
@@ -625,7 +642,12 @@ def get_products(
         # Lọc sản phẩm dưới định mức: Đồng bộ chính xác với cảnh báo định mức tồn kho (/inventory/low-stock-alerts)
         from app.api.v1.endpoints.inventory import get_inventory_thresholds
         try:
-            threshold_items = get_inventory_thresholds(warehouse_id=None, db=db, current_user=current_user)
+            threshold_items = get_inventory_thresholds(
+                warehouse_id=None,
+                only_low_stock=True,
+                db=db,
+                current_user=current_user
+            )
             low_stock_pids = set(it.product_id for it in threshold_items if it.is_low_stock)
             filtered_items = [
                 it for it in filtered_items
@@ -1192,9 +1214,10 @@ def create_product(
     # Lưu vào in-memory RAW_PRODUCTS
     RAW_PRODUCTS.append(new_product_dict)
 
-    # Đồng bộ lưu vào SQLite ProductEntity
+    # Đồng bộ lưu vào SQLite ProductEntity và khởi tạo kho
     try:
-        from app.models.entities import ProductEntity
+        from app.models.entities import ProductEntity, WarehouseStockEntity
+        from app.services.inventory_availability_service import DEFAULT_WAREHOUSES
         db_prod = ProductEntity(
             id=new_id,
             code=clean_sku,
@@ -1212,6 +1235,22 @@ def create_product(
             floor_price=floor_val,
         )
         db.add(db_prod)
+        db.flush()
+
+        # Tự động đồng bộ bản ghi tồn kho cho tất cả các kho
+        for wid, wname in DEFAULT_WAREHOUSES.items():
+            ws_item = WarehouseStockEntity(
+                warehouse_id=wid,
+                warehouse_name=wname,
+                product_id=new_id,
+                actual_stock=0,
+                reserved_stock=0,
+                quantity_on_hand=0,
+                reserved_quantity=0,
+                min_stock=10,
+            )
+            db.add(ws_item)
+
         db.commit()
     except Exception as db_err:
         db.rollback()
