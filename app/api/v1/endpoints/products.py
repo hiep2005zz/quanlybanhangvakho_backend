@@ -327,6 +327,9 @@ def get_products(
     # Đồng bộ từ DB nếu có
     db_products = db.query(ProductEntity).all()
     db_prod_map = {p.id: p for p in db_products}
+    if db_products:
+        # Tự động loại bỏ các sản phẩm đã xóa khỏi CSDL ra khỏi in-memory RAW_PRODUCTS
+        RAW_PRODUCTS[:] = [p for p in RAW_PRODUCTS if p.get("id") in db_prod_map]
 
     # Tự động lấy bảng giá mới nhất map theo product_id để fallback nếu sản phẩm chưa có giá
     pb_price_map = {}
@@ -349,9 +352,11 @@ def get_products(
     except Exception:
         pass
 
-    # Tự động tính tổng tồn kho thực tế từ tất cả các kho (WH01, WH02, WH03...)
+    # Tự động đồng bộ và tính tổng tồn kho thực tế từ tất cả các kho (WH01, WH02, WH03...)
     wh_stock_map = {}
     try:
+        from app.services.inventory_availability_service import sync_missing_warehouse_stocks
+        sync_missing_warehouse_stocks(db)
         from app.models.entities import WarehouseStockEntity
         from sqlalchemy import func
         wh_rows = (
@@ -1191,9 +1196,10 @@ def create_product(
     # Lưu vào in-memory RAW_PRODUCTS
     RAW_PRODUCTS.append(new_product_dict)
 
-    # Đồng bộ lưu vào SQLite ProductEntity
+    # Đồng bộ lưu vào SQLite ProductEntity và khởi tạo kho
     try:
-        from app.models.entities import ProductEntity
+        from app.models.entities import ProductEntity, WarehouseStockEntity
+        from app.services.inventory_availability_service import DEFAULT_WAREHOUSES
         db_prod = ProductEntity(
             id=new_id,
             code=clean_sku,
@@ -1211,6 +1217,22 @@ def create_product(
             floor_price=floor_val,
         )
         db.add(db_prod)
+        db.flush()
+
+        # Tự động đồng bộ bản ghi tồn kho cho tất cả các kho
+        for wid, wname in DEFAULT_WAREHOUSES.items():
+            ws_item = WarehouseStockEntity(
+                warehouse_id=wid,
+                warehouse_name=wname,
+                product_id=new_id,
+                actual_stock=0,
+                reserved_stock=0,
+                quantity_on_hand=0,
+                reserved_quantity=0,
+                min_stock=10,
+            )
+            db.add(ws_item)
+
         db.commit()
     except Exception as db_err:
         db.rollback()
