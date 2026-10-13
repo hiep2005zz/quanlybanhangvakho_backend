@@ -56,7 +56,7 @@ class OrderResponse(BaseModel):
     order_code: str
     dealer_id: int
     dealer_name: str
-    created_by: str
+    created_by: Optional[str] = "admin"
     assigned_sale_id: Optional[int] = None
     assigned_sale_name: Optional[str] = None
     total_amount: float
