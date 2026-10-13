@@ -39,7 +39,7 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
-    "avatar_url": "/uploads/avatars/sales_manager_23bee469a45e_square.png"
+    "avatar_url": "/uploads/avatars/sales_manager_b4b70651f538_square.png"
   },
   "sales": {
     "id": 3,
@@ -60,7 +60,7 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 1,
-    "avatar_url": "/uploads/avatars/sales_aed5c6c4b390_square.png"
+    "avatar_url": "/uploads/avatars/sales_966b3a3352cd_square.png"
   },
   "kho": {
     "id": 4,
@@ -131,9 +131,9 @@
     "full_name": "Vu Mua Hang",
     "email": "muahang@congty.vn",
     "phone": "0833516998",
-    "role": "purchasing",
+    "role": "customer",
     "roles": [
-      "purchasing"
+      "customer"
     ],
     "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
     "branch": "Trụ sở chính",
