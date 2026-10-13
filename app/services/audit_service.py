@@ -53,6 +53,7 @@ SYSTEM_AUDIT_ACTION_TYPES = {
     "ORDER_CREATE",
     "ORDER_APPROVE",
     "ORDER_REJECT",
+    "ORDER_RETURN_FOR_EDIT",
 }
 
 # Danh sách tất cả các hành động nghiệp vụ hợp lệ được phép ghi log kiểm toán:
