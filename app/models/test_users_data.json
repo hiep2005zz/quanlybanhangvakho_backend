@@ -9,7 +9,11 @@
     "roles": [
       "admin"
     ],
+<<<<<<< HEAD
     "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
+=======
+    "hashed_password": "$2b$12$fAXMinL.IZCI6JUgt3OIteJ0TtdbQYdT68a27D21QcVOKo0pbbrwu",
+>>>>>>> e3938c77b6693b721a645dfcf4e799b296726c46
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
@@ -30,7 +34,11 @@
     "roles": [
       "sales_manager"
     ],
+<<<<<<< HEAD
     "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
+=======
+    "hashed_password": "$2b$12$fAXMinL.IZCI6JUgt3OIteJ0TtdbQYdT68a27D21QcVOKo0pbbrwu",
+>>>>>>> e3938c77b6693b721a645dfcf4e799b296726c46
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
@@ -51,7 +59,11 @@
     "roles": [
       "sales"
     ],
+<<<<<<< HEAD
     "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
+=======
+    "hashed_password": "$2b$12$fAXMinL.IZCI6JUgt3OIteJ0TtdbQYdT68a27D21QcVOKo0pbbrwu",
+>>>>>>> e3938c77b6693b721a645dfcf4e799b296726c46
     "branch": "Khu vực Miền Bắc",
     "is_active": true,
     "status": "ACTIVE",
@@ -72,7 +84,11 @@
     "roles": [
       "sales_manager"
     ],
+<<<<<<< HEAD
     "hashed_password": "$2b$12$6v6UeBSwWb4Q8hLwks0uxut1/5WSJeHRJlrOlAUQSn2kgvJ15PWKW",
+=======
+    "hashed_password": "$2b$12$fAXMinL.IZCI6JUgt3OIteJ0TtdbQYdT68a27D21QcVOKo0pbbrwu",
+>>>>>>> e3938c77b6693b721a645dfcf4e799b296726c46
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -93,7 +109,11 @@
     "roles": [
       "warehouse_manager"
     ],
+<<<<<<< HEAD
     "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
+=======
+    "hashed_password": "$2b$12$fAXMinL.IZCI6JUgt3OIteJ0TtdbQYdT68a27D21QcVOKo0pbbrwu",
+>>>>>>> e3938c77b6693b721a645dfcf4e799b296726c46
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -114,7 +134,11 @@
     "roles": [
       "accountant"
     ],
+<<<<<<< HEAD
     "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
+=======
+    "hashed_password": "$2b$12$fAXMinL.IZCI6JUgt3OIteJ0TtdbQYdT68a27D21QcVOKo0pbbrwu",
+>>>>>>> e3938c77b6693b721a645dfcf4e799b296726c46
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",
@@ -135,7 +159,11 @@
     "roles": [
       "customer"
     ],
+<<<<<<< HEAD
     "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
+=======
+    "hashed_password": "$2b$12$fAXMinL.IZCI6JUgt3OIteJ0TtdbQYdT68a27D21QcVOKo0pbbrwu",
+>>>>>>> e3938c77b6693b721a645dfcf4e799b296726c46
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",
@@ -261,7 +289,11 @@
     "roles": [
       "sales"
     ],
+<<<<<<< HEAD
     "hashed_password": "$2b$12$cdfTC8D7X809O2Sb6mWZEOtFAF6Bnx/jJ3.MtZx6iI6mBPO6KcPie",
+=======
+    "hashed_password": "$2b$12$fAXMinL.IZCI6JUgt3OIteJ0TtdbQYdT68a27D21QcVOKo0pbbrwu",
+>>>>>>> e3938c77b6693b721a645dfcf4e799b296726c46
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
