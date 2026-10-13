@@ -260,13 +260,59 @@ def require_sales_or_admin_role(current_user: UserResponse = Depends(get_current
     - Đại lý đặt hàng (Role: customer)
     Các vai trò khác (kho, kế toán, mua hàng) bị CHẶN với HTTP 403 Forbidden.
     """
+    raw_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (current_user.roles or ([current_user.role] if current_user.role else []))
+    cleaned_roles: set[str] = set()
+    for r in raw_roles:
+        s = str(getattr(r, "value", r)).lower()
+        cleaned_roles.add(s)
+        for keyword in ["admin", "sales_manager", "sales", "customer", "agent"]:
+            if keyword in s:
+                cleaned_roles.add(keyword)
+    if current_user.role:
+        r_val = str(getattr(current_user.role, "value", current_user.role)).lower()
+        cleaned_roles.add(r_val)
+        for keyword in ["admin", "sales_manager", "sales", "customer", "agent"]:
+            if keyword in r_val:
+                cleaned_roles.add(keyword)
+    ALLOWED_ROLES = {"sales", "sales_manager", "admin", "customer", "agent"}
+    if not (cleaned_roles & ALLOWED_ROLES):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh, Đại lý và Quản trị hệ thống."
+        )
+    return current_user
+
+
+def require_warehouse_manager(current_user: UserResponse = Depends(get_current_user)) -> UserResponse:
+    """
+    AC 6 / Chức năng 6:
+    Chỉ Quản lý kho (Role: warehouse_manager) và Quản trị hệ thống (Role: admin)
+    được thực hiện nghiệp vụ kiểm kê kho (Tạo phiếu, Nhập kết quả, Xác nhận, Hủy).
+    Các vai trò khác (Thủ kho 'warehouse', Kinh doanh 'sales', Kế toán 'accountant', ...) bị CHẶN 403 Forbidden.
+    """
     user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
-    ALLOWED = {"sales", "sales_manager", "admin", "customer"}
+    ALLOWED = {"warehouse_manager", "admin"}
     if not any(r in ALLOWED for r in user_roles):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh, Quản trị hệ thống và Đại lý."
+            detail="Truy cập bị từ chối (403 Forbidden). Chỉ Quản lý kho (Warehouse Manager) hoặc Quản trị hệ thống (Admin) mới có quyền thực hiện nghiệp vụ kiểm kê kho."
         )
     return current_user
+
+
+def require_warehouse_read(current_user: UserResponse = Depends(get_current_user)) -> UserResponse:
+    """
+    Quyền xem danh sách và chi tiết phiếu kiểm kê:
+    Cho phép Quản lý kho, Quản trị hệ thống và Thủ kho.
+    """
+    user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
+    ALLOWED = {"warehouse_manager", "admin", "warehouse"}
+    if not any(r in ALLOWED for r in user_roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Bạn không có quyền truy cập thông tin kiểm kê kho."
+        )
+    return current_user
+
 
 

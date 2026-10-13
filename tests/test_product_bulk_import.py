@@ -189,3 +189,38 @@ def test_bulk_confirm_upsert_success():
     assert p_new["name"] == "Mũ Lưỡi Trai Phong Cách"
     assert p_new["sell_price"] == 125000
     assert p_new["stock"] == 100
+
+def test_bulk_confirm_large_dataset_exceeding_2100_limit():
+    """Kiểm tra xác nhận import số lượng lớn (2.500 sản phẩm > 2.100 params) không bị crash."""
+    token = get_token("sales_manager")
+
+    rows = [
+        {
+            "row_index": i + 2,
+            "sku": f"SP_LARGE_{i}",
+            "name": f"Sản phẩm test tải lớn {i}",
+            "unit": "Cái",
+            "sell_price": 100000.0,
+            "cost_price": 50000.0,
+            "category": "Thời trang",
+            "stock": 10,
+            "status": "NEW",
+            "errors": [],
+            "data": {}
+        }
+        for i in range(2500)
+    ]
+
+    confirm_payload = {
+        "file_id": "large_test.xlsx",
+        "skip_errors": True,
+        "rows": rows
+    }
+
+    res = client.post("/api/v1/products/bulk-confirm", headers={"Authorization": f"Bearer {token}"}, json=confirm_payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total_processed"] == 2500
+    assert data["created_count"] == 2500
+    assert data["status"] == "success"
+

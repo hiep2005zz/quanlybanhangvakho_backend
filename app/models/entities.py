@@ -15,7 +15,7 @@ from sqlalchemy import (
     UnicodeText,
     ForeignKey,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, synonym
 from app.core.database import Base
 
 def get_utc_now():
@@ -48,9 +48,31 @@ class UserEntity(Base):
             try:
                 res = json.loads(self.roles_json)
                 if isinstance(res, str):
+                    try:
+                        inner = json.loads(res)
+                        if isinstance(inner, list):
+                            return [str(x) for x in inner]
+                    except Exception:
+                        pass
                     return [res]
                 elif isinstance(res, list):
-                    return res
+                    cleaned = []
+                    for item in res:
+                        if isinstance(item, str) and (item.startswith("[") or item.startswith('"[')):
+                            try:
+                                inner = json.loads(item)
+                                if isinstance(inner, str):
+                                    inner = json.loads(inner)
+                                if isinstance(inner, list):
+                                    cleaned.extend([str(x) for x in inner])
+                                    continue
+                                elif isinstance(inner, str):
+                                    cleaned.append(str(inner))
+                                    continue
+                            except Exception:
+                                pass
+                        cleaned.append(str(item))
+                    return cleaned
             except Exception:
                 pass
         return [self.role] if self.role else []
@@ -93,8 +115,9 @@ class CategoryEntity(Base):
     __tablename__ = "categories"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    code = Column(String(50), unique=True, index=True, nullable=False)
+    code = Column(String(50), unique=True, index=True, nullable=True)
     name = Column(Unicode(100), nullable=False)
+    parent_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
     description = Column(Unicode(255), nullable=True)
     product_count = Column(Integer, default=0)
     status = Column(Unicode(50), default="Đang hoạt động")
@@ -117,8 +140,9 @@ class ProductEntity(Base):
     units_json = Column(UnicodeText, nullable=True)
     packaging_specification = Column(Unicode(255), nullable=True)
     images_json = Column(UnicodeText, nullable=True)
-    status = Column(String(50), default="active")
     is_batch_managed = Column(Boolean, default=False)
+    status = Column(String(50), default="active")
+    min_stock = Column(Integer, default=10, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
     category_rel = relationship("CategoryEntity", backref="products")
@@ -202,13 +226,15 @@ class InventoryTransactionEntity(Base):
 class OrderStatus(str, Enum):
     DRAFT = "DRAFT"                        # Nháp
     PENDING_APPROVAL = "PENDING_APPROVAL"  # Chờ duyệt
-    APPROVED = "CONFIRMED"                 # Đã duyệt
+    APPROVED = "APPROVED"                  # Đã duyệt
+    CONFIRMED = "CONFIRMED"                # Đã xác nhận
     PICKING = "PICKING"                    # Đang soạn hàng
     EXPORTED = "EXPORTED"                  # Đã xuất
     DELIVERED = "DELIVERED"                # Đã giao
     CLOSED = "CLOSED"                      # Đóng
     CANCELLED = "CANCELLED"                # Huỷ
     REJECTED = "REJECTED"                  # Bị từ chối
+    EXPIRED = "EXPIRED"                    # Hết hạn giữ chỗ
 
 class OrderEntity(Base):
     __tablename__ = "orders"
@@ -234,6 +260,32 @@ class OrderEntity(Base):
     cancel_reason = Column(Unicode(500), nullable=True)
     cancelled_by = Column(String(100), nullable=True)
     cancelled_at = Column(DateTime, nullable=True)
+    reservation_expires_at = Column(DateTime, nullable=True)
+
+
+class OrderItemEntity(Base):
+    __tablename__ = "order_items"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False, index=True)
+    order_code = Column(String(50), nullable=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
+    sku_id = Column(String(50), nullable=True, index=True)
+    product_name = Column(Unicode(255), nullable=True)
+    quantity = Column(Integer, nullable=False, default=1)
+    base_quantity = Column(Integer, nullable=False, default=1)
+    unit_price = Column(Float, default=0.0)
+    unit_name = Column(Unicode(50), nullable=True)
+    conversion_rate = Column(Float, default=1.0)
+    is_reserved = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=get_utc_now)
+
+    order_rel = relationship("OrderEntity", backref="items_rel")
+    product_rel = relationship("ProductEntity", backref="order_items")
+
+    customer_id = synonym("dealer_id")
+
+Order = OrderEntity
 
 class AuditLogEntity(Base):
     __tablename__ = "audit_logs"
@@ -287,11 +339,90 @@ class WarehouseStockEntity(Base):
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
     actual_stock = Column(Integer, default=0, nullable=False)
     reserved_stock = Column(Integer, default=0, nullable=False)
+    quantity_on_hand = Column(Integer, default=0, nullable=True)
+    reserved_quantity = Column(Integer, default=0, nullable=True)
+    min_stock = Column(Integer, default=10, nullable=False)
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 
     product_rel = relationship("ProductEntity", backref="warehouse_stocks")
 
     @property
+    def on_hand(self) -> int:
+        return self.actual_stock if self.actual_stock is not None else (self.quantity_on_hand or 0)
+
+    @property
+    def reserved(self) -> int:
+        return self.reserved_stock if self.reserved_stock is not None else (self.reserved_quantity or 0)
+
+    @property
+    def available(self) -> int:
+        return max(0, self.on_hand - self.reserved)
+
+    @property
     def available_stock(self) -> int:
-        return max(0, (self.actual_stock or 0) - (self.reserved_stock or 0))
+        return self.available
+
+    @property
+    def is_low_stock(self) -> bool:
+        return self.on_hand <= (self.min_stock or 0)
+
+    @property
+    def shortage_quantity(self) -> int:
+        return max(0, (self.min_stock or 0) - self.on_hand)
+
+# Alias cho spec nghiệp vụ Tồn kho
+InventoryEntity = WarehouseStockEntity
+
+class StockAuditEntity(Base):
+    __tablename__ = "stock_audits"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    warehouse_id = Column(String(50), nullable=True, index=True)
+    warehouse_name = Column(Unicode(255), nullable=True)
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True, index=True)
+    category_name = Column(Unicode(100), nullable=True)
+    scope_type = Column(String(20), default="WAREHOUSE")  # WAREHOUSE | CATEGORY | ALL
+    status = Column(String(20), default="DRAFT", nullable=False)  # DRAFT | CONFIRMED | CANCELLED
+    note = Column(UnicodeText, nullable=True)
+    total_items = Column(Integer, default=0)
+    discrepancy_items_count = Column(Integer, default=0)
+    total_discrepancy_qty = Column(Integer, default=0)
+    items_json = Column(UnicodeText, nullable=True)
+    created_by = Column(Unicode(100), nullable=False)
+    confirmed_by = Column(Unicode(100), nullable=True)
+    confirmed_at = Column(DateTime, nullable=True)
+    cancelled_by = Column(Unicode(100), nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+
+class StockTransferEntity(Base):
+    __tablename__ = "stock_transfers"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    from_warehouse_id = Column(String(50), nullable=False, index=True)
+    from_warehouse_name = Column(Unicode(255), nullable=False)
+    to_warehouse_id = Column(String(50), nullable=False, index=True)
+    to_warehouse_name = Column(Unicode(255), nullable=False)
+    status = Column(String(20), default="IN_TRANSIT", nullable=False)  # DRAFT | IN_TRANSIT | COMPLETED | CANCELLED
+    note = Column(UnicodeText, nullable=True)
+    total_items = Column(Integer, default=0)
+    total_transfer_qty = Column(Integer, default=0)
+    total_received_qty = Column(Integer, default=0)
+    discrepancy_qty = Column(Integer, default=0)
+    discrepancy_reason = Column(UnicodeText, nullable=True)
+    items_json = Column(UnicodeText, nullable=True)
+    created_by = Column(Unicode(100), nullable=False)
+    dispatched_by = Column(Unicode(100), nullable=True)
+    dispatched_at = Column(DateTime, nullable=True)
+    received_by = Column(Unicode(100), nullable=True)
+    received_at = Column(DateTime, nullable=True)
+    cancelled_by = Column(Unicode(100), nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
