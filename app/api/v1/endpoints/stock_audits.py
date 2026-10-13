@@ -7,7 +7,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.core.database import get_db
-from app.api.deps import require_warehouse_manager, require_warehouse_read
+from app.api.deps import (
+    require_warehouse_manager,
+    require_warehouse_read,
+    require_warehouse_audit_manage,
+)
 from app.schemas.auth import UserResponse
 from app.models.entities import (
     StockAuditEntity,
@@ -342,11 +346,11 @@ def get_stock_audit_detail(
 def create_stock_audit(
     data: StockAuditCreate,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_warehouse_manager),
+    current_user: UserResponse = Depends(require_warehouse_audit_manage),
 ):
     """
     Chức năng 2: Tạo phiếu kiểm kê.
-    Chỉ Quản lý kho (Role: warehouse_manager) và Admin được phép tạo.
+    Cho phép Thủ kho (warehouse), Quản lý kho (warehouse_manager) và Admin tạo phiếu.
     Chốt số lượng tồn kho ban đầu của từng sản phẩm tại kho được chọn làm căn cứ.
     """
     if data.warehouse_id not in DEFAULT_WAREHOUSES:
@@ -451,7 +455,7 @@ def update_stock_audit_results(
     audit_id: int,
     data: StockAuditUpdate,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_warehouse_manager),
+    current_user: UserResponse = Depends(require_warehouse_audit_manage),
 ):
     """
     Chức năng 3: Nhập kết quả kiểm kê thực tế và lý do chênh lệch (Lưu nháp / cập nhật).
