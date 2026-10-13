@@ -38,6 +38,8 @@ class OrderItemCreate(BaseModel):
     unit_name: Optional[str] = None
     conversion_rate: Optional[float] = Field(None, gt=0)
     unit_price_override: Optional[float] = Field(None, ge=0)
+    location_id: Optional[int] = None
+    location_code: Optional[str] = None
 
 SALES_ORDER_UNITS = {"Cái", "Hộp", "Thùng", "Bộ", "Đôi"}
 
