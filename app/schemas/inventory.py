@@ -115,6 +115,7 @@ class UpdateThresholdRequest(BaseModel):
 
 class LowStockAlertSummary(BaseModel):
     total_low_stock: int
+    total_alerts: int = 0
     total_products: int
     warehouses: List[dict]
     items: List[WarehouseThresholdItem]
@@ -148,5 +149,8 @@ class StockBookResponse(BaseModel):
     items: List[StockBookItem]
     warehouses: List[WarehouseInfo]
     categories: List[str]
+    total: Optional[int] = None
+    page: Optional[int] = None
+    page_size: Optional[int] = None
 
 

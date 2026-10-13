@@ -220,13 +220,35 @@ def resolve_best_discount(
         qty_to_check = total_quantity
         subtotal_to_discount = subtotal_amount
 
-        # 1. Trường hợp chính sách áp dụng cho 1 Nhóm hàng (Category)
         is_category_policy = (
             (pol_cat not in ["ALL", "all", "PRODUCT", "product"] and pol_cat != "")
             or "nhóm hàng:" in pol_title.lower()
             or "nhóm:" in pol_title.lower()
         )
-        if is_category_policy and pol_cat not in ["ALL", "all"]:
+
+        # 1. Ưu tiên kiểm tra: Chính sách áp dụng cho 1 Sản phẩm cụ thể (Title chứa mã SP hoặc tên SP)
+        is_product_specific = False
+        matched_qty = 0
+        matched_subtotal = 0.0
+        if pol_title and pol_title != "Tất cả sản phẩm" and "nhóm" not in pol_title.lower():
+            for it in items:
+                prod_name = it.get("product_name") or ""
+                prod_code = it.get("product_code") or ""
+                if (prod_code and prod_code in pol_title) or (prod_name and prod_name in pol_title):
+                    is_product_specific = True
+                    it_qty = it.get("quantity", 0)
+                    it_price = it.get("price", 0.0)
+                    matched_qty += it_qty
+                    matched_subtotal += it_qty * it_price
+
+        if is_product_specific:
+            if matched_qty > 0:
+                qty_to_check = matched_qty
+                subtotal_to_discount = matched_subtotal
+            else:
+                qty_to_check = 0
+        # 2. Trường hợp chính sách áp dụng cho 1 Nhóm hàng (Category)
+        elif is_category_policy and pol_cat not in ["ALL", "all"]:
             cat_name = pol_cat
             if "nhóm hàng:" in pol_title.lower():
                 cat_name = pol_title.split(":", 1)[-1].strip()
@@ -262,24 +284,6 @@ def resolve_best_discount(
             if cat_qty > 0:
                 qty_to_check = cat_qty
                 subtotal_to_discount = cat_subtotal
-            else:
-                qty_to_check = 0
-
-        # 2. Trường hợp chính sách áp dụng cho 1 Sản phẩm cụ thể
-        elif pol_title and pol_title != "Tất cả sản phẩm" and "nhóm" not in pol_title.lower() and pol_cat != "ALL":
-            matched_qty = 0
-            matched_subtotal = 0.0
-            for it in items:
-                prod_name = it.get("product_name") or ""
-                prod_code = it.get("product_code") or ""
-                if (prod_code and prod_code in pol_title) or (prod_name and prod_name in pol_title):
-                    it_qty = it.get("quantity", 0)
-                    it_price = it.get("price", 0.0)
-                    matched_qty += it_qty
-                    matched_subtotal += it_qty * it_price
-            if matched_qty > 0:
-                qty_to_check = matched_qty
-                subtotal_to_discount = matched_subtotal
             else:
                 qty_to_check = 0
 

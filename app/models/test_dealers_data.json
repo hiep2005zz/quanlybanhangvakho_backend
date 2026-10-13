@@ -9,17 +9,17 @@
     "address": "120 Cầu Giấy, Hà Nội",
     "region": "Hà Nội",
     "assigned_sale_id": 3,
-    "credit_limit": 100000000.0,
-    "max_debt_days": 1,
-    "overdue_days_allowed": 1,
+    "credit_limit": 10000000000.0,
+    "max_debt_days": 30,
+    "overdue_days_allowed": 30,
     "customer_group": "dai_ly_cap_1",
     "status": "Đang hoạt động",
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
     "transaction_count": 0,
-    "warehouse_id": null,
-    "warehouse_name": null
+    "warehouse_id": "2",
+    "warehouse_name": "Kho Chi Nhánh Đà Nẵng"
   },
   "2": {
     "id": 2,

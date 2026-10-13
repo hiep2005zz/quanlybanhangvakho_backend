@@ -464,6 +464,28 @@ def confirm_goods_receipt(
         receipt.confirmed_at = now_utc
         receipt.updated_at = now_utc
 
+        # Xác định mã kho chuẩn (WH01, WH02, WH03...) để đồng bộ tồn kho WarehouseStockEntity
+        from app.models.entities import WarehouseStockEntity
+        w_entity = db.query(WarehouseEntity).filter(WarehouseEntity.id == receipt.warehouse_id).first()
+        target_wid = "WH01"
+        target_wname = "Kho Tổng Hà Nội"
+        if w_entity:
+            target_wname = w_entity.name
+            w_code = (w_entity.code or "").upper()
+            w_name_lower = (w_entity.name or "").lower()
+            if "HN" in w_code or "hà nội" in w_name_lower or w_entity.id == 1:
+                target_wid = "WH01"
+            elif "HCM" in w_code or "hồ chí minh" in w_name_lower or "sài gòn" in w_name_lower or w_entity.id == 3:
+                target_wid = "WH02"
+            elif "DN" in w_code or "đà nẵng" in w_name_lower or w_entity.id == 2:
+                target_wid = "WH03"
+            else:
+                target_wid = w_code or f"WH{w_entity.id:02d}"
+        elif str(receipt.warehouse_id) in ["WH01", "WH02", "WH03"]:
+            target_wid = str(receipt.warehouse_id)
+            from app.services.inventory_availability_service import DEFAULT_WAREHOUSES
+            target_wname = DEFAULT_WAREHOUSES.get(target_wid, "Kho Tổng")
+
         for item in receipt.items:
             # 1. Cập nhật tồn kho tổng của sản phẩm
             prod = db.query(ProductEntity).filter(ProductEntity.id == item.product_id).first()
@@ -483,6 +505,69 @@ def confirm_goods_receipt(
             for raw_p in RAW_PRODUCTS:
                 if raw_p.get("id") == prod.id:
                     raw_p["stock"] = prod.stock
+
+            # Đồng bộ tồn kho chi tiết theo kho (WarehouseStockEntity) để cập nhật Tổng tồn 3 kho
+            ws = db.query(WarehouseStockEntity).filter(
+                WarehouseStockEntity.warehouse_id == target_wid,
+                WarehouseStockEntity.product_id == prod.id
+            ).first()
+
+            if not ws:
+                alt_ids = [str(receipt.warehouse_id)]
+                if w_entity and w_entity.code:
+                    alt_ids.append(w_entity.code)
+                ws = db.query(WarehouseStockEntity).filter(
+                    WarehouseStockEntity.warehouse_id.in_(alt_ids),
+                    WarehouseStockEntity.product_id == prod.id
+                ).first()
+
+            if ws:
+                ws.actual_stock = (ws.actual_stock or 0) + added_base_qty
+                if ws.quantity_on_hand is not None:
+                    ws.quantity_on_hand += added_base_qty
+                else:
+                    ws.quantity_on_hand = ws.actual_stock
+                ws.updated_at = now_utc
+            else:
+                ws = WarehouseStockEntity(
+                    warehouse_id=target_wid,
+                    warehouse_name=target_wname,
+                    product_id=prod.id,
+                    actual_stock=added_base_qty,
+                    quantity_on_hand=added_base_qty,
+                    reserved_stock=0,
+                    reserved_quantity=0,
+                    min_stock=prod.min_stock or 10,
+                    created_at=now_utc,
+                    updated_at=now_utc,
+                )
+                db.add(ws)
+
+            # Đồng bộ vị trí ô kệ (LocationStockEntity) nếu kho có quản lý vị trí
+            try:
+                from app.models.warehouse import WarehouseLocationEntity, LocationStockEntity
+                loc = db.query(WarehouseLocationEntity).filter(
+                    WarehouseLocationEntity.warehouse_id == receipt.warehouse_id,
+                    WarehouseLocationEntity.is_active == True
+                ).first()
+                if loc:
+                    loc_stk = db.query(LocationStockEntity).filter(
+                        LocationStockEntity.warehouse_id == receipt.warehouse_id,
+                        LocationStockEntity.location_id == loc.id,
+                        LocationStockEntity.product_id == prod.id
+                    ).first()
+                    if loc_stk:
+                        loc_stk.quantity = (loc_stk.quantity or 0) + added_base_qty
+                        loc_stk.updated_at = now_utc
+                    else:
+                        db.add(LocationStockEntity(
+                            warehouse_id=receipt.warehouse_id,
+                            location_id=loc.id,
+                            product_id=prod.id,
+                            quantity=added_base_qty,
+                        ))
+            except Exception:
+                pass
 
             # 2. Quản lý tồn theo số lô (ProductBatchEntity)
             if item.batch_number and item.batch_number.strip():

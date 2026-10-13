@@ -70,6 +70,15 @@ def reset_test_stock():
     finally:
         db.close()
     yield
+    db = SessionLocal()
+    try:
+        stocks = db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id == 1).all()
+        for s in stocks:
+            s.actual_stock = 100.0
+            s.reserved_stock = 0.0
+        db.commit()
+    finally:
+        db.close()
 
 def test_get_discount_policies():
     token = _login()
