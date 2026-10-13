@@ -81,3 +81,9 @@ class ProductListResponse(BaseModel):
     user_role: str
     is_cost_price_visible: bool
     summary: Optional[ProductFinancialSummary] = None
+    applied_price_book: Optional[str] = None
+    data: Optional[List[ProductItem]] = None
+    page: Optional[int] = 1
+    limit: Optional[int] = 20
+    page_size: Optional[int] = None
+    total_pages: Optional[int] = 1

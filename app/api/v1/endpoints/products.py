@@ -1,6 +1,10 @@
-from __future__ import annotations
+from typing import Optional, List, Dict, Any, Union
 import json
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+import os
+import base64
+import uuid
+import re
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_permission
 from app.core.database import get_db
@@ -20,8 +24,84 @@ from app.services.audit_service import log_audit_event
 
 router = APIRouter()
 
+BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+PRODUCTS_DIR = os.path.join(BACKEND_ROOT, "uploads", "products")
+try:
+    os.makedirs(PRODUCTS_DIR, exist_ok=True)
+except Exception:
+    pass
+
+def save_product_images(images: list[str] | None, product_code: str = "") -> list[str]:
+    """
+    Xử lý danh sách ảnh sản phẩm:
+    - Nếu ảnh là base64 data URL (data:image/...;base64,...), lưu file vào backend/uploads/products/
+      và trả về URL tĩnh /uploads/products/<filename>.
+    - Nếu ảnh là đường dẫn tĩnh (/uploads/...) hoặc HTTP URL, giữ nguyên.
+    """
+    if not images:
+        return []
+    products_dir = PRODUCTS_DIR
+    try:
+        os.makedirs(products_dir, exist_ok=True)
+    except Exception:
+        pass
+
+    clean_code = re.sub(r'[^a-zA-Z0-9_-]', '', product_code or "product")
+    saved_urls: list[str] = []
+    for img in images:
+        if not img or not isinstance(img, str):
+            continue
+        if img.startswith("data:image/"):
+            try:
+                parts = img.split(";base64,", 1)
+                if len(parts) == 2:
+                    header, base64_str = parts
+                    ext = "png"
+                    if "jpeg" in header or "jpg" in header:
+                        ext = "jpg"
+                    elif "webp" in header:
+                        ext = "webp"
+                    file_bytes = base64.b64decode(base64_str)
+                    filename = f"{clean_code}_{uuid.uuid4().hex[:8]}.{ext}"
+                    filepath = os.path.join(products_dir, filename)
+                    with open(filepath, "wb") as f:
+                        f.write(file_bytes)
+                    saved_urls.append(f"/uploads/products/{filename}")
+                    continue
+            except Exception as e:
+                print(f"Warning: decode product image failed: {e}")
+        saved_urls.append(img)
+    return saved_urls
+
+@router.post("/upload-image")
+async def upload_product_image(
+    file: UploadFile = File(...),
+    current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
+):
+    """
+    Upload tệp ảnh sản phẩm trực tiếp và trả về URL tĩnh /uploads/products/<filename>.
+    """
+    allowed_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in allowed_exts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Định dạng tệp không hợp lệ. Chỉ chấp nhận JPG, PNG, WEBP."
+        )
+    products_dir = PRODUCTS_DIR
+    os.makedirs(products_dir, exist_ok=True)
+
+    filename = f"prod_{uuid.uuid4().hex[:12]}{ext}"
+    filepath = os.path.join(products_dir, filename)
+    contents = await file.read()
+    with open(filepath, "wb") as f:
+        f.write(contents)
+
+    return {"url": f"/uploads/products/{filename}", "status": "success"}
+
 # Mock Products database with base_unit and units
 RAW_PRODUCTS = [
+
     {
         "id": 1,
         "code": "SP001",
@@ -205,6 +285,12 @@ def _get_product_transaction_count(product_id: int, db: Session) -> int:
 
 @router.get("", response_model=ProductListResponse)
 def get_products(
+    page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
+    page_size: Optional[int] = Query(None, ge=1, description="Số lượng mục mỗi trang"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Alias cho page_size"),
+    search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
+    category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
+    only_low_stock: Optional[bool] = Query(False, description="Chỉ lấy sản phẩm dưới định mức"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_READ.value))
 ):
@@ -225,7 +311,14 @@ def get_products(
 
     if is_customer:
         from app.services.pricing_service import get_products_for_customer
-        return get_products_for_customer(db=db, current_user=current_user)
+        return get_products_for_customer(
+            db=db,
+            current_user=current_user,
+            page=page,
+            limit=limit,
+            search=search,
+            category=category,
+        )
 
     from app.models.entities import ProductEntity
 
@@ -339,7 +432,9 @@ def get_products(
         total_stock += stock
         total_sell_val += sell_price * stock
 
-        images = p.get("images") or []
+        db_images = getattr(db_p, "images", None) if db_p else None
+        images = db_images if (db_images and len(db_images) > 0) else (p.get("images") or [])
+        p["images"] = images
         base_unit = p.get("base_unit") or "Cái"
         packaging_spec = p.get("packaging_specification")
         status_val = p.get("status") or "active"
@@ -511,12 +606,93 @@ def get_products(
             average_margin_percent=None,
         )
 
+    # Áp dụng bộ lọc tìm kiếm, ngành hàng và tồn kho
+    filtered_items = sanitized_items
+    if search and search.strip():
+        q_term = search.strip().lower()
+        filtered_items = [
+            it for it in filtered_items
+            if (it.name and q_term in it.name.lower()) or (it.code and q_term in it.code.lower())
+        ]
+    if category and category.strip() and category.strip().lower() != "all":
+        cat_term = category.strip().lower()
+        filtered_items = [
+            it for it in filtered_items
+            if (it.category and it.category.strip().lower() == cat_term)
+        ]
+    if only_low_stock:
+        # Lọc sản phẩm dưới định mức: Đồng bộ chính xác với cảnh báo định mức tồn kho (/inventory/low-stock-alerts)
+        from app.api.v1.endpoints.inventory import get_inventory_thresholds
+        try:
+            threshold_items = get_inventory_thresholds(warehouse_id=None, db=db, current_user=current_user)
+            low_stock_pids = set(it.product_id for it in threshold_items if it.is_low_stock)
+            filtered_items = [
+                it for it in filtered_items
+                if it.id in low_stock_pids
+            ]
+        except Exception:
+            filtered_items = [
+                it for it in filtered_items
+                if it.stock <= 10
+            ]
+
+    total_filtered = len(filtered_items)
+    effective_size = page_size or limit
+
+    if effective_size and effective_size > 0:
+        import math
+        total_pages = max(1, math.ceil(total_filtered / effective_size))
+        cur_page = min(max(1, page or 1), total_pages)
+        start_idx = (cur_page - 1) * effective_size
+        end_idx = start_idx + effective_size
+        paged_items = filtered_items[start_idx:end_idx]
+
+        return ProductListResponse(
+            items=paged_items,
+            data=paged_items,
+            total=total_filtered,
+            user_role=current_user.role,
+            is_cost_price_visible=can_view_cost,
+            summary=summary,
+            page=cur_page,
+            page_size=effective_size,
+            limit=effective_size,
+            total_pages=total_pages,
+        )
+
     return ProductListResponse(
-        items=sanitized_items,
-        total=len(sanitized_items),
+        items=filtered_items,
+        data=filtered_items,
+        total=total_filtered,
         user_role=current_user.role,
         is_cost_price_visible=can_view_cost,
         summary=summary,
+        page=1,
+        page_size=total_filtered,
+        limit=total_filtered,
+        total_pages=1,
+    )
+
+@router.get("/customer", response_model=ProductListResponse)
+def get_products_for_customer_endpoint(
+    page: int = Query(1, ge=1, description="Số trang (1-indexed)"),
+    limit: int = Query(20, ge=1, le=100, description="Số lượng mục mỗi trang"),
+    search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
+    category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_READ.value))
+):
+    """
+    API lấy danh sách sản phẩm phân trang cho Cổng Đại lý (Role Customer).
+    """
+    from app.services.pricing_service import get_products_for_customer
+    return get_products_for_customer(
+        db=db,
+        current_user=current_user,
+        page=page,
+        limit=limit,
+        search=search,
+        category=category,
     )
 
 from app.core.database import SessionLocal
@@ -619,7 +795,8 @@ def update_product_details(
         target["cost_price"] = payload.cost_price
 
     if payload.images is not None:
-        target["images"] = payload.images
+        processed_images = save_product_images(payload.images, target["code"])
+        target["images"] = processed_images
 
     if payload.status is not None:
         target["status"] = payload.status
@@ -643,6 +820,8 @@ def update_product_details(
                 db_prod.base_unit = target["base_unit"]
             if payload.units is not None:
                 db_prod.units = target["units"]
+            if payload.images is not None:
+                db_prod.images_json = json.dumps(target["images"], ensure_ascii=False)
             if payload.status is not None:
                 db_prod.status = target["status"]
             db.commit()
@@ -916,6 +1095,7 @@ def check_sku_availability(
 
 
 @router.post("", response_model=ProductItem, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=ProductItem, status_code=status.HTTP_201_CREATED, include_in_schema=False)
 def create_product(
     payload: ProductCreateRequest,
     request: Request,
@@ -930,13 +1110,22 @@ def create_product(
     if not clean_sku:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mã SKU không được để trống")
 
-    # Kiểm tra trùng SKU
+    # Kiểm tra trùng SKU trong bộ nhớ
     for p in RAW_PRODUCTS:
         if p["code"].upper() == clean_sku:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Mã SKU '{clean_sku}' đã tồn tại trong hệ thống. Vui lòng chọn mã khác."
             )
+
+    # Kiểm tra trùng SKU trong CSDL
+    from app.models.entities import ProductEntity
+    existing_db = db.query(ProductEntity).filter(ProductEntity.code == clean_sku).first()
+    if existing_db:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Mã SKU '{clean_sku}' đã tồn tại trong hệ thống. Vui lòng chọn mã khác."
+        )
 
     can_view_cost = current_user.can_view_cost or (Permission.COST_READ.value in current_user.permissions)
     cost = payload.cost_price if (can_view_cost and payload.cost_price is not None) else 0.0
@@ -947,6 +1136,7 @@ def create_product(
     new_id = max(max_db_id, max_raw_id) + 1
     units_list = [u.dict() for u in payload.units] if payload.units else []
     floor_val = payload.floor_price or 0.0
+    processed_images = save_product_images(payload.images or [], clean_sku)
     new_product_dict = {
         "id": new_id,
         "code": clean_sku,
@@ -956,7 +1146,7 @@ def create_product(
         "base_unit": payload.base_unit or "Cái",
         "units": units_list,
         "packaging_specification": payload.packaging_specification or "",
-        "images": payload.images or [],
+        "images": processed_images,
         "status": payload.status or "active",
         "stock": 0,
         "cost_price": cost,
@@ -978,6 +1168,9 @@ def create_product(
             category_id=payload.category_id,
             base_unit=payload.base_unit or "Cái",
             units_json=json.dumps(units_list, ensure_ascii=False),
+            images_json=json.dumps(processed_images, ensure_ascii=False),
+            packaging_specification=payload.packaging_specification or "",
+            status=payload.status or "active",
             stock=0,
             cost_price=cost,
             sell_price=payload.sell_price or 0.0,
@@ -1016,7 +1209,7 @@ def create_product(
         base_unit=payload.base_unit or "Cái",
         units=[UnitConversionItem(**u) for u in units_list],
         packaging_specification=payload.packaging_specification,
-        images=payload.images or [],
+        images=processed_images,
         status=payload.status or "active",
         stock=0,
         sell_price=clean_sell_price,
@@ -1195,7 +1388,7 @@ def update_product_units(
 # ==============================================================================
 # HÀNG LOẠT SẢN PHẨM TỪ EXCEL (Bulk Import / Preview / Upsert)
 # ==============================================================================
-from fastapi import UploadFile, File
+from fastapi import UploadFile, File, Query
 from fastapi.responses import Response
 from app.schemas.product_import import (
     ProductBulkPreviewResponse,
@@ -1222,6 +1415,9 @@ def download_product_import_template(
 @router.post("/bulk-preview", response_model=ProductBulkPreviewResponse)
 def bulk_preview_products(
     file: UploadFile = File(...),
+    page: int = Query(1, ge=1),
+    page_size: Optional[int] = Query(None),
+    status_filter: str = Query("ALL"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
 ):
@@ -1229,7 +1425,7 @@ def bulk_preview_products(
     Endpoint 2: POST /api/v1/products/bulk-preview
     Nhận UploadFile Excel, validate từng dòng dữ liệu, so khớp SKU trong DB:
     - Báo lỗi chi tiết theo từng dòng (thiếu dữ liệu bắt buộc, sai định dạng số/chuỗi, đơn vị không hợp lệ).
-    - Đánh dấu trạng thái: "NEW" (Tạo mới), "UPDATE" (Cập nhật), "ERROR" (Lỗi).
+    - Hỗ trợ phân trang Server-side (mới đầu load 20 sản phẩm).
     """
     if not file.filename.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(
@@ -1239,12 +1435,43 @@ def bulk_preview_products(
 
     try:
         content = file.file.read()
-        return ProductBulkImportService.parse_and_validate(content, db)
+        return ProductBulkImportService.parse_and_validate(
+            file_content=content,
+            db=db,
+            page=page,
+            page_size=page_size,
+            status_filter=status_filter
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Lỗi khi đọc file Excel: {str(e)}"
         )
+
+@router.get("/bulk-preview/{file_id}", response_model=ProductBulkPreviewResponse)
+def get_bulk_preview_page(
+    file_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=500),
+    status_filter: str = Query("ALL"),
+    current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
+):
+    """
+    Endpoint: GET /api/v1/products/bulk-preview/{file_id}
+    Tải trang xem trước (Server-side Pagination 20 sản phẩm/trang) cho file đã upload:
+    - Khi người dùng bấm sang trang 2, 3... backend load tiếp 20 sản phẩm của trang đó.
+    """
+    try:
+        return ProductBulkImportService.get_preview_page(
+            file_id=file_id,
+            page=page,
+            page_size=page_size,
+            status_filter=status_filter
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 @router.post("/bulk-confirm", response_model=ProductBulkConfirmResponse)
 def bulk_confirm_products(
