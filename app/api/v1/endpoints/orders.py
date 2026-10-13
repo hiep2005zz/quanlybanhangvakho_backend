@@ -2985,22 +2985,7 @@ def approve_order(
 
 
 class OrderRejectRequest(BaseModel):
-    reason: str = Field(..., min_length=5, description="Lý do từ chối (bắt buộc, tối thiểu 5 ký tự)")
-
-
-class OrderReturnRequest(BaseModel):
-    reason: str = Field(..., min_length=5, description="Ý kiến chỉ đạo sửa (bắt buộc, tối thiểu 5 ký tự)")
-
-
-class ApprovalHistoryItem(BaseModel):
-    id: int
-    user_id: Optional[int] = None
-    user_name: str
-    user_avatar: Optional[str] = None
-    action_type: str
-    action_label: str
-    reason: Optional[str] = None
-    created_at: str
+    reason: Optional[str] = "Từ chối duyệt đơn hàng"
 
 
 @router.post("/{order_code}/reject", response_model=OrderResponse)
@@ -3016,11 +3001,7 @@ def reject_order(
     Chuyển đơn từ PENDING_APPROVAL sang REJECTED.
     Bắt buộc nhập lý do từ chối (tối thiểu 5 ký tự).
     """
-    if not payload or not payload.reason or len(payload.reason.strip()) < 5:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Lý do từ chối là bắt buộc (tối thiểu 5 ký tự)."
-        )
+    reject_reason = (payload.reason.strip() if payload and payload.reason else "Từ chối duyệt đơn hàng")
 
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
     is_admin_or_sm = any(r.lower() in ["admin", "sales_manager"] for r in user_roles)
@@ -3109,7 +3090,7 @@ def reject_order(
             )
 
     old_status = target.get("status")
-    reject_reason = payload.reason.strip()
+    reject_reason = (payload.reason.strip() if payload and payload.reason else "Từ chối duyệt đơn hàng")
     target["status"] = "REJECTED"
     target["requires_approval"] = False
     target["approval_reason"] = f"Bị từ chối bởi {current_user.username}: {reject_reason}"

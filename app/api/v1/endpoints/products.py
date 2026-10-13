@@ -638,7 +638,7 @@ def get_products(
             ]
 
     total_filtered = len(filtered_items)
-    effective_limit = limit or page_size
+    effective_limit = page_size or limit
     is_paginated = page is not None or effective_limit is not None
 
     if is_paginated and effective_limit and effective_limit > 0:

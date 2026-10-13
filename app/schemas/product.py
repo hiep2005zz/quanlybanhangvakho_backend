@@ -87,4 +87,3 @@ class ProductListResponse(BaseModel):
     limit: Optional[int] = 20
     page_size: Optional[int] = None
     total_pages: Optional[int] = 1
-
