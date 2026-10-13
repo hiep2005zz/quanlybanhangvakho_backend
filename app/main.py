@@ -67,7 +67,9 @@ app.include_router(stock_audits.router, prefix="/api/v1/stock-audits", tags=["St
 # Mount static folder for user avatars / media uploads
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
 AVATARS_DIR = os.path.join(UPLOAD_DIR, "avatars")
+PRODUCTS_DIR = os.path.join(UPLOAD_DIR, "products")
 os.makedirs(AVATARS_DIR, exist_ok=True)
+os.makedirs(PRODUCTS_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 @app.get("/")

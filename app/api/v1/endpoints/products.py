@@ -1,6 +1,11 @@
 from __future__ import annotations
+from typing import Optional, List, Dict, Any
 import json
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+import os
+import base64
+import uuid
+import re
+from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_permission
 from app.core.database import get_db
@@ -20,8 +25,84 @@ from app.services.audit_service import log_audit_event
 
 router = APIRouter()
 
+BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+PRODUCTS_DIR = os.path.join(BACKEND_ROOT, "uploads", "products")
+try:
+    os.makedirs(PRODUCTS_DIR, exist_ok=True)
+except Exception:
+    pass
+
+def save_product_images(images: list[str] | None, product_code: str = "") -> list[str]:
+    """
+    Xử lý danh sách ảnh sản phẩm:
+    - Nếu ảnh là base64 data URL (data:image/...;base64,...), lưu file vào backend/uploads/products/
+      và trả về URL tĩnh /uploads/products/<filename>.
+    - Nếu ảnh là đường dẫn tĩnh (/uploads/...) hoặc HTTP URL, giữ nguyên.
+    """
+    if not images:
+        return []
+    products_dir = PRODUCTS_DIR
+    try:
+        os.makedirs(products_dir, exist_ok=True)
+    except Exception:
+        pass
+
+    clean_code = re.sub(r'[^a-zA-Z0-9_-]', '', product_code or "product")
+    saved_urls: list[str] = []
+    for img in images:
+        if not img or not isinstance(img, str):
+            continue
+        if img.startswith("data:image/"):
+            try:
+                parts = img.split(";base64,", 1)
+                if len(parts) == 2:
+                    header, base64_str = parts
+                    ext = "png"
+                    if "jpeg" in header or "jpg" in header:
+                        ext = "jpg"
+                    elif "webp" in header:
+                        ext = "webp"
+                    file_bytes = base64.b64decode(base64_str)
+                    filename = f"{clean_code}_{uuid.uuid4().hex[:8]}.{ext}"
+                    filepath = os.path.join(products_dir, filename)
+                    with open(filepath, "wb") as f:
+                        f.write(file_bytes)
+                    saved_urls.append(f"/uploads/products/{filename}")
+                    continue
+            except Exception as e:
+                print(f"Warning: decode product image failed: {e}")
+        saved_urls.append(img)
+    return saved_urls
+
+@router.post("/upload-image")
+async def upload_product_image(
+    file: UploadFile = File(...),
+    current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
+):
+    """
+    Upload tệp ảnh sản phẩm trực tiếp và trả về URL tĩnh /uploads/products/<filename>.
+    """
+    allowed_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in allowed_exts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Định dạng tệp không hợp lệ. Chỉ chấp nhận JPG, PNG, WEBP."
+        )
+    products_dir = PRODUCTS_DIR
+    os.makedirs(products_dir, exist_ok=True)
+
+    filename = f"prod_{uuid.uuid4().hex[:12]}{ext}"
+    filepath = os.path.join(products_dir, filename)
+    contents = await file.read()
+    with open(filepath, "wb") as f:
+        f.write(contents)
+
+    return {"url": f"/uploads/products/{filename}", "status": "success"}
+
 # Mock Products database with base_unit and units
 RAW_PRODUCTS = [
+
     {
         "id": 1,
         "code": "SP001",
@@ -205,6 +286,10 @@ def _get_product_transaction_count(product_id: int, db: Session) -> int:
 
 @router.get("", response_model=ProductListResponse)
 def get_products(
+    page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng mục mỗi trang"),
+    search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
+    category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_READ.value))
 ):
@@ -225,7 +310,14 @@ def get_products(
 
     if is_customer:
         from app.services.pricing_service import get_products_for_customer
-        return get_products_for_customer(db=db, current_user=current_user)
+        return get_products_for_customer(
+            db=db,
+            current_user=current_user,
+            page=page,
+            limit=limit,
+            search=search,
+            category=category,
+        )
 
     from app.models.entities import ProductEntity
 
@@ -339,7 +431,9 @@ def get_products(
         total_stock += stock
         total_sell_val += sell_price * stock
 
-        images = p.get("images") or []
+        db_images = getattr(db_p, "images", None) if db_p else None
+        images = db_images if (db_images and len(db_images) > 0) else (p.get("images") or [])
+        p["images"] = images
         base_unit = p.get("base_unit") or "Cái"
         packaging_spec = p.get("packaging_specification")
         status_val = p.get("status") or "active"
@@ -511,12 +605,49 @@ def get_products(
             average_margin_percent=None,
         )
 
+    total_count = len(sanitized_items)
+    is_paginated = page is not None or limit is not None
+    current_page = max(1, page) if page is not None else 1
+    page_limit = max(1, limit) if limit is not None else (20 if is_paginated else (total_count if total_count > 0 else 20))
+    total_pages = max(1, (total_count + page_limit - 1) // page_limit) if total_count > 0 else 1
+
+    paginated_items = sanitized_items
+    if is_paginated:
+        start_idx = (current_page - 1) * page_limit
+        paginated_items = sanitized_items[start_idx : start_idx + page_limit]
+
     return ProductListResponse(
-        items=sanitized_items,
-        total=len(sanitized_items),
+        items=paginated_items,
+        data=paginated_items,
+        total=total_count,
+        page=current_page,
+        limit=page_limit,
+        total_pages=total_pages,
         user_role=current_user.role,
         is_cost_price_visible=can_view_cost,
         summary=summary,
+    )
+
+@router.get("/customer", response_model=ProductListResponse)
+def get_products_for_customer_endpoint(
+    page: int = Query(1, ge=1, description="Số trang (1-indexed)"),
+    limit: int = Query(20, ge=1, le=100, description="Số lượng mục mỗi trang"),
+    search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
+    category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_READ.value))
+):
+    """
+    API lấy danh sách sản phẩm phân trang cho Cổng Đại lý (Role Customer).
+    """
+    from app.services.pricing_service import get_products_for_customer
+    return get_products_for_customer(
+        db=db,
+        current_user=current_user,
+        page=page,
+        limit=limit,
+        search=search,
+        category=category,
     )
 
 from app.core.database import SessionLocal
@@ -619,7 +750,8 @@ def update_product_details(
         target["cost_price"] = payload.cost_price
 
     if payload.images is not None:
-        target["images"] = payload.images
+        processed_images = save_product_images(payload.images, target["code"])
+        target["images"] = processed_images
 
     if payload.status is not None:
         target["status"] = payload.status
@@ -643,6 +775,8 @@ def update_product_details(
                 db_prod.base_unit = target["base_unit"]
             if payload.units is not None:
                 db_prod.units = target["units"]
+            if payload.images is not None:
+                db_prod.images_json = json.dumps(target["images"], ensure_ascii=False)
             if payload.status is not None:
                 db_prod.status = target["status"]
             db.commit()
@@ -947,6 +1081,7 @@ def create_product(
     new_id = max(max_db_id, max_raw_id) + 1
     units_list = [u.dict() for u in payload.units] if payload.units else []
     floor_val = payload.floor_price or 0.0
+    processed_images = save_product_images(payload.images or [], clean_sku)
     new_product_dict = {
         "id": new_id,
         "code": clean_sku,
@@ -956,7 +1091,7 @@ def create_product(
         "base_unit": payload.base_unit or "Cái",
         "units": units_list,
         "packaging_specification": payload.packaging_specification or "",
-        "images": payload.images or [],
+        "images": processed_images,
         "status": payload.status or "active",
         "stock": 0,
         "cost_price": cost,
@@ -978,6 +1113,9 @@ def create_product(
             category_id=payload.category_id,
             base_unit=payload.base_unit or "Cái",
             units_json=json.dumps(units_list, ensure_ascii=False),
+            images_json=json.dumps(processed_images, ensure_ascii=False),
+            packaging_specification=payload.packaging_specification or "",
+            status=payload.status or "active",
             stock=0,
             cost_price=cost,
             sell_price=payload.sell_price or 0.0,
@@ -1016,7 +1154,7 @@ def create_product(
         base_unit=payload.base_unit or "Cái",
         units=[UnitConversionItem(**u) for u in units_list],
         packaging_specification=payload.packaging_specification,
-        images=payload.images or [],
+        images=processed_images,
         status=payload.status or "active",
         stock=0,
         sell_price=clean_sell_price,

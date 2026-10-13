@@ -1,6 +1,7 @@
 # backend/app/services/pricing_service.py
 from __future__ import annotations
 import json
+import math
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from fastapi import HTTPException, status
@@ -183,7 +184,14 @@ def get_product_transaction_count(product_id: int, db: Session) -> int:
             return 0
 
 
-def get_products_for_customer(db: Session, current_user: UserResponse) -> ProductListResponse:
+def get_products_for_customer(
+    db: Session,
+    current_user: UserResponse,
+    page: Optional[int] = None,
+    limit: Optional[int] = None,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+) -> ProductListResponse:
     """
     Lấy danh sách sản phẩm hiển thị cho Đại lý (Role: Customer) với logic Dynamic Pricing thời gian thực:
     
@@ -222,6 +230,8 @@ def get_products_for_customer(db: Session, current_user: UserResponse) -> Produc
                         floor_price=p.get("floor_price", 0.0),
                         cost_price=p.get("cost_price", 0.0),
                         base_unit=p.get("base_unit", "Cái"),
+                        packaging_specification=p.get("packaging_specification") or "",
+                        images_json=json.dumps(p.get("images") or [], ensure_ascii=False),
                         status=p.get("status", "active"),
                         is_batch_managed=bool(p.get("is_batch_managed", False)),
                     )
@@ -236,8 +246,6 @@ def get_products_for_customer(db: Session, current_user: UserResponse) -> Produc
 
     # 2. Xây dựng câu truy vấn SQLAlchemy sử dụng outerjoin và func.coalesce
     if active_pb is not None:
-        # Nếu sản phẩm CÓ trong PriceBookItems -> lấy sale_price / price từ PriceBookItems
-        # Nếu sản phẩm KHÔNG CÓ -> coalesce fallback về ProductEntity.sell_price (Giá niêm yết gốc)
         effective_sell_price = func.coalesce(
             case((PriceBookItemEntity.sale_price > 0, PriceBookItemEntity.sale_price), else_=None),
             case((PriceBookItemEntity.price > 0, PriceBookItemEntity.price), else_=None),
@@ -265,10 +273,8 @@ def get_products_for_customer(db: Session, current_user: UserResponse) -> Produc
                     PriceBookItemEntity.price_book_id == active_pb.id,
                 )
             )
-            .order_by(ProductEntity.id.asc())
         )
     else:
-        # Nếu không có Bảng giá riêng nào: Fallback về 100% Giá niêm yết từ bảng Products
         effective_sell_price = func.coalesce(ProductEntity.sell_price, 0.0).label("effective_sell_price")
         effective_floor_price = func.coalesce(ProductEntity.floor_price, 0.0).label("effective_floor_price")
 
@@ -278,8 +284,35 @@ def get_products_for_customer(db: Session, current_user: UserResponse) -> Produc
                 effective_sell_price,
                 effective_floor_price,
             )
-            .order_by(ProductEntity.id.asc())
         )
+
+    # Áp dụng bộ lọc tìm kiếm và ngành hàng
+    if search and search.strip():
+        term = f"%{search.strip().lower()}%"
+        query = query.filter(
+            or_(
+                func.lower(ProductEntity.name).like(term),
+                func.lower(ProductEntity.code).like(term)
+            )
+        )
+
+    if category and category.strip() and category.strip().upper() != "ALL":
+        query = query.filter(ProductEntity.category == category.strip())
+
+    # Lấy tổng số lượng sản phẩm thỏa mãn điều kiện trước khi phân trang (Total count)
+    total = query.count()
+
+    # Sắp xếp theo ID
+    query = query.order_by(ProductEntity.id.asc())
+
+    # Phân trang Server-Side (SQLAlchemy offset & limit)
+    is_paginated = page is not None or limit is not None
+    current_page = max(1, page) if page is not None else 1
+    page_limit = max(1, limit) if limit is not None else (20 if is_paginated else (total if total > 0 else 20))
+    total_pages = max(1, math.ceil(total / page_limit)) if total > 0 else 1
+
+    if is_paginated:
+        query = query.offset((current_page - 1) * page_limit).limit(page_limit)
 
     rows = query.all()
 
@@ -316,6 +349,13 @@ def get_products_for_customer(db: Session, current_user: UserResponse) -> Produc
         total_stock += stock
         total_sell_val += sell_price * stock
 
+        db_images = getattr(db_p, "images", None) or []
+        if not db_images and db_p:
+            for raw_it in RAW_PRODUCTS:
+                if raw_it.get("id") == db_p.id or raw_it.get("code") == db_p.code:
+                    db_images = raw_it.get("images") or []
+                    break
+
         items.append(
             ProductItem(
                 id=db_p.id,
@@ -329,7 +369,7 @@ def get_products_for_customer(db: Session, current_user: UserResponse) -> Produc
                 base_unit=db_p.base_unit or "Cái",
                 units=units_converted,
                 packaging_specification=db_p.packaging_specification or "",
-                images=db_p.images or [],
+                images=db_images,
                 status=db_p.status or "active",
                 is_batch_managed=bool(db_p.is_batch_managed),
                 transaction_count=tx_counts_map.get(db_p.id, 0),
@@ -350,12 +390,18 @@ def get_products_for_customer(db: Session, current_user: UserResponse) -> Produc
         average_margin_percent=None,
     )
 
+    applied_name = active_pb.name if active_pb else None
     return ProductListResponse(
         items=items,
-        total=len(items),
+        data=items,
+        total=total,
+        page=current_page,
+        limit=page_limit,
+        total_pages=total_pages,
         user_role=current_user.role,
         is_cost_price_visible=False,
         summary=summary,
+        applied_price_book=applied_name,
     )
 
 class PricingService:
