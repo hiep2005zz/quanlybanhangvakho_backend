@@ -854,6 +854,15 @@ def _format_order_response(
             else:
                 appr_reason = "Bán dưới giá sàn cần quản lý duyệt"
 
+    # Khi đơn hàng không còn ở trạng thái chờ duyệt (đã xác nhận / duyệt / hủy / v.v.), làm sạch thông báo đại lý tự đặt chờ xác nhận
+    if appr_reason and order.status not in ("PENDING_APPROVAL", "PENDING", "REVISION_REQUIRED"):
+        parts = [p.strip() for p in appr_reason.split("|") if p.strip()]
+        remaining = [
+            p for p in parts
+            if not any(k in p.lower() for k in ["chờ nhân viên phụ trách xác nhận", "đại lý tự đặt", "cổng đại lý", "chờ nhân viên"])
+        ]
+        appr_reason = " | ".join(remaining) if remaining else None
+
     clean_items = items or items_parsed
     if (is_sales or not can_view_cost) and clean_items:
         clean_items = [
@@ -2909,12 +2918,24 @@ def approve_order(
     now_iso = datetime.now(timezone.utc).isoformat()
     expires_iso = approved_order.reservation_expires_at.isoformat() if approved_order.reservation_expires_at else None
 
+    # Làm sạch thông báo chờ xác nhận khi đơn đã duyệt
+    clean_reason = None
+    raw_reason = target.get("approval_reason") if target else approved_order.approval_reason
+    if raw_reason:
+        parts = [p.strip() for p in raw_reason.split("|") if p.strip()]
+        remaining = [
+            p for p in parts
+            if not any(k in p.lower() for k in ["chờ nhân viên phụ trách xác nhận", "đại lý tự đặt", "cổng đại lý", "chờ nhân viên"])
+        ]
+        clean_reason = " | ".join(remaining) if remaining else None
+
     if target:
         target["status"] = "CONFIRMED"
         target["requires_approval"] = False
         target["approved_by"] = current_user.username
         target["approved_at"] = now_iso
         target["reservation_expires_at"] = expires_iso
+        target["approval_reason"] = clean_reason
     else:
         target = {
             "id": approved_order.id,
@@ -2930,6 +2951,7 @@ def approve_order(
             "approved_by": current_user.username,
             "approved_at": now_iso,
             "reservation_expires_at": expires_iso,
+            "approval_reason": clean_reason,
             "created_at": approved_order.created_at.isoformat() if approved_order.created_at else now_iso,
         }
         ORDERS_DB[approved_order.id] = target
