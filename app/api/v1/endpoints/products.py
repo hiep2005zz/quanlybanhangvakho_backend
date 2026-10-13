@@ -112,12 +112,22 @@ def _find_product_in_raw(product_id: int):
             return p
     return None
 
+_TX_COUNTS_CACHE = None
+_TX_COUNTS_CACHE_TIME = 0.0
+
 def _get_all_product_transaction_counts(db: Session) -> dict[int, int]:
     """
     Tối ưu hóa hiệu năng O(1) theo lô (Bulk batching):
     Thay vì chạy 20.000 câu query trong vòng lặp N+1 làm đứng hệ thống khi có 10.000 sản phẩm,
-    hàm này gom nhóm tính toán transaction_count cho TẤT CẢ sản phẩm chỉ trong 1 lần duyệt (0.01s).
+    hàm này gom nhóm tính toán transaction_count cho TẤT CẢ sản phẩm chỉ trong 1 lần duyệt (0.01s),
+    kết hợp in-memory TTL cache 20s.
     """
+    import time
+    global _TX_COUNTS_CACHE, _TX_COUNTS_CACHE_TIME
+    now = time.time()
+    if _TX_COUNTS_CACHE is not None and (now - _TX_COUNTS_CACHE_TIME) < 20:
+        return _TX_COUNTS_CACHE
+
     from app.api.v1.endpoints.orders import ORDERS_DB
     from app.api.v1.endpoints.inventory import INVENTORY_TRANSACTIONS
     from app.models.entities import OrderEntity, InventoryTransactionEntity
@@ -198,6 +208,8 @@ def _get_all_product_transaction_counts(db: Session) -> dict[int, int]:
         inv_cnt = max(mem_tx_by_pid.get(pid, 0), db_tx_by_pid.get(pid, 0))
         res[pid] = tx_counts.get(pid, 0) + inv_cnt
 
+    _TX_COUNTS_CACHE = res
+    _TX_COUNTS_CACHE_TIME = now
     return res
 
 def _get_product_transaction_count(product_id: int, db: Session) -> int:
@@ -535,7 +547,12 @@ def get_products(
         # Lọc sản phẩm dưới định mức: Đồng bộ chính xác với cảnh báo định mức tồn kho (/inventory/low-stock-alerts)
         from app.api.v1.endpoints.inventory import get_inventory_thresholds
         try:
-            threshold_items = get_inventory_thresholds(warehouse_id=None, db=db, current_user=current_user)
+            threshold_items = get_inventory_thresholds(
+                warehouse_id=None,
+                only_low_stock=True,
+                db=db,
+                current_user=current_user
+            )
             low_stock_pids = set(it.product_id for it in threshold_items if it.is_low_stock)
             filtered_items = [
                 it for it in filtered_items
