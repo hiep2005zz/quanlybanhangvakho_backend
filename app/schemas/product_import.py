@@ -25,17 +25,22 @@ class ProductBulkRowResult(BaseModel):
     data: Dict[str, Any] = Field(default_factory=dict)
 
 class ProductBulkPreviewResponse(BaseModel):
+    file_id: Optional[str] = None
     rows: List[ProductBulkRowResult]
     total_rows: int
     new_count: int
     update_count: int
     error_count: int
     can_import: bool
+    page: Optional[int] = 1
+    page_size: Optional[int] = None
+    total_pages: Optional[int] = 1
+    filtered_total: Optional[int] = None
 
 class ProductBulkConfirmRequest(BaseModel):
     file_id: Optional[str] = None
     skip_errors: bool = True
-    rows: List[ProductBulkRowResult]
+    rows: List[ProductBulkRowResult] = Field(default_factory=list)
 
 class ProductBulkConfirmResponse(BaseModel):
     total_processed: int

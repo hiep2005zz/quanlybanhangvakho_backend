@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from typing import Optional, List, Dict, Any, Union
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_permission
 from app.core.database import get_db
@@ -205,6 +206,11 @@ def _get_product_transaction_count(product_id: int, db: Session) -> int:
 
 @router.get("", response_model=ProductListResponse)
 def get_products(
+    page: Optional[int] = Query(None, ge=1),
+    page_size: Optional[int] = Query(None, ge=1),
+    search: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    only_low_stock: Optional[bool] = Query(False),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_READ.value))
 ):
@@ -511,12 +517,66 @@ def get_products(
             average_margin_percent=None,
         )
 
+    # Áp dụng bộ lọc tìm kiếm, ngành hàng và tồn kho
+    filtered_items = sanitized_items
+    if search and search.strip():
+        q_term = search.strip().lower()
+        filtered_items = [
+            it for it in filtered_items
+            if (it.name and q_term in it.name.lower()) or (it.code and q_term in it.code.lower())
+        ]
+    if category and category.strip() and category.strip().lower() != "all":
+        cat_term = category.strip().lower()
+        filtered_items = [
+            it for it in filtered_items
+            if (it.category and it.category.strip().lower() == cat_term)
+        ]
+    if only_low_stock:
+        # Lọc sản phẩm dưới định mức: Đồng bộ chính xác với cảnh báo định mức tồn kho (/inventory/low-stock-alerts)
+        from app.api.v1.endpoints.inventory import get_inventory_thresholds
+        try:
+            threshold_items = get_inventory_thresholds(warehouse_id=None, db=db, current_user=current_user)
+            low_stock_pids = set(it.product_id for it in threshold_items if it.is_low_stock)
+            filtered_items = [
+                it for it in filtered_items
+                if it.id in low_stock_pids
+            ]
+        except Exception:
+            filtered_items = [
+                it for it in filtered_items
+                if it.stock <= 10
+            ]
+
+    total_filtered = len(filtered_items)
+
+    if page_size and page_size > 0:
+        import math
+        total_pages = max(1, math.ceil(total_filtered / page_size))
+        cur_page = min(max(1, page or 1), total_pages)
+        start_idx = (cur_page - 1) * page_size
+        end_idx = start_idx + page_size
+        paged_items = filtered_items[start_idx:end_idx]
+
+        return ProductListResponse(
+            items=paged_items,
+            total=total_filtered,
+            user_role=current_user.role,
+            is_cost_price_visible=can_view_cost,
+            summary=summary,
+            page=cur_page,
+            page_size=page_size,
+            total_pages=total_pages,
+        )
+
     return ProductListResponse(
-        items=sanitized_items,
-        total=len(sanitized_items),
+        items=filtered_items,
+        total=total_filtered,
         user_role=current_user.role,
         is_cost_price_visible=can_view_cost,
         summary=summary,
+        page=1,
+        page_size=total_filtered,
+        total_pages=1,
     )
 
 from app.core.database import SessionLocal
@@ -916,6 +976,7 @@ def check_sku_availability(
 
 
 @router.post("", response_model=ProductItem, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=ProductItem, status_code=status.HTTP_201_CREATED, include_in_schema=False)
 def create_product(
     payload: ProductCreateRequest,
     request: Request,
@@ -930,13 +991,22 @@ def create_product(
     if not clean_sku:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mã SKU không được để trống")
 
-    # Kiểm tra trùng SKU
+    # Kiểm tra trùng SKU trong bộ nhớ
     for p in RAW_PRODUCTS:
         if p["code"].upper() == clean_sku:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Mã SKU '{clean_sku}' đã tồn tại trong hệ thống. Vui lòng chọn mã khác."
             )
+
+    # Kiểm tra trùng SKU trong CSDL
+    from app.models.entities import ProductEntity
+    existing_db = db.query(ProductEntity).filter(ProductEntity.code == clean_sku).first()
+    if existing_db:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Mã SKU '{clean_sku}' đã tồn tại trong hệ thống. Vui lòng chọn mã khác."
+        )
 
     can_view_cost = current_user.can_view_cost or (Permission.COST_READ.value in current_user.permissions)
     cost = payload.cost_price if (can_view_cost and payload.cost_price is not None) else 0.0
@@ -1195,7 +1265,7 @@ def update_product_units(
 # ==============================================================================
 # HÀNG LOẠT SẢN PHẨM TỪ EXCEL (Bulk Import / Preview / Upsert)
 # ==============================================================================
-from fastapi import UploadFile, File
+from fastapi import UploadFile, File, Query
 from fastapi.responses import Response
 from app.schemas.product_import import (
     ProductBulkPreviewResponse,
@@ -1222,6 +1292,9 @@ def download_product_import_template(
 @router.post("/bulk-preview", response_model=ProductBulkPreviewResponse)
 def bulk_preview_products(
     file: UploadFile = File(...),
+    page: int = Query(1, ge=1),
+    page_size: Optional[int] = Query(None),
+    status_filter: str = Query("ALL"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
 ):
@@ -1229,7 +1302,7 @@ def bulk_preview_products(
     Endpoint 2: POST /api/v1/products/bulk-preview
     Nhận UploadFile Excel, validate từng dòng dữ liệu, so khớp SKU trong DB:
     - Báo lỗi chi tiết theo từng dòng (thiếu dữ liệu bắt buộc, sai định dạng số/chuỗi, đơn vị không hợp lệ).
-    - Đánh dấu trạng thái: "NEW" (Tạo mới), "UPDATE" (Cập nhật), "ERROR" (Lỗi).
+    - Hỗ trợ phân trang Server-side (mới đầu load 20 sản phẩm).
     """
     if not file.filename.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(
@@ -1239,12 +1312,43 @@ def bulk_preview_products(
 
     try:
         content = file.file.read()
-        return ProductBulkImportService.parse_and_validate(content, db)
+        return ProductBulkImportService.parse_and_validate(
+            file_content=content,
+            db=db,
+            page=page,
+            page_size=page_size,
+            status_filter=status_filter
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Lỗi khi đọc file Excel: {str(e)}"
         )
+
+@router.get("/bulk-preview/{file_id}", response_model=ProductBulkPreviewResponse)
+def get_bulk_preview_page(
+    file_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=500),
+    status_filter: str = Query("ALL"),
+    current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
+):
+    """
+    Endpoint: GET /api/v1/products/bulk-preview/{file_id}
+    Tải trang xem trước (Server-side Pagination 20 sản phẩm/trang) cho file đã upload:
+    - Khi người dùng bấm sang trang 2, 3... backend load tiếp 20 sản phẩm của trang đó.
+    """
+    try:
+        return ProductBulkImportService.get_preview_page(
+            file_id=file_id,
+            page=page,
+            page_size=page_size,
+            status_filter=status_filter
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 @router.post("/bulk-confirm", response_model=ProductBulkConfirmResponse)
 def bulk_confirm_products(
