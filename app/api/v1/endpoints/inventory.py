@@ -633,6 +633,7 @@ def get_inventory_thresholds(
     filter_mode: Optional[str] = None,
     page: Optional[int] = None,
     page_size: int = 20,
+    only_low_stock: Optional[bool] = Query(False),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.INVENTORY_READ.value)),
 ):
@@ -653,7 +654,7 @@ def get_inventory_thresholds(
 
     wh_filter = (warehouse_id or "ALL").strip()
     search_term = (search or "").strip()
-    f_mode = (filter_mode or "ALL").strip()
+    f_mode = (filter_mode or ("LOW_ONLY" if only_low_stock else "ALL")).strip()
 
     if db:
         effective_min = func.coalesce(WarehouseStockEntity.min_stock, ProductEntity.min_stock, 10)
