@@ -102,4 +102,20 @@ def test_delete_existing_point_4_cleanup(client):
         assert pt4_after is None or not pt4_after.is_active
         db2.close()
 
+def test_delete_sole_delivery_point_does_not_resurrect(client):
+    # 1. Lấy danh sách điểm giao của đại lý 2
+    res_before = client.get("/api/v1/dealers/2/delivery-points")
+    assert res_before.status_code == 200
+    points = res_before.json()
+    if points:
+        for p in points:
+            del_res = client.delete(f"/api/v1/dealers/2/delivery-points/{p['id']}")
+            assert del_res.status_code == 204
+
+    # 2. GET lại: Danh sách phải là rỗng, không được tự động tái sinh lại điểm giao
+    res_after = client.get("/api/v1/dealers/2/delivery-points")
+    assert res_after.status_code == 200
+    assert len(res_after.json()) == 0, "Điểm giao đã bị xóa nhưng vẫn tự động tái sinh lại!"
+
+
 

@@ -344,6 +344,15 @@ def approve_order_and_reserve_stock(
             order.approved_at = now_utc
             order.reservation_expires_at = expires_at
 
+            # Làm sạch thông báo chờ xác nhận khi đơn đã duyệt thành công
+            if order.approval_reason:
+                parts = [p.strip() for p in order.approval_reason.split("|") if p.strip()]
+                remaining = [
+                    p for p in parts
+                    if not any(k in p.lower() for k in ["chờ nhân viên phụ trách xác nhận", "đại lý tự đặt", "cổng đại lý", "chờ nhân viên"])
+                ]
+                order.approval_reason = " | ".join(remaining) if remaining else None
+
     except InsufficientStockException as ise:
         # Ném lại ngoại lệ nghiệp vụ (Transaction tự động rollback bởi context manager)
         raise ise
