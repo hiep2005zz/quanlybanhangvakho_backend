@@ -710,7 +710,41 @@ def update_product_details(
         db.rollback()
         print(f"Warning: update product to DB: {db_err}")
 
-    # Ghi audit log
+    # Kiểm tra thay đổi giá để ghi nhật ký PRICE_CHANGE chuẩn
+    old_sell = float(old_data.get("sell_price") or 0.0)
+    new_sell = float(target.get("sell_price") or 0.0)
+    old_floor = float(old_data.get("floor_price") or 0.0)
+    new_floor = float(target.get("floor_price") or 0.0)
+    old_cost = float(old_data.get("cost_price") or 0.0)
+    new_cost = float(target.get("cost_price") or 0.0)
+
+    price_changed = (old_sell != new_sell) or (old_floor != new_floor) or (can_view_cost and old_cost != new_cost)
+    if price_changed:
+        price_old_val = {}
+        price_new_val = {}
+        if old_sell != new_sell:
+            price_old_val["sell_price"] = old_sell
+            price_new_val["sell_price"] = new_sell
+        if old_floor != new_floor:
+            price_old_val["floor_price"] = old_floor
+            price_new_val["floor_price"] = new_floor
+        if can_view_cost and old_cost != new_cost:
+            price_old_val["cost_price"] = old_cost
+            price_new_val["cost_price"] = new_cost
+
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action_type="PRICE_CHANGE",
+            entity_type="Product",
+            entity_id=target["code"],
+            old_val=price_old_val,
+            new_val=price_new_val,
+            reason=f"Điều chỉnh giá sản phẩm {target['name']}",
+            request=request,
+        )
+
+    # Ghi audit log cập nhật thông tin sản phẩm
     log_audit_event(
         db=db,
         user=current_user,

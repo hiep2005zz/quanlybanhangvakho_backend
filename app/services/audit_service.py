@@ -42,8 +42,9 @@ SYSTEM_AUDIT_ACTION_TYPES = {
     "STOCK_RECEIPT",
     "STOCK_ISSUE",
     "GOODS_RECEIPT_CONFIRM",
-    # 2. Giá bán
+    # 2. Giá bán & Sản phẩm
     "PRICE_CHANGE",
+    "PRODUCT_UPDATE",
     # 3. Hạn mức công nợ
     "DEBT_LIMIT_CHANGE",
     # 4. Hoá đơn / Đơn hàng
