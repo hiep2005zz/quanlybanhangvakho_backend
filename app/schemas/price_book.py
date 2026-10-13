@@ -1,7 +1,7 @@
 # backend/app/schemas/price_book.py
 from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field
 
 class PriceBookItemBase(BaseModel):
     product_id: int
@@ -23,7 +23,8 @@ class PriceBookItemResponse(BaseModel):
     price: Optional[float] = 0.0
     min_price: Optional[float] = 0.0
 
-    model_config = ConfigDict(from_attributes=True)
+    class Config:
+        from_attributes = True
 
 class PriceBookBase(BaseModel):
     name: str
@@ -57,7 +58,8 @@ class PriceBookResponse(PriceBookBase):
     created_at: datetime
     items: Optional[List[PriceBookItemResponse]] = None
 
-    model_config = ConfigDict(from_attributes=True)
+    class Config:
+        from_attributes = True
 
 class ResolvePriceResponse(BaseModel):
     price_book_id: Optional[int] = None
