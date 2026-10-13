@@ -795,11 +795,11 @@ def cancel_stock_audit(
     audit_id: int,
     data: Optional[StockAuditCancel] = None,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_warehouse_manager),
+    current_user: UserResponse = Depends(require_warehouse_audit_manage),
 ):
     """
     Hủy phiếu kiểm kê khi phiếu chưa hoàn tất.
-    Chỉ Quản lý kho và Admin được phép hủy.
+    Quản lý kho, Admin hoặc Thủ kho được phép hủy phiếu khi đang kiểm kê.
     """
     audit = db.query(StockAuditEntity).filter(StockAuditEntity.id == audit_id).first()
     if not audit:
