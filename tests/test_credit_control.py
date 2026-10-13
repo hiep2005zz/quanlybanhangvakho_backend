@@ -59,6 +59,20 @@ def test_orders_dealers_endpoint_contains_debt_metrics():
     assert "is_over_limit" in first
 
 def test_over_credit_limit_marks_order_as_pending_approval():
+    from app.core.database import SessionLocal
+    from app.models.entities import DealerEntity
+    from app.models.dealer import DEALERS_DB
+    clean_db = SessionLocal()
+    try:
+        d = clean_db.query(DealerEntity).filter(DealerEntity.id == 1).first()
+        if d:
+            d.credit_limit = 100_000_000.0
+            clean_db.commit()
+        if 1 in DEALERS_DB:
+            DEALERS_DB[1].credit_limit = 100_000_000.0
+    finally:
+        clean_db.close()
+
     token_sales = get_token("sales")
     # Đặt đơn hàng giá trị cao (150 triệu VNĐ vượt hạn mức 100 triệu của DL001)
     res = client.post(
