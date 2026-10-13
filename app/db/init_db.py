@@ -15,6 +15,7 @@ from app.models.entities import (
     AuditLogEntity,
     WarehouseStockEntity,
     StockAuditEntity,
+    StockTransferEntity,
 )
 from app.models.supplier import SupplierEntity
 from app.models.goods_receipt import (
@@ -400,6 +401,7 @@ def init_db():
                 CategoryEntity(id=1, name="Thời trang", parent_id=None),
                 CategoryEntity(id=2, name="Giày dép", parent_id=None),
                 CategoryEntity(id=3, name="Phụ kiện", parent_id=None),
+                CategoryEntity(id=7, name="Đồ điện tử", parent_id=None),
                 CategoryEntity(id=4, name="Áo Nam", parent_id=1),
                 CategoryEntity(id=5, name="Quần Nam", parent_id=1),
                 CategoryEntity(id=6, name="Áo Thun", parent_id=4),
@@ -708,6 +710,58 @@ def init_db():
             db.add_all(policies)
             db.commit()
             print("Discount policies seeded successfully.")
+
+        from app.models.dealer import load_dealers_db
+        load_dealers_db()
+        from app.api.v1.endpoints.discounts import load_discount_policies
+        load_discount_policies(db)
+
+        # 10. Đồng bộ tồn kho tổng của ProductEntity từ tổng tồn thực tế của các chi nhánh kho (warehouse_stocks)
+        try:
+            db.execute(text("UPDATE products SET status = 'active' WHERE status IS NULL OR status = ''"))
+            db.commit()
+            from sqlalchemy import func
+            DEFAULT_WAREHOUSES = {
+                "WH01": "Kho Tổng Hà Nội",
+                "WH02": "Kho Chi Nhánh TP.HCM",
+                "WH03": "Kho Chi Nhánh Đà Nẵng",
+            }
+            existing_ws = {(ws.product_id, ws.warehouse_id) for ws in db.query(WarehouseStockEntity).all()}
+            prods = db.query(ProductEntity).all()
+            for p in prods:
+                base_stk = p.stock or 100
+                for wid, wname in DEFAULT_WAREHOUSES.items():
+                    if (p.id, wid) not in existing_ws:
+                        if wid == "WH01":
+                            act = max(10, base_stk)
+                        elif wid == "WH02":
+                            act = max(10, int(base_stk * 0.7))
+                        elif wid == "WH03":
+                            act = max(5, int(base_stk * 0.5))
+                        else:
+                            act = max(10, base_stk)
+                        ws_new = WarehouseStockEntity(
+                            warehouse_id=wid,
+                            warehouse_name=wname,
+                            product_id=p.id,
+                            actual_stock=act,
+                            reserved_stock=0,
+                            min_stock=p.min_stock or 10,
+                        )
+                        db.add(ws_new)
+                        existing_ws.add((p.id, wid))
+            db.flush()
+
+            wh_rows = db.query(WarehouseStockEntity.product_id, func.sum(WarehouseStockEntity.actual_stock)).group_by(WarehouseStockEntity.product_id).all()
+            wh_map = {pid: int(val) for pid, val in wh_rows if val is not None}
+            for p in prods:
+                if p.id in wh_map and wh_map[p.id] is not None:
+                    if p.stock != wh_map[p.id]:
+                        p.stock = wh_map[p.id]
+            db.commit()
+            print("Product stocks synchronized from warehouses successfully.")
+        except Exception as sync_err:
+            print(f"Error syncing product stocks from warehouses: {sync_err}")
 
         print("Database initialization completed successfully.")
     except Exception as e:
