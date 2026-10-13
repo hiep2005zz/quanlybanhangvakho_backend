@@ -552,6 +552,9 @@ def search_dealers(
             "warehouse_name": getattr(dealer, "warehouse_name", None),
         })
 
+    # Sắp xếp đại lý mới nhất lên đầu (id giảm dần) để khi tạo mới hiển thị ngay lập tức ở trang 1
+    results.sort(key=lambda d: d["id"], reverse=True)
+
     # Phân trang
     total_count = len(results)
     total_pages = max(1, math.ceil(total_count / page_size))
