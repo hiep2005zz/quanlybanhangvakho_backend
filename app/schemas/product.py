@@ -85,5 +85,6 @@ class ProductListResponse(BaseModel):
     data: Optional[List[ProductItem]] = None
     page: Optional[int] = 1
     limit: Optional[int] = 20
+    page_size: Optional[int] = None
     total_pages: Optional[int] = 1
 

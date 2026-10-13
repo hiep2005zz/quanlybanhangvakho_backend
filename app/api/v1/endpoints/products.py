@@ -1,11 +1,11 @@
 from __future__ import annotations
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 import json
 import os
 import base64
 import uuid
 import re
-from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_permission
 from app.core.database import get_db
@@ -288,8 +288,10 @@ def _get_product_transaction_count(product_id: int, db: Session) -> int:
 def get_products(
     page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
     limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng mục mỗi trang"),
+    page_size: Optional[int] = Query(None, ge=1, description="Số lượng mục mỗi trang (alias của limit)"),
     search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
     category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
+    only_low_stock: Optional[bool] = Query(False, description="Chỉ lấy sản phẩm sắp hết hàng"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_READ.value))
 ):
@@ -605,27 +607,72 @@ def get_products(
             average_margin_percent=None,
         )
 
-    total_count = len(sanitized_items)
-    is_paginated = page is not None or limit is not None
-    current_page = max(1, page) if page is not None else 1
-    page_limit = max(1, limit) if limit is not None else (20 if is_paginated else (total_count if total_count > 0 else 20))
-    total_pages = max(1, (total_count + page_limit - 1) // page_limit) if total_count > 0 else 1
+    # Áp dụng bộ lọc tìm kiếm, ngành hàng và tồn kho
+    filtered_items = sanitized_items
+    if search and search.strip():
+        q_term = search.strip().lower()
+        filtered_items = [
+            it for it in filtered_items
+            if (it.name and q_term in it.name.lower()) or (it.code and q_term in it.code.lower())
+        ]
+    if category and category.strip() and category.strip().lower() != "all":
+        cat_term = category.strip().lower()
+        filtered_items = [
+            it for it in filtered_items
+            if (it.category and it.category.strip().lower() == cat_term)
+        ]
+    if only_low_stock:
+        # Lọc sản phẩm dưới định mức: Đồng bộ chính xác với cảnh báo định mức tồn kho (/inventory/low-stock-alerts)
+        from app.api.v1.endpoints.inventory import get_inventory_thresholds
+        try:
+            threshold_items = get_inventory_thresholds(warehouse_id=None, db=db, current_user=current_user)
+            low_stock_pids = set(it.product_id for it in threshold_items if it.is_low_stock)
+            filtered_items = [
+                it for it in filtered_items
+                if it.id in low_stock_pids
+            ]
+        except Exception:
+            filtered_items = [
+                it for it in filtered_items
+                if it.stock <= 10
+            ]
 
-    paginated_items = sanitized_items
-    if is_paginated:
-        start_idx = (current_page - 1) * page_limit
-        paginated_items = sanitized_items[start_idx : start_idx + page_limit]
+    total_filtered = len(filtered_items)
+    effective_limit = limit or page_size
+    is_paginated = page is not None or effective_limit is not None
+
+    if is_paginated and effective_limit and effective_limit > 0:
+        import math
+        total_pages = max(1, math.ceil(total_filtered / effective_limit))
+        cur_page = min(max(1, page or 1), total_pages)
+        start_idx = (cur_page - 1) * effective_limit
+        end_idx = start_idx + effective_limit
+        paged_items = filtered_items[start_idx:end_idx]
+
+        return ProductListResponse(
+            items=paged_items,
+            data=paged_items,
+            total=total_filtered,
+            user_role=current_user.role,
+            is_cost_price_visible=can_view_cost,
+            summary=summary,
+            page=cur_page,
+            limit=effective_limit,
+            page_size=effective_limit,
+            total_pages=total_pages,
+        )
 
     return ProductListResponse(
-        items=paginated_items,
-        data=paginated_items,
-        total=total_count,
-        page=current_page,
-        limit=page_limit,
-        total_pages=total_pages,
+        items=filtered_items,
+        data=filtered_items,
+        total=total_filtered,
         user_role=current_user.role,
         is_cost_price_visible=can_view_cost,
         summary=summary,
+        page=1,
+        limit=total_filtered if total_filtered > 0 else 20,
+        page_size=total_filtered,
+        total_pages=1,
     )
 
 @router.get("/customer", response_model=ProductListResponse)
@@ -784,7 +831,41 @@ def update_product_details(
         db.rollback()
         print(f"Warning: update product to DB: {db_err}")
 
-    # Ghi audit log
+    # Kiểm tra thay đổi giá để ghi nhật ký PRICE_CHANGE chuẩn
+    old_sell = float(old_data.get("sell_price") or 0.0)
+    new_sell = float(target.get("sell_price") or 0.0)
+    old_floor = float(old_data.get("floor_price") or 0.0)
+    new_floor = float(target.get("floor_price") or 0.0)
+    old_cost = float(old_data.get("cost_price") or 0.0)
+    new_cost = float(target.get("cost_price") or 0.0)
+
+    price_changed = (old_sell != new_sell) or (old_floor != new_floor) or (can_view_cost and old_cost != new_cost)
+    if price_changed:
+        price_old_val = {}
+        price_new_val = {}
+        if old_sell != new_sell:
+            price_old_val["sell_price"] = old_sell
+            price_new_val["sell_price"] = new_sell
+        if old_floor != new_floor:
+            price_old_val["floor_price"] = old_floor
+            price_new_val["floor_price"] = new_floor
+        if can_view_cost and old_cost != new_cost:
+            price_old_val["cost_price"] = old_cost
+            price_new_val["cost_price"] = new_cost
+
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action_type="PRICE_CHANGE",
+            entity_type="Product",
+            entity_id=target["code"],
+            old_val=price_old_val,
+            new_val=price_new_val,
+            reason=f"Điều chỉnh giá sản phẩm {target['name']}",
+            request=request,
+        )
+
+    # Ghi audit log cập nhật thông tin sản phẩm
     log_audit_event(
         db=db,
         user=current_user,
@@ -1050,6 +1131,7 @@ def check_sku_availability(
 
 
 @router.post("", response_model=ProductItem, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=ProductItem, status_code=status.HTTP_201_CREATED, include_in_schema=False)
 def create_product(
     payload: ProductCreateRequest,
     request: Request,
@@ -1064,13 +1146,22 @@ def create_product(
     if not clean_sku:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mã SKU không được để trống")
 
-    # Kiểm tra trùng SKU
+    # Kiểm tra trùng SKU trong bộ nhớ
     for p in RAW_PRODUCTS:
         if p["code"].upper() == clean_sku:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Mã SKU '{clean_sku}' đã tồn tại trong hệ thống. Vui lòng chọn mã khác."
             )
+
+    # Kiểm tra trùng SKU trong CSDL
+    from app.models.entities import ProductEntity
+    existing_db = db.query(ProductEntity).filter(ProductEntity.code == clean_sku).first()
+    if existing_db:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Mã SKU '{clean_sku}' đã tồn tại trong hệ thống. Vui lòng chọn mã khác."
+        )
 
     can_view_cost = current_user.can_view_cost or (Permission.COST_READ.value in current_user.permissions)
     cost = payload.cost_price if (can_view_cost and payload.cost_price is not None) else 0.0
@@ -1333,7 +1424,7 @@ def update_product_units(
 # ==============================================================================
 # HÀNG LOẠT SẢN PHẨM TỪ EXCEL (Bulk Import / Preview / Upsert)
 # ==============================================================================
-from fastapi import UploadFile, File
+from fastapi import UploadFile, File, Query
 from fastapi.responses import Response
 from app.schemas.product_import import (
     ProductBulkPreviewResponse,
@@ -1360,6 +1451,9 @@ def download_product_import_template(
 @router.post("/bulk-preview", response_model=ProductBulkPreviewResponse)
 def bulk_preview_products(
     file: UploadFile = File(...),
+    page: int = Query(1, ge=1),
+    page_size: Optional[int] = Query(None),
+    status_filter: str = Query("ALL"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
 ):
@@ -1367,7 +1461,7 @@ def bulk_preview_products(
     Endpoint 2: POST /api/v1/products/bulk-preview
     Nhận UploadFile Excel, validate từng dòng dữ liệu, so khớp SKU trong DB:
     - Báo lỗi chi tiết theo từng dòng (thiếu dữ liệu bắt buộc, sai định dạng số/chuỗi, đơn vị không hợp lệ).
-    - Đánh dấu trạng thái: "NEW" (Tạo mới), "UPDATE" (Cập nhật), "ERROR" (Lỗi).
+    - Hỗ trợ phân trang Server-side (mới đầu load 20 sản phẩm).
     """
     if not file.filename.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(
@@ -1377,12 +1471,43 @@ def bulk_preview_products(
 
     try:
         content = file.file.read()
-        return ProductBulkImportService.parse_and_validate(content, db)
+        return ProductBulkImportService.parse_and_validate(
+            file_content=content,
+            db=db,
+            page=page,
+            page_size=page_size,
+            status_filter=status_filter
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Lỗi khi đọc file Excel: {str(e)}"
         )
+
+@router.get("/bulk-preview/{file_id}", response_model=ProductBulkPreviewResponse)
+def get_bulk_preview_page(
+    file_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=500),
+    status_filter: str = Query("ALL"),
+    current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
+):
+    """
+    Endpoint: GET /api/v1/products/bulk-preview/{file_id}
+    Tải trang xem trước (Server-side Pagination 20 sản phẩm/trang) cho file đã upload:
+    - Khi người dùng bấm sang trang 2, 3... backend load tiếp 20 sản phẩm của trang đó.
+    """
+    try:
+        return ProductBulkImportService.get_preview_page(
+            file_id=file_id,
+            page=page,
+            page_size=page_size,
+            status_filter=status_filter
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 @router.post("/bulk-confirm", response_model=ProductBulkConfirmResponse)
 def bulk_confirm_products(
