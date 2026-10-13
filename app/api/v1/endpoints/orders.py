@@ -2988,6 +2988,21 @@ class OrderRejectRequest(BaseModel):
     reason: Optional[str] = "Từ chối duyệt đơn hàng"
 
 
+class OrderReturnRequest(BaseModel):
+    reason: str = Field(..., min_length=5, description="Ý kiến chỉ đạo sửa (bắt buộc, tối thiểu 5 ký tự)")
+
+
+class ApprovalHistoryItem(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    user_name: str
+    user_avatar: Optional[str] = None
+    action_type: str
+    action_label: str
+    reason: Optional[str] = None
+    created_at: str
+
+
 @router.post("/{order_code}/reject", response_model=OrderResponse)
 def reject_order(
     order_code: str,
