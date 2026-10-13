@@ -58,10 +58,10 @@
     "overdue_days_allowed": 30,
     "customer_group": "Khách sỉ",
     "status": "Đang hoạt động",
-    "lock_reason": null,
+    "lock_reason": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiIsInRva2VuX3ZlcnNpb24iOjEsImp0aSI6ImUzOTEwMGQ2MGMyMDQ4MWU4YmE1NzZkNDNmYjExYWM5IiwiZXhwIjoxNzkxOTIwMDI4LCJpYXQiOjE3OTE5MTY0Mjh9.nYlFHqiddd4x1H9bA7kFhPya-q18BqhIS5y2_0ews6M",
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0,
+    "transaction_count": 1,
     "warehouse_id": null,
     "warehouse_name": null
   },
