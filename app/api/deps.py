@@ -225,13 +225,35 @@ def require_roles(allowed_roles: List[str]) -> Callable[[UserResponse], UserResp
     """
     def role_checker(current_user: UserResponse = Depends(get_current_user)) -> UserResponse:
         user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
-        if not any(r in allowed_roles for r in user_roles):
+        user_roles_lower = {str(r).lower() for r in user_roles}
+        if current_user.role:
+            user_roles_lower.add(str(current_user.role).lower())
+        allowed_roles_lower = {str(r).lower() for r in allowed_roles}
+        
+        is_allowed = bool(user_roles_lower & allowed_roles_lower or any(r in allowed_roles for r in user_roles))
+        if not is_allowed:
+            if "sales" in allowed_roles_lower and any("sales" in r for r in user_roles_lower):
+                is_allowed = True
+            elif "admin" in allowed_roles_lower and any("admin" in r for r in user_roles_lower):
+                is_allowed = True
+
+        if not is_allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho các vai trò: {', '.join(allowed_roles)}."
             )
         return current_user
     return role_checker
+
+
+class RoleChecker:
+    """Dependency class kiểm tra danh sách vai trò cho phép."""
+    def __init__(self, allowed_roles: List[str]):
+        self.allowed_roles = allowed_roles
+        self._checker = require_roles(allowed_roles)
+
+    def __call__(self, current_user: UserResponse = Depends(get_current_user)) -> UserResponse:
+        return self._checker(current_user)
 
 
 def require_sales_role(current_user: UserResponse = Depends(get_current_user)) -> UserResponse:

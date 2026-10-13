@@ -198,6 +198,13 @@ def test_order_creation_with_floor_price_and_approval():
         # Cleanup
         clean_db = SessionLocal()
         try:
+            d = clean_db.query(DealerEntity).filter(DealerEntity.id == 1).first()
+            if d:
+                d.credit_limit = 100_000_000.0
+                clean_db.commit()
+            from app.api.v1.endpoints.orders import DEALERS_DB
+            if 1 in DEALERS_DB:
+                DEALERS_DB[1].credit_limit = 100_000_000.0
             if created_pb_id:
                 clean_db.query(PriceBookItemEntity).filter(PriceBookItemEntity.price_book_id == created_pb_id).delete()
                 clean_db.query(PriceBookEntity).filter(PriceBookEntity.id == created_pb_id).delete()
