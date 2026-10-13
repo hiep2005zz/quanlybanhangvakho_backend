@@ -672,13 +672,6 @@ def get_products(
         limit=total_filtered,
         total_pages=1,
     )
-        user_role=current_user.role,
-        is_cost_price_visible=can_view_cost,
-        summary=summary,
-        page=1,
-        page_size=total_filtered,
-        total_pages=1,
-    )
 
 @router.get("/customer", response_model=ProductListResponse)
 def get_products_for_customer_endpoint(
