@@ -262,6 +262,9 @@ class OrderEntity(Base):
     cancelled_at = Column(DateTime, nullable=True)
     reservation_expires_at = Column(DateTime, nullable=True)
 
+    # Synonym for customer_id to ensure full compatibility with dealer_id
+    customer_id = synonym("dealer_id")
+
 
 class OrderItemEntity(Base):
     __tablename__ = "order_items"
@@ -283,8 +286,8 @@ class OrderItemEntity(Base):
     order_rel = relationship("OrderEntity", backref="items_rel")
     product_rel = relationship("ProductEntity", backref="order_items")
 
-    customer_id = synonym("dealer_id")
 
+# Alias for OrderEntity
 Order = OrderEntity
 
 class AuditLogEntity(Base):
