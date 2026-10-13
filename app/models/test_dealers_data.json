@@ -18,8 +18,8 @@
     "locked_at": null,
     "locked_by": null,
     "transaction_count": 0,
-    "warehouse_id": "2",
-    "warehouse_name": "Kho Chi Nhánh Đà Nẵng"
+    "warehouse_id": null,
+    "warehouse_name": null
   },
   "2": {
     "id": 2,
