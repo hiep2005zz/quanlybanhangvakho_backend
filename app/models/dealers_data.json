@@ -118,7 +118,7 @@
     "email": "muahang@congty.vn",
     "address": "12 Hàng Buồm, Hà Nội",
     "region": "Hà Nội",
-    "assigned_sale_id": null,
+    "assigned_sale_id": 3,
     "credit_limit": 50000000.0,
     "max_debt_days": 30,
     "overdue_days_allowed": 30,
