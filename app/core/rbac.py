@@ -95,6 +95,7 @@ ROLE_PERMISSIONS: Dict[str, Set[str]] = {
     # Không có quyền can thiệp kho (inventory:write)
     Role.ACCOUNTANT.value: {
         Permission.PRODUCT_READ.value,
+        Permission.ORDER_READ.value,
         Permission.PURCHASE_READ.value,
         Permission.REPORT_READ.value,
         Permission.INVENTORY_READ.value,
@@ -242,8 +243,7 @@ def has_roles_permission(roles: List[str], permission: str) -> bool:
     if not roles:
         return False
     for r in roles:
-        r_str = str(getattr(r, "value", r)).strip()
-        perms = ROLE_PERMISSIONS.get(r) or ROLE_PERMISSIONS.get(r_str) or ROLE_PERMISSIONS.get(r_str.lower())
+        perms = ROLE_PERMISSIONS.get(r)
         if perms is not None:
             if "*" in perms or permission in perms:
                 return True

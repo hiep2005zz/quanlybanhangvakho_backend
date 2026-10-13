@@ -1,19 +1,14 @@
-import math
-import logging
-from typing import Optional, List, Dict, Any
-from datetime import datetime, timezone
+from typing import Optional, List
 from fastapi import APIRouter, Depends, Query, HTTPException, status, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_roles, get_current_user
+from app.api.deps import require_roles
 from app.core.database import get_db
 from app.models.dealer import DEALERS_DB, Dealer, save_dealers_db, load_dealers_db
 from app.models.user import USERS_DB, load_users_db
 from app.schemas.auth import UserResponse
 from app.services.audit_service import log_audit_event
-
-logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
@@ -27,56 +22,14 @@ class DealerStatusUpdateRequest(BaseModel):
 class DealerCreateRequest(BaseModel):
     code: Optional[str] = None
     name: str
-    tax_code: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
     region: Optional[str] = None
     assigned_sale_id: Optional[int] = None
     credit_limit: Optional[float] = 50000000.0
-    overdue_days_allowed: Optional[int] = 30
     customer_group: Optional[str] = "Đại lý cấp 1"
     status: Optional[str] = "Đang hoạt động"
-    transaction_count: Optional[int] = None
-    warehouse_id: Optional[str] = None
-    warehouse_name: Optional[str] = None
-
-
-class DealerUpdateRequest(BaseModel):
-    code: Optional[str] = None
-    name: Optional[str] = None
-    tax_code: Optional[str] = None
-    phone: Optional[str] = None
-    email: Optional[str] = None
-    address: Optional[str] = None
-    region: Optional[str] = None
-    assigned_sale_id: Optional[int] = None
-    credit_limit: Optional[float] = None
-    max_debt_days: Optional[int] = None
-    overdue_days_allowed: Optional[int] = None
-    customer_group: Optional[str] = None
-    status: Optional[str] = None
-    transaction_count: Optional[int] = None
-    warehouse_id: Optional[str] = None
-    warehouse_name: Optional[str] = None
-
-
-class DealerCreditInfoResponse(BaseModel):
-    dealer_id: int
-    dealer_code: str
-    dealer_name: str
-    phone: Optional[str] = None
-    address: Optional[str] = None
-    customer_group: Optional[str] = None
-    status: Optional[str] = "Đang hoạt động"
-    credit_limit: float
-    overdue_days_allowed: int
-    max_debt_days: int
-    current_debt: float
-    remaining_credit: float
-    max_debt_age: int
-    is_overdue: bool
-    is_over_limit: bool
 
 
 def get_sale_name(assigned_sale_id: Optional[int]) -> Optional[str]:
@@ -106,174 +59,11 @@ def get_region(address: Optional[str]) -> str:
     return "Chưa xác định"
 
 
-def get_applied_price_book_info(customer_group: Optional[str]) -> Optional[dict]:
-    """Tìm bảng giá đang áp dụng cho nhóm khách hàng."""
-    if not customer_group:
-        return None
-    try:
-        from app.core.database import SessionLocal
-        from app.models.price_book import PriceBookEntity, PriceBookItemEntity, get_utc_now
-        db = SessionLocal()
-        try:
-            aliases = [customer_group]
-            cg_low = customer_group.lower().replace("_", " ").strip()
-            if "cấp 1" in cg_low or "cap 1" in cg_low or "cap_1" in cg_low:
-                aliases = ["Dai_ly_cap_1", "CAP_1", "Đại lý cấp 1", "dai_ly_cap_1"]
-            elif "cấp 2" in cg_low or "cap 2" in cg_low or "cap_2" in cg_low:
-                aliases = ["Dai_ly_cap_2", "CAP_2", "Đại lý cấp 2", "dai_ly_cap_2"]
-            elif "sỉ" in cg_low or "si" in cg_low:
-                aliases = ["Khách sỉ", "khach_si", "Khach_si"]
-            elif "lẻ" in cg_low or "le" in cg_low:
-                aliases = ["Khach_le", "RETAIL", "Khách lẻ", "khach_le"]
-
-            now = get_utc_now()
-            now_naive = now.replace(tzinfo=None) if now.tzinfo else now
-            candidates = db.query(PriceBookEntity).filter(
-                PriceBookEntity.customer_group.in_(aliases),
-                PriceBookEntity.status == "ACTIVE"
-            ).order_by(PriceBookEntity.version.desc(), PriceBookEntity.created_at.desc()).all()
-
-            pb = None
-            for cand in candidates:
-                vf = cand.valid_from.replace(tzinfo=None) if cand.valid_from and cand.valid_from.tzinfo else cand.valid_from
-                vt = cand.valid_to.replace(tzinfo=None) if cand.valid_to and cand.valid_to.tzinfo else cand.valid_to
-                if vf and vt and vf <= now_naive <= vt:
-                    pb = cand
-                    break
-
-            if not pb and candidates:
-                pb = candidates[0]
-
-            if pb:
-                items_count = db.query(PriceBookItemEntity).filter(PriceBookItemEntity.price_book_id == pb.id).count()
-                vf_check = pb.valid_from.replace(tzinfo=None) if pb.valid_from and pb.valid_from.tzinfo else pb.valid_from
-                vt_check = pb.valid_to.replace(tzinfo=None) if pb.valid_to and pb.valid_to.tzinfo else pb.valid_to
-                is_active = bool(vf_check and vt_check and vf_check <= now_naive <= vt_check)
-                return {
-                    "id": pb.id,
-                    "code": pb.code,
-                    "name": pb.name,
-                    "customer_group": pb.customer_group,
-                    "valid_from": pb.valid_from.isoformat() if pb.valid_from else None,
-                    "valid_to": pb.valid_to.isoformat() if pb.valid_to else None,
-                    "status": pb.status,
-                    "is_active_now": is_active,
-                    "items_count": items_count,
-                    "note": pb.note,
-                }
-        finally:
-            db.close()
-    except Exception as e:
-        logger.warning(f"Error fetching applied price book for group {customer_group}: {e}")
-    return None
-
-
-def compute_dealer_stats(current_user: Optional[UserResponse] = None) -> Dict[str, int]:
-    """
-    Tính toán 4 ô số liệu thống kê thực tế từ hệ thống:
-    • Tổng số hồ sơ đại lý
-    • Đang hoạt động
-    • Ngừng giao dịch
-    • Đã phát sinh giao dịch (không thể xóa)
-    """
-    load_dealers_db()
-    from app.api.v1.endpoints.orders import ORDERS_DB
-
-    total = 0
-    active = 0
-    stopped = 0
-    paused = 0
-    pending_activation = 0
-    with_transactions = 0
-    without_transactions = 0
-
-    user_roles = current_user.get_roles() if current_user and hasattr(current_user, "get_roles") else ([current_user.role] if current_user else ["admin"])
-    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
-
-    assigned_sale_filter = None
-    if current_user and not is_customer and "admin" not in user_roles and "sales_manager" not in user_roles and "accountant" not in user_roles:
-        assigned_sale_filter = current_user.id
-
-    for dealer in DEALERS_DB.values():
-        if is_customer:
-            if dealer.id != current_user.id and dealer.email != getattr(current_user, "email", None) and dealer.phone != getattr(current_user, "phone", None):
-                continue
-        elif assigned_sale_filter is not None and dealer.assigned_sale_id != assigned_sale_filter:
-            continue
-
-        total += 1
-        st = getattr(dealer, "status", "Đang hoạt động") or "Đang hoạt động"
-        if st == "Đang hoạt động":
-            active += 1
-        elif st == "Ngừng giao dịch":
-            stopped += 1
-        elif st == "Tạm ngừng":
-            paused += 1
-        elif st == "Chưa kích hoạt":
-            pending_activation += 1
-        else:
-            active += 1
-
-        manual_tx = getattr(dealer, "transaction_count", 0) or 0
-        order_tx = sum(1 for o in ORDERS_DB.values() if o.get("dealer_id") == dealer.id)
-        transaction_count = max(manual_tx, order_tx)
-
-        if transaction_count > 0:
-            with_transactions += 1
-        else:
-            without_transactions += 1
-
-    return {
-        "total": total,
-        "active": active,
-        "stopped": stopped,
-        "paused": paused,
-        "pending_activation": pending_activation,
-        "with_transactions": with_transactions,
-        "without_transactions": without_transactions,
-    }
-
-
-@router.get("/price-book-preview")
-def preview_applied_price_book(
-    customer_group: str = Query(..., description="Nhóm khách hàng cần tra cứu bảng giá áp dụng"),
-    current_user: UserResponse = Depends(
-        require_roles(["admin", "sales_manager", "sales", "accountant"])
-    ),
-):
-    """
-    Tra cứu thông tin bảng giá tự động áp dụng tương ứng với nhóm khách hàng.
-    """
-    pb_info = get_applied_price_book_info(customer_group)
-    return {
-        "customer_group": customer_group,
-        "applied_price_book": pb_info,
-    }
-
-
-@router.get("/stats")
-def get_dealer_stats(
-    current_user: UserResponse = Depends(
-        require_roles([
-            "admin",
-            "sales_manager",
-            "sales",
-            "accountant",
-            "customer",
-        ])
-    ),
-):
-    """
-    Trả về 4 ô số liệu thống kê thực tế từ backend, không hard-code số lượng.
-    """
-    return compute_dealer_stats(current_user)
-
-
 @router.get("/search")
 def search_dealers(
     keyword: Optional[str] = Query(
         default=None,
-        description="Tìm nhanh theo mã đại lý, tên đại lý, MST hoặc số điện thoại"
+        description="Tìm nhanh theo mã đại lý, tên đại lý hoặc số điện thoại"
     ),
     region: Optional[str] = Query(
         default=None,
@@ -291,36 +81,21 @@ def search_dealers(
         default=None,
         description="Lọc theo trạng thái (Đang hoạt động, Tạm ngừng...)"
     ),
-    has_transactions: Optional[bool] = Query(
-        default=None,
-        description="Lọc theo đại lý đã phát sinh giao dịch hay chưa"
-    ),
-    page: int = Query(
-        default=1,
-        ge=1,
-        description="Trang hiện tại (phân trang)"
-    ),
-    page_size: int = Query(
-        default=10,
-        ge=1,
-        description="Số lượng bản ghi mỗi trang"
-    ),
     current_user: UserResponse = Depends(
         require_roles([
             "admin",
             "sales_manager",
             "sales",
             "accountant",
-            "customer",
         ])
     ),
 ):
     """
     Tìm kiếm và lọc danh sách đại lý cho nhân viên kinh doanh:
-    • Tìm nhanh theo mã, tên, mã số thuế, số điện thoại
+    • Tìm nhanh theo mã, tên, số điện thoại
     • Lọc theo khu vực, nhóm khách hàng, người phụ trách, trạng thái
-    • Hỗ trợ phân trang và thống kê trực tiếp
     """
+
     load_dealers_db()
 
     keyword_clean = keyword.strip().lower() if keyword else None
@@ -329,87 +104,12 @@ def search_dealers(
     status_clean = status.strip().lower() if status else None
 
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
-
-    from app.api.v1.endpoints.orders import ORDERS_DB
-
-    if is_customer:
-        customer_dealer = DEALERS_DB.get(current_user.id)
-        if not customer_dealer:
-            for d in DEALERS_DB.values():
-                if (d.email and d.email == current_user.email) or \
-                   (d.phone and d.phone == current_user.phone) or \
-                   (d.code and d.code.lower() == current_user.username.lower()) or \
-                   (d.name and d.name.lower() == (current_user.full_name or "").lower()):
-                    customer_dealer = d
-                    break
-        if not customer_dealer:
-            return {
-                "items": [],
-                "dealers": [],
-                "total": 0,
-                "page": page,
-                "page_size": page_size,
-                "total_pages": 1,
-                "stats": compute_dealer_stats(current_user),
-            }
-
-        dealer_region = customer_dealer.region or get_region(customer_dealer.address)
-        c_limit = float(getattr(customer_dealer, "credit_limit", 50000000.0) or 50000000.0)
-        c_days = int(getattr(customer_dealer, "max_debt_days", 30) or 30)
-        current_debt = 0.0
-        for o in ORDERS_DB.values():
-            if o.get("dealer_id") == customer_dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
-                current_debt += o.get("total_amount", 0.0)
-
-        debt_status = "Bình thường"
-        if current_debt > c_limit:
-            debt_status = "Vượt hạn mức"
-
-        applied_pb = get_applied_price_book_info(getattr(customer_dealer, "customer_group", "Đại lý cấp 1"))
-        single_item = {
-            "id": customer_dealer.id,
-            "code": customer_dealer.code,
-            "name": customer_dealer.name,
-            "tax_code": getattr(customer_dealer, "tax_code", None),
-            "phone": customer_dealer.phone,
-            "email": customer_dealer.email,
-            "address": customer_dealer.address,
-            "region": dealer_region,
-            "credit_limit": c_limit,
-            "max_debt_days": c_days,
-            "current_debt": current_debt,
-            "debt_status": debt_status,
-            "assigned_sale_id": customer_dealer.assigned_sale_id,
-            "assigned_sale_name": get_sale_name(customer_dealer.assigned_sale_id),
-            "customer_group": getattr(customer_dealer, "customer_group", "Đại lý cấp 1"),
-            "status": getattr(customer_dealer, "status", "Đang hoạt động"),
-            "lock_reason": None,
-            "locked_at": None,
-            "locked_by": None,
-            "transaction_count": 0,
-            "has_transactions": False,
-            "applied_price_book": applied_pb,
-            "warehouse_id": getattr(customer_dealer, "warehouse_id", None),
-            "warehouse_name": getattr(customer_dealer, "warehouse_name", None),
-        }
-        return {
-            "items": [single_item],
-            "dealers": [single_item],
-            "total": 1,
-            "page": 1,
-            "page_size": page_size,
-            "total_pages": 1,
-            "stats": compute_dealer_stats(current_user),
-        }
-
     if "admin" not in user_roles and "sales_manager" not in user_roles and "accountant" not in user_roles:
         # Sales chỉ thấy đại lý của mình
         assigned_sale_id = current_user.id
 
     # Chuẩn hóa keyword dạng chữ số để hỗ trợ tìm số điện thoại khi có khoảng cách hoặc dấu chấm
     clean_kw_digits = "".join(ch for ch in keyword_clean if ch.isdigit()) if keyword_clean else ""
-    clean_kw_normalized = keyword_clean.replace("-", "").replace(" ", "").replace("_", "") if keyword_clean else ""
 
     results = []
 
@@ -444,26 +144,22 @@ def search_dealers(
             debt_status = "Quá hạn thanh toán"
         else:
             debt_status = "Trong hạn mức" 
-
         # ==========================================
-        # 1. TÌM KIẾM NHANH THEO MÃ / TÊN / MST / SĐT
+        # 1. TÌM KIẾM NHANH THEO MÃ / TÊN / SĐT
         # ==========================================
         if keyword_clean:
             code_str = (dealer.code or "").lower()
-            code_normalized = code_str.replace("-", "").replace(" ", "").replace("_", "")
             name_str = (dealer.name or "").lower()
-            tax_str = (getattr(dealer, "tax_code", "") or "").lower()
             phone_str = (dealer.phone or "").lower()
             phone_digits = "".join(ch for ch in phone_str if ch.isdigit())
 
-            matched_code = (keyword_clean in code_str) or (clean_kw_normalized and clean_kw_normalized in code_normalized)
+            matched_code = keyword_clean in code_str
             matched_name = keyword_clean in name_str
-            matched_tax = keyword_clean in tax_str
             matched_phone = keyword_clean in phone_str
             if not matched_phone and clean_kw_digits and len(clean_kw_digits) >= 3:
                 matched_phone = clean_kw_digits in phone_digits
 
-            if not (matched_code or matched_name or matched_tax or matched_phone):
+            if not (matched_code or matched_name or matched_phone):
                 continue
 
         # ==========================================
@@ -510,26 +206,10 @@ def search_dealers(
             if status_clean not in dealer_status.lower():
                 continue
 
-        # Đếm số lượng giao dịch đã phát sinh và tra cứu bảng giá áp dụng
-        manual_tx = getattr(dealer, "transaction_count", 0) or 0
-        order_tx = sum(1 for o in ORDERS_DB.values() if o.get("dealer_id") == dealer.id)
-        transaction_count = max(manual_tx, order_tx)
-        applied_pb = get_applied_price_book_info(getattr(dealer, "customer_group", "Đại lý cấp 1"))
-
-        # ==========================================
-        # 6. LỌC THEO PHÁT SINH GIAO DỊCH
-        # ==========================================
-        if has_transactions is not None:
-            if has_transactions and transaction_count <= 0:
-                continue
-            if not has_transactions and transaction_count > 0:
-                continue
-
         results.append({
             "id": dealer.id,
             "code": dealer.code,
             "name": dealer.name,
-            "tax_code": getattr(dealer, "tax_code", None),
             "phone": dealer.phone,
             "email": dealer.email,
             "address": dealer.address,
@@ -542,112 +222,11 @@ def search_dealers(
             "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
             "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
             "status": getattr(dealer, "status", "Đang hoạt động"),
-            "lock_reason": getattr(dealer, "lock_reason", None),
-            "locked_at": getattr(dealer, "locked_at", None),
-            "locked_by": getattr(dealer, "locked_by", None),
-            "transaction_count": transaction_count,
-            "has_transactions": transaction_count > 0,
-            "applied_price_book": applied_pb,
-            "warehouse_id": getattr(dealer, "warehouse_id", None),
-            "warehouse_name": getattr(dealer, "warehouse_name", None),
         })
 
-    # Sắp xếp đại lý mới nhất lên đầu (id giảm dần) để khi tạo mới hiển thị ngay lập tức ở trang 1
-    results.sort(key=lambda d: d["id"], reverse=True)
-
-    # Phân trang
-    total_count = len(results)
-    total_pages = max(1, math.ceil(total_count / page_size))
-    start_idx = (page - 1) * page_size
-    end_idx = start_idx + page_size
-    paged_items = results[start_idx:end_idx]
-
     return {
-        "items": paged_items,
-        "dealers": paged_items,
-        "total": total_count,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": total_pages,
-        "stats": compute_dealer_stats(current_user),
-    }
-
-
-@router.get("/{dealer_id}/transactions")
-def get_dealer_transactions(
-    dealer_id: int,
-    current_user: UserResponse = Depends(
-        require_roles([
-            "admin",
-            "sales_manager",
-            "sales",
-            "accountant",
-            "customer",
-        ])
-    ),
-):
-    """
-    Xem danh sách chi tiết các giao dịch / đơn hàng đã phát sinh của đại lý.
-    """
-    load_dealers_db()
-    dealer = DEALERS_DB.get(dealer_id)
-    if not dealer:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy đại lý ID {dealer_id}."
-        )
-
-    from app.api.v1.endpoints.orders import ORDERS_DB
-
-    tx_items = []
-    for o in ORDERS_DB.values():
-        if o.get("dealer_id") == dealer_id:
-            items_list = o.get("items") or []
-            tx_items.append({
-                "id": o.get("id"),
-                "order_code": o.get("order_code") or f"DH-{o.get('id'):04d}",
-                "created_at": o.get("created_at") or datetime.now(timezone.utc).isoformat(),
-                "total_amount": float(o.get("total_amount", 0.0) or 0.0),
-                "status": o.get("status") or "COMPLETED",
-                "created_by": o.get("created_by") or "Hệ thống",
-                "items_count": len(items_list) if isinstance(items_list, list) else 1,
-                "assigned_sale_name": o.get("assigned_sale_name") or get_sale_name(dealer.assigned_sale_id),
-            })
-
-    # Nếu số lượng giao dịch ghi nhận lớn hơn số đơn hàng hiện hữu trong ORDERS_DB,
-    # bổ sung thêm danh mục giao dịch chuẩn thực tế để hiển thị đầy đủ
-    manual_tx = getattr(dealer, "transaction_count", 0) or 0
-    if len(tx_items) < manual_tx:
-        needed = manual_tx - len(tx_items)
-        base_amounts = [18500000.0, 9200000.0, 31400000.0, 14200000.0, 7800000.0]
-        base_statuses = ["PAID", "COMPLETED", "CONFIRMED"]
-        sale_name = get_sale_name(dealer.assigned_sale_id) or "Trần Bán Hàng"
-        for i in range(needed):
-            idx = i + 1
-            amt = base_amounts[i % len(base_amounts)]
-            st = base_statuses[i % len(base_statuses)]
-            day_str = f"2026-03-{10 + (i % 15):02d}T09:30:00Z"
-            tx_items.append({
-                "id": 1000 + dealer.id * 100 + idx,
-                "order_code": f"DH-{dealer.code}-{idx:02d}",
-                "created_at": day_str,
-                "total_amount": amt,
-                "status": st,
-                "created_by": sale_name,
-                "items_count": 3 + (i % 4),
-                "assigned_sale_name": sale_name,
-            })
-
-    tx_items.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
-
-    return {
-        "dealer_id": dealer.id,
-        "dealer_code": dealer.code,
-        "dealer_name": dealer.name,
-        "total": len(tx_items),
-        "total_transactions": len(tx_items),
-        "transactions": tx_items,
-        "items": tx_items,
+        "items": results,
+        "total": len(results),
     }
 
 
@@ -701,12 +280,12 @@ def get_dealer_filters(
             sales[u.id] = u.full_name
 
     # Đảm bảo có các nhóm mặc định phổ biến
-    default_groups = ["Đại lý cấp 1", "Đại lý cấp 2", "Khách sỉ", "Khách lẻ", "dai_ly_cap_1"]
+    default_groups = ["Đại lý cấp 1", "Đại lý cấp 2", "Khách sỉ", "Khách lẻ"]
     for dg in default_groups:
         customer_groups.add(dg)
 
     # Đảm bảo có các trạng thái mặc định
-    default_statuses = ["Đang hoạt động", "Tạm ngừng", "Ngừng giao dịch", "Chưa kích hoạt"]
+    default_statuses = ["Đang hoạt động", "Tạm ngừng"]
     for ds in default_statuses:
         statuses.add(ds)
 
@@ -736,13 +315,12 @@ def create_dealer(
             "admin",
             "sales_manager",
             "sales",
-            "accountant",
         ])
     ),
 ):
     """
     Tạo mới đại lý / khách hàng vào tuyến phụ trách.
-    Yêu cầu quyền: admin, sales_manager, sales, accountant.
+    Yêu cầu quyền: admin, sales_manager, sales.
     """
     name_clean = payload.name.strip()
     if not name_clean:
@@ -765,14 +343,12 @@ def create_dealer(
     new_id = max(DEALERS_DB.keys(), default=0) + 1
     code_clean = payload.code.strip().upper() if payload.code and payload.code.strip() else f"DL{new_id:03d}"
 
-    # Kiểm tra trùng mã (Mã đại lý là duy nhất)
-    clean_code_norm = code_clean.replace("-", "").replace(" ", "").replace("_", "")
+    # Kiểm tra trùng mã
     for d in DEALERS_DB.values():
-        d_norm = d.code.upper().replace("-", "").replace(" ", "").replace("_", "")
-        if d.code.upper() == code_clean or d_norm == clean_code_norm:
+        if d.code.upper() == code_clean:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Mã đại lý '{code_clean}' đã tồn tại trên hệ thống. Mã đại lý phải là duy nhất.",
+                detail=f"Mã đại lý '{code_clean}' đã tồn tại trên hệ thống",
             )
 
     # Kiểm tra trùng số điện thoại (nếu có cung cấp)
@@ -827,74 +403,27 @@ def create_dealer(
 
     reg = payload.region.strip() if payload.region and payload.region.strip() else get_region(payload.address)
 
-    tx_cnt = 0
-    if payload.transaction_count is not None:
-        if payload.transaction_count < 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Số lượng giao dịch phải lớn hơn hoặc bằng 0.",
-            )
-        tx_cnt = payload.transaction_count
-
     new_dealer = Dealer(
         id=new_id,
         code=code_clean,
         name=name_clean,
-        tax_code=payload.tax_code.strip() if payload.tax_code and payload.tax_code.strip() else None,
         phone=payload.phone.strip() if payload.phone else None,
         email=payload.email.strip() if payload.email else None,
         address=payload.address.strip() if payload.address else None,
         region=reg,
         assigned_sale_id=assigned_sale,
         credit_limit=payload.credit_limit or 50000000.0,
-        max_debt_days=payload.overdue_days_allowed or 30,
-        overdue_days_allowed=payload.overdue_days_allowed or 30,
         customer_group=payload.customer_group or "Đại lý cấp 1",
         status=payload.status or "Đang hoạt động",
-        transaction_count=tx_cnt,
-        warehouse_id=payload.warehouse_id,
-        warehouse_name=payload.warehouse_name,
     )
 
     DEALERS_DB[new_id] = new_dealer
     save_dealers_db()
 
-    if new_dealer.address:
-        try:
-            from app.core.database import SessionLocal
-            from app.models.entities import DealerDeliveryPointEntity
-            from app.api.v1.endpoints.delivery_points import _sync_to_master
-            import re
-            db_s = SessionLocal()
-            try:
-                clean_p = (new_dealer.phone or "0987654321").replace(" ", "").replace(".", "").replace("-", "")
-                if not re.fullmatch(r"^\d{10}$", clean_p):
-                    clean_p = "0987654321"
-                dp = DealerDeliveryPointEntity(
-                    dealer_id=new_id,
-                    label="Địa chỉ đăng ký đại lý",
-                    address=new_dealer.address,
-                    receiver_name=new_dealer.name,
-                    receiver_phone=clean_p,
-                    route_note="Địa chỉ chính thức của đại lý",
-                    is_default=True,
-                    is_active=True,
-                )
-                db_s.add(dp)
-                _sync_to_master(db_s, dp.label, dp.address, dp.receiver_name, dp.receiver_phone, dp.route_note)
-                db_s.commit()
-            finally:
-                db_s.close()
-        except Exception:
-            pass
-
-    applied_pb = get_applied_price_book_info(new_dealer.customer_group)
-
     return {
         "id": new_dealer.id,
         "code": new_dealer.code,
         "name": new_dealer.name,
-        "tax_code": getattr(new_dealer, "tax_code", None),
         "phone": new_dealer.phone,
         "email": new_dealer.email,
         "address": new_dealer.address,
@@ -904,241 +433,6 @@ def create_dealer(
         "assigned_sale_name": get_sale_name(new_dealer.assigned_sale_id),
         "customer_group": new_dealer.customer_group,
         "status": new_dealer.status,
-        "transaction_count": tx_cnt,
-        "has_transactions": tx_cnt > 0,
-        "applied_price_book": applied_pb,
-        "warehouse_id": new_dealer.warehouse_id,
-        "warehouse_name": new_dealer.warehouse_name,
-    }
-
-
-@router.get("/{dealer_id}/credit-info", response_model=DealerCreditInfoResponse)
-def get_dealer_credit_info_detail(
-    dealer_id: int,
-    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "customer"]))
-):
-    """
-    AC 4 & AC 1: API lấy thông tin công nợ chi tiết của Đại lý phục vụ kiểm soát khi lên đơn.
-    Bảo vệ quyền truy cập: Chỉ cho phép Nhân viên kinh doanh (Sales), Quản trị hệ thống (Admin).
-    """
-    from app.api.v1.endpoints.orders import ORDERS_DB, calculate_dealer_debt_summary
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
-    load_dealers_db()
-    dealer = DEALERS_DB.get(dealer_id)
-    if not dealer:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy đại lý có ID {dealer_id}."
-        )
-    if is_customer:
-        customer_dealer = DEALERS_DB.get(current_user.id)
-        if not customer_dealer:
-            for d in DEALERS_DB.values():
-                if (d.email and current_user.email and d.email.lower() == current_user.email.lower()) or \
-                   (d.phone and current_user.phone and d.phone == current_user.phone) or \
-                   (d.code and current_user.username and d.code.lower() == current_user.username.lower()) or \
-                   (d.name and current_user.full_name and d.name.lower() == current_user.full_name.lower()):
-                    customer_dealer = d
-                    break
-        if not customer_dealer or customer_dealer.id != dealer_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Tài khoản đại lý chỉ được phép xem thông tin công nợ của chính mình."
-            )
-    return calculate_dealer_debt_summary(dealer, ORDERS_DB)
-
-
-@router.put("/{dealer_id}")
-def update_dealer_profile(
-    dealer_id: int,
-    payload: DealerUpdateRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(
-        require_roles([
-            "admin",
-            "sales_manager",
-            "sales",
-            "accountant",
-        ])
-    ),
-):
-    """
-    Cập nhật toàn diện hồ sơ đại lý (Mã đại lý, tên, MST, nhóm KH, khu vực, người phụ trách, trạng thái).
-    Quyền: admin, sales_manager, accountant, sales (phụ trách).
-    """
-    load_dealers_db()
-    dealer = DEALERS_DB.get(dealer_id)
-    if not dealer:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy đại lý có ID {dealer_id}."
-        )
-
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    if "admin" not in user_roles and "sales_manager" not in user_roles and "accountant" not in user_roles:
-        if dealer.assigned_sale_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Bạn chỉ có quyền chỉnh sửa hồ sơ đại lý do bạn trực tiếp phụ trách."
-            )
-
-    # Kiểm tra mã đại lý là duy nhất nếu thay đổi mã
-    if payload.code and payload.code.strip():
-        new_code = payload.code.strip().upper()
-        new_code_norm = new_code.replace("-", "").replace(" ", "").replace("_", "")
-        if new_code != dealer.code.upper():
-            for d in DEALERS_DB.values():
-                d_norm = d.code.upper().replace("-", "").replace(" ", "").replace("_", "")
-                if d.id != dealer_id and (d.code.upper() == new_code or d_norm == new_code_norm):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Mã đại lý '{new_code}' đã tồn tại trên hệ thống. Mã đại lý phải là duy nhất.",
-                    )
-            dealer.code = new_code
-
-    old_info = {"code": dealer.code, "name": dealer.name, "status": dealer.status}
-
-    if payload.name is not None and payload.name.strip():
-        dealer.name = payload.name.strip()
-    if payload.tax_code is not None:
-        dealer.tax_code = payload.tax_code.strip() if payload.tax_code.strip() else None
-    if payload.phone is not None:
-        dealer.phone = payload.phone.strip() if payload.phone.strip() else None
-    if payload.email is not None:
-        dealer.email = payload.email.strip() if payload.email.strip() else None
-    if payload.address is not None:
-        dealer.address = payload.address.strip() if payload.address.strip() else None
-        if dealer.address:
-            try:
-                from app.models.entities import DealerDeliveryPointEntity
-                from app.api.v1.endpoints.delivery_points import _sync_to_master
-                import re
-                clean_p = (dealer.phone or "0987654321").replace(" ", "").replace(".", "").replace("-", "")
-                if not re.fullmatch(r"^\d{10}$", clean_p):
-                    clean_p = "0987654321"
-                dp = db.query(DealerDeliveryPointEntity).filter(
-                    DealerDeliveryPointEntity.dealer_id == dealer.id,
-                    DealerDeliveryPointEntity.is_default == True,
-                    DealerDeliveryPointEntity.is_active == True,
-                ).first()
-                if dp:
-                    dp.address = dealer.address
-                    if not dp.receiver_name:
-                        dp.receiver_name = dealer.name
-                    if not dp.receiver_phone:
-                        dp.receiver_phone = clean_p
-                    _sync_to_master(db, dp.label, dp.address, dp.receiver_name, dp.receiver_phone, dp.route_note)
-                else:
-                    dp = DealerDeliveryPointEntity(
-                        dealer_id=dealer.id,
-                        label="Địa chỉ đăng ký đại lý",
-                        address=dealer.address,
-                        receiver_name=dealer.name,
-                        receiver_phone=clean_p,
-                        route_note="Địa chỉ chính thức của đại lý",
-                        is_default=True,
-                        is_active=True,
-                    )
-                    db.add(dp)
-                    _sync_to_master(db, dp.label, dp.address, dp.receiver_name, dp.receiver_phone, dp.route_note)
-                db.commit()
-            except Exception as sync_err:
-                print(f"Lỗi đồng bộ điểm giao hàng khi cập nhật hồ sơ đại lý: {sync_err}")
-    if payload.region is not None and payload.region.strip():
-        dealer.region = payload.region.strip()
-    if payload.assigned_sale_id is not None:
-        dealer.assigned_sale_id = payload.assigned_sale_id
-    if payload.customer_group is not None and payload.customer_group.strip():
-        dealer.customer_group = payload.customer_group.strip()
-    if payload.status is not None and payload.status.strip():
-        valid_statuses = ["Đang hoạt động", "Tạm ngừng", "Ngừng giao dịch", "Chưa kích hoạt"]
-        if payload.status.strip() in valid_statuses:
-            dealer.status = payload.status.strip()
-    if payload.credit_limit is not None:
-        dealer.credit_limit = payload.credit_limit
-    if payload.overdue_days_allowed is not None:
-        dealer.overdue_days_allowed = payload.overdue_days_allowed
-        dealer.max_debt_days = payload.overdue_days_allowed
-    elif payload.max_debt_days is not None:
-        dealer.max_debt_days = payload.max_debt_days
-        dealer.overdue_days_allowed = payload.max_debt_days
-    if payload.transaction_count is not None:
-        if payload.transaction_count < 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Số lượng giao dịch phải lớn hơn hoặc bằng 0.",
-            )
-        dealer.transaction_count = payload.transaction_count
-    if payload.warehouse_id is not None:
-        dealer.warehouse_id = payload.warehouse_id
-    if payload.warehouse_name is not None:
-        dealer.warehouse_name = payload.warehouse_name
-
-    save_dealers_db()
-
-    # Đồng bộ vào database DealerEntity nếu có
-    try:
-        from app.models.entities import DealerEntity
-        db_dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer.id).first()
-        if db_dealer:
-            if payload.name: db_dealer.name = dealer.name
-            if payload.phone: db_dealer.phone = dealer.phone
-            if payload.email: db_dealer.email = dealer.email
-            if payload.address: db_dealer.address = dealer.address
-            if payload.warehouse_id is not None: db_dealer.warehouse_id = dealer.warehouse_id
-            if payload.warehouse_name is not None: db_dealer.warehouse_name = dealer.warehouse_name
-            db.commit()
-    except Exception:
-        pass
-
-    try:
-        log_audit_event(
-            db=db,
-            user=current_user,
-            action_type="DEALER_PROFILE_UPDATE",
-            entity_type="Dealer",
-            entity_id=dealer.code,
-            old_val=old_info,
-            new_val={
-                "code": dealer.code,
-                "name": dealer.name,
-                "tax_code": getattr(dealer, "tax_code", None),
-                "customer_group": dealer.customer_group,
-                "status": dealer.status,
-                "transaction_count": getattr(dealer, "transaction_count", 0),
-                "warehouse_id": getattr(dealer, "warehouse_id", None),
-                "warehouse_name": getattr(dealer, "warehouse_name", None),
-            },
-            reason="Cập nhật hồ sơ đại lý",
-            request=request,
-        )
-    except Exception as e:
-        print(f"Lỗi ghi audit log DEALER_PROFILE_UPDATE: {e}")
-
-    from app.api.v1.endpoints.orders import ORDERS_DB
-    order_tx = sum(1 for o in ORDERS_DB.values() if o.get("dealer_id") == dealer.id)
-    manual_tx = getattr(dealer, "transaction_count", 0) or 0
-    tx_count = max(manual_tx, order_tx)
-    return {
-        "id": dealer.id,
-        "code": dealer.code,
-        "name": dealer.name,
-        "tax_code": getattr(dealer, "tax_code", None),
-        "phone": dealer.phone,
-        "email": dealer.email,
-        "address": dealer.address,
-        "region": dealer.region or get_region(dealer.address),
-        "assigned_sale_id": dealer.assigned_sale_id,
-        "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
-        "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
-        "status": dealer.status,
-        "transaction_count": tx_count,
-        "has_transactions": tx_count > 0,
-        "applied_price_book": get_applied_price_book_info(dealer.customer_group),
-        "warehouse_id": getattr(dealer, "warehouse_id", None),
-        "warehouse_name": getattr(dealer, "warehouse_name", None),
     }
 
 
@@ -1154,13 +448,12 @@ def update_dealer_status(
             "admin",
             "sales_manager",
             "sales",
-            "accountant",
         ])
     ),
 ):
     """
-    Cập nhật trạng thái đại lý / khách hàng ('Đang hoạt động' <-> 'Ngừng giao dịch' / 'Tạm ngừng').
-    Quyền: admin, sales_manager, accountant, hoặc nhân viên kinh doanh (sales) phụ trách đại lý.
+    Cập nhật trạng thái đại lý / khách hàng ('Đang hoạt động' <-> 'Tạm ngừng').
+    Quyền: admin, sales_manager, hoặc nhân viên kinh doanh (sales) phụ trách đại lý.
     Tự động ghi vết vào bảng audit_logs với action_type='DEALER_STATUS_CHANGE'.
     """
     load_dealers_db()
@@ -1173,7 +466,7 @@ def update_dealer_status(
 
     # Ràng buộc phân quyền Zero-Trust: Sales chỉ được đổi trạng thái đại lý do mình phụ trách
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    if "admin" not in user_roles and "sales_manager" not in user_roles and "accountant" not in user_roles:
+    if "admin" not in user_roles and "sales_manager" not in user_roles:
         if dealer.assigned_sale_id != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1181,33 +474,22 @@ def update_dealer_status(
             )
 
     new_status = payload.status.strip()
-    if new_status not in ["Đang hoạt động", "Tạm ngừng", "Ngừng giao dịch", "Chưa kích hoạt", "Đã khóa"]:
+    if new_status not in ["Đang hoạt động", "Tạm ngừng"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Trạng thái chỉ có thể là 'Đang hoạt động', 'Ngừng giao dịch', 'Tạm ngừng', 'Chưa kích hoạt' hoặc 'Đã khóa'."
+            detail="Trạng thái chỉ có thể là 'Đang hoạt động' hoặc 'Tạm ngừng'."
         )
 
-    clean_reason = payload.reason.strip() if payload.reason and payload.reason.strip() else None
-    utc_now_str = datetime.now(timezone.utc).isoformat()
-
-    if new_status == "Đã khóa":
-        if not clean_reason:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Lý do khóa giao dịch là bắt buộc khi chuyển sang trạng thái 'Đã khóa'."
-            )
-        dealer.lock_reason = clean_reason
-        dealer.locked_at = utc_now_str
-        dealer.locked_by = current_user.username
-    elif new_status == "Đang hoạt động":
-        dealer.lock_reason = None
-        dealer.locked_at = None
-        dealer.locked_by = None
-    else:
-        if clean_reason:
-            dealer.lock_reason = clean_reason
-
     old_status = getattr(dealer, "status", "Đang hoạt động")
+    if old_status == new_status:
+        return {
+            "id": dealer.id,
+            "code": dealer.code,
+            "name": dealer.name,
+            "status": dealer.status,
+            "message": "Trạng thái không thay đổi",
+        }
+
     dealer.status = new_status
     save_dealers_db()
 
@@ -1220,13 +502,8 @@ def update_dealer_status(
             entity_type="Dealer",
             entity_id=dealer.code,
             old_val={"status": old_status, "name": dealer.name},
-            new_val={
-                "status": dealer.status,
-                "lock_reason": getattr(dealer, "lock_reason", None),
-                "locked_at": getattr(dealer, "locked_at", None),
-                "locked_by": getattr(dealer, "locked_by", None),
-            },
-            reason=clean_reason or payload.reason or f"Chuyển trạng thái sang '{new_status}'",
+            new_val={"status": new_status},
+            reason=payload.reason or f"Chuyển trạng thái sang '{new_status}'",
             request=request,
         )
     except Exception as e:
@@ -1245,9 +522,6 @@ def update_dealer_status(
         "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
         "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
         "status": dealer.status,
-        "lock_reason": getattr(dealer, "lock_reason", None),
-        "locked_at": getattr(dealer, "locked_at", None),
-        "locked_by": getattr(dealer, "locked_by", None),
     }
 
 
@@ -1426,11 +700,10 @@ def delete_dealer(
     dealer_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "accountant"])),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager"])),
 ):
     """
-    Xóa đại lý/khách hàng khỏi hệ thống (Chỉ khi CHƯA phát sinh giao dịch).
-    Đại lý đã phát sinh giao dịch thì không xoá được, chỉ ngừng giao dịch.
+    Xóa đại lý/khách hàng khỏi hệ thống (Chỉ dành cho Quản trị viên và Quản lý kinh doanh).
     """
     load_dealers_db()
     dealer = DEALERS_DB.get(dealer_id)
@@ -1440,40 +713,25 @@ def delete_dealer(
             detail=f"Không tìm thấy đại lý ID {dealer_id}."
         )
 
-    # Kiểm tra xem có giao dịch (đơn hàng) phát sinh không
-    total_orders = 0
-    try:
-        from app.models.entities import OrderEntity
-        total_orders = db.query(OrderEntity).filter(OrderEntity.dealer_id == dealer_id).count()
-    except Exception:
-        pass
-
-    try:
-        from app.api.v1.endpoints.orders import ORDERS_DB
-        orders_db_cnt = sum(1 for o in ORDERS_DB.values() if o.get("dealer_id") == dealer_id)
-        total_orders = max(total_orders, orders_db_cnt)
-    except Exception:
-        pass
-
-    manual_tx = getattr(dealer, "transaction_count", 0) or 0
-    total_orders = max(total_orders, manual_tx)
-
-    if total_orders > 0:
+    # Kiểm tra xem có đơn hàng đang hoạt động không
+    from app.models.entities import OrderEntity, DealerEntity, DealerDeliveryPointEntity
+    active_orders = db.query(OrderEntity).filter(
+        OrderEntity.dealer_id == dealer_id,
+        OrderEntity.status.in_(["PENDING", "PROCESSING", "CONFIRMED"])
+    ).count()
+    if active_orders > 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Đại lý '{dealer.name}' ({dealer.code}) đã phát sinh {total_orders} giao dịch trong hệ thống, không thể xóa. Theo quy định kiểm toán và kế toán, chỉ được phép chuyển sang trạng thái 'Ngừng giao dịch'.",
+            detail=f"Đại lý đang có {active_orders} đơn hàng chưa hoàn tất, không thể xóa."
         )
 
-    # 1. Xóa các điểm giao hàng của đại lý nếu có
-    try:
-        from app.models.entities import DealerEntity, DealerDeliveryPointEntity
-        db.query(DealerDeliveryPointEntity).filter(DealerDeliveryPointEntity.dealer_id == dealer_id).delete(synchronize_session=False)
-        # 2. Xóa trong SQL
-        db.query(DealerEntity).filter(DealerEntity.id == dealer_id).delete(synchronize_session=False)
-        db.commit()
-    except Exception as db_del_err:
-        db.rollback()
-        logger.warning(f"Database deletion bypassed: {db_del_err}")
+    # 1. Xóa các đơn hàng đã hủy hoặc đã thanh toán của đại lý nếu có
+    db.query(OrderEntity).filter(OrderEntity.dealer_id == dealer_id).delete(synchronize_session=False)
+    # 2. Xóa các điểm giao hàng của đại lý để tránh lỗi ràng buộc khóa ngoại
+    db.query(DealerDeliveryPointEntity).filter(DealerDeliveryPointEntity.dealer_id == dealer_id).delete(synchronize_session=False)
+    # 3. Xóa trong SQL
+    db.query(DealerEntity).filter(DealerEntity.id == dealer_id).delete(synchronize_session=False)
+    db.commit()
 
     # Ghi log thao tác
     try:
@@ -1501,59 +759,16 @@ def delete_dealer(
 @router.get("")
 @router.get("/")
 def get_dealers(
-    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "accountant", "customer"]))
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "accountant"]))
 ):
-    """Lấy danh sách tất cả đại lý (tự động cô lập cho customer)."""
+    """Lấy danh sách tất cả đại lý."""
     load_dealers_db()
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
-
-    if is_customer:
-        customer_dealer = DEALERS_DB.get(current_user.id)
-        if not customer_dealer:
-            for d in DEALERS_DB.values():
-                if (d.email and d.email == current_user.email) or \
-                   (d.phone and d.phone == current_user.phone) or \
-                   (d.code and d.code.lower() == current_user.username.lower()) or \
-                   (d.name and d.name.lower() == (current_user.full_name or "").lower()):
-                    customer_dealer = d
-                    break
-        if not customer_dealer:
-            return []
-        return [{
-            "id": customer_dealer.id,
-            "code": customer_dealer.code,
-            "name": customer_dealer.name,
-            "phone": customer_dealer.phone,
-            "email": customer_dealer.email,
-            "address": customer_dealer.address,
-            "region": getattr(customer_dealer, "region", None) or get_region(customer_dealer.address),
-            "assigned_sale_id": customer_dealer.assigned_sale_id,
-            "assigned_sale_name": get_sale_name(customer_dealer.assigned_sale_id),
-            "credit_limit": getattr(customer_dealer, "credit_limit", 50000000.0),
-            "max_debt_days": getattr(customer_dealer, "max_debt_days", 30),
-            "customer_group": getattr(customer_dealer, "customer_group", "Đại lý cấp 1"),
-            "status": getattr(customer_dealer, "status", "Đang hoạt động"),
-            "lock_reason": None,
-            "locked_at": None,
-            "locked_by": None,
-            "transaction_count": 0,
-            "has_transactions": False,
-            "applied_price_book": get_applied_price_book_info(getattr(customer_dealer, "customer_group", "Đại lý cấp 1")),
-            "warehouse_id": getattr(customer_dealer, "warehouse_id", None),
-            "warehouse_name": getattr(customer_dealer, "warehouse_name", None),
-        }]
-
-    from app.api.v1.endpoints.orders import ORDERS_DB
     res = []
     for d in DEALERS_DB.values():
-        tx_count = sum(1 for o in ORDERS_DB.values() if o.get("dealer_id") == d.id)
-        applied_pb = get_applied_price_book_info(getattr(d, "customer_group", "Đại lý cấp 1"))
         res.append({
             "id": d.id,
             "code": d.code,
             "name": d.name,
-            "tax_code": getattr(d, "tax_code", None),
             "phone": d.phone,
             "email": d.email,
             "address": d.address,
@@ -1565,22 +780,5 @@ def get_dealers(
             "customer_group": getattr(d, "customer_group", "Đại lý cấp 1"),
             "status": getattr(d, "status", "Đang hoạt động"),
             "lock_reason": getattr(d, "lock_reason", None),
-            "locked_at": getattr(d, "locked_at", None),
-            "locked_by": getattr(d, "locked_by", None),
-            "transaction_count": tx_count,
-            "has_transactions": tx_count > 0,
-            "applied_price_book": applied_pb,
-            "warehouse_id": getattr(d, "warehouse_id", None),
-            "warehouse_name": getattr(d, "warehouse_name", None),
         })
     return res
-
-
-@router.get("/{dealer_id}/purchase-history")
-def get_dealer_purchase_history_alias(
-    dealer_id: int,
-    db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
-):
-    from app.api.v1.endpoints.orders import get_dealer_purchase_history
-    return get_dealer_purchase_history(dealer_id=dealer_id, db=db, current_user=current_user)

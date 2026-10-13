@@ -1,108 +1,16 @@
-from __future__ import annotations
-from typing import Optional, List, Dict, Any
-import json
-import os
-import base64
-import uuid
-import re
-from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_permission
 from app.core.database import get_db
 from app.core.rbac import Permission, has_permission
 from app.schemas.auth import UserResponse
-from app.schemas.product import (
-    ProductItem,
-    ProductListResponse,
-    ProductFinancialSummary,
-    PriceUpdateRequest,
-    UnitUpdateRequest,
-    UnitConversionItem,
-    ProductCreateRequest,
-    ProductUpdateRequest,
-)
+from app.schemas.product import ProductItem, ProductListResponse, ProductFinancialSummary, PriceUpdateRequest, UnitUpdateRequest, UnitConversionItem
 from app.services.audit_service import log_audit_event
 
 router = APIRouter()
 
-BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-PRODUCTS_DIR = os.path.join(BACKEND_ROOT, "uploads", "products")
-try:
-    os.makedirs(PRODUCTS_DIR, exist_ok=True)
-except Exception:
-    pass
-
-def save_product_images(images: list[str] | None, product_code: str = "") -> list[str]:
-    """
-    Xử lý danh sách ảnh sản phẩm:
-    - Nếu ảnh là base64 data URL (data:image/...;base64,...), lưu file vào backend/uploads/products/
-      và trả về URL tĩnh /uploads/products/<filename>.
-    - Nếu ảnh là đường dẫn tĩnh (/uploads/...) hoặc HTTP URL, giữ nguyên.
-    """
-    if not images:
-        return []
-    products_dir = PRODUCTS_DIR
-    try:
-        os.makedirs(products_dir, exist_ok=True)
-    except Exception:
-        pass
-
-    clean_code = re.sub(r'[^a-zA-Z0-9_-]', '', product_code or "product")
-    saved_urls: list[str] = []
-    for img in images:
-        if not img or not isinstance(img, str):
-            continue
-        if img.startswith("data:image/"):
-            try:
-                parts = img.split(";base64,", 1)
-                if len(parts) == 2:
-                    header, base64_str = parts
-                    ext = "png"
-                    if "jpeg" in header or "jpg" in header:
-                        ext = "jpg"
-                    elif "webp" in header:
-                        ext = "webp"
-                    file_bytes = base64.b64decode(base64_str)
-                    filename = f"{clean_code}_{uuid.uuid4().hex[:8]}.{ext}"
-                    filepath = os.path.join(products_dir, filename)
-                    with open(filepath, "wb") as f:
-                        f.write(file_bytes)
-                    saved_urls.append(f"/uploads/products/{filename}")
-                    continue
-            except Exception as e:
-                print(f"Warning: decode product image failed: {e}")
-        saved_urls.append(img)
-    return saved_urls
-
-@router.post("/upload-image")
-async def upload_product_image(
-    file: UploadFile = File(...),
-    current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
-):
-    """
-    Upload tệp ảnh sản phẩm trực tiếp và trả về URL tĩnh /uploads/products/<filename>.
-    """
-    allowed_exts = {".png", ".jpg", ".jpeg", ".webp"}
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in allowed_exts:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Định dạng tệp không hợp lệ. Chỉ chấp nhận JPG, PNG, WEBP."
-        )
-    products_dir = PRODUCTS_DIR
-    os.makedirs(products_dir, exist_ok=True)
-
-    filename = f"prod_{uuid.uuid4().hex[:12]}{ext}"
-    filepath = os.path.join(products_dir, filename)
-    contents = await file.read()
-    with open(filepath, "wb") as f:
-        f.write(contents)
-
-    return {"url": f"/uploads/products/{filename}", "status": "success"}
-
 # Mock Products database with base_unit and units
 RAW_PRODUCTS = [
-
     {
         "id": 1,
         "code": "SP001",
@@ -110,7 +18,7 @@ RAW_PRODUCTS = [
         "category": "Thời trang",
         "stock": 120,
         "cost_price": 85000.0,
-        "sell_price": 190000.0,
+        "sell_price": 199000.0,
         "base_unit": "Cái",
         "units": [
             {"unit_name": "Lốc", "conversion_rate": 6.0},
@@ -167,22 +75,6 @@ RAW_PRODUCTS = [
             {"unit_name": "Hộp", "conversion_rate": 5.0},
         ],
     },
-    {
-        "id": 60,
-        "code": "SP-BEER",
-        "name": "Bia Tiger Crystal Lon 330ml",
-        "category": "Đồ uống",
-        "stock": 100,
-        "cost_price": 14000.0,
-        "sell_price": 19000.0,
-        "base_unit": "Lon",
-        "packaging_specification": "24 lon / thùng",
-        "is_batch_managed": True,
-        "units": [
-            {"unit_name": "Lốc", "conversion_rate": 6.0},
-            {"unit_name": "Thùng", "conversion_rate": 24.0},
-        ],
-    },
 ]
 
 
@@ -192,104 +84,10 @@ def _find_product_in_raw(product_id: int):
             return p
     return None
 
-def _get_all_product_transaction_counts(db: Session) -> dict[int, int]:
-    """
-    Tối ưu hóa hiệu năng O(1) theo lô (Bulk batching):
-    Thay vì chạy 20.000 câu query trong vòng lặp N+1 làm đứng hệ thống khi có 10.000 sản phẩm,
-    hàm này gom nhóm tính toán transaction_count cho TẤT CẢ sản phẩm chỉ trong 1 lần duyệt (0.01s).
-    """
-    from app.api.v1.endpoints.orders import ORDERS_DB
-    from app.api.v1.endpoints.inventory import INVENTORY_TRANSACTIONS
-    from app.models.entities import OrderEntity, InventoryTransactionEntity
-    from collections import defaultdict
-    from sqlalchemy import func
-    import json
-
-    tx_counts = defaultdict(int)
-
-    # 1. In-memory orders: duyệt 1 lần duy nhất
-    for order_key, order in ORDERS_DB.items():
-        items = order.get("items", [])
-        pids_in_order = set()
-        for item in items:
-            item_pid = item.get("product_id")
-            if item_pid is not None:
-                try:
-                    pids_in_order.add(int(item_pid))
-                except (ValueError, TypeError):
-                    pass
-        for pid in pids_in_order:
-            tx_counts[pid] += 1
-
-    # 2. Database orders: query 1 lần duy nhất tất cả items_json
-    if db:
-        try:
-            order_rows = db.query(OrderEntity.items_json).all()
-            for (items_json,) in order_rows:
-                if items_json:
-                    try:
-                        data = json.loads(items_json)
-                        items_list = data if isinstance(data, list) else (data.get("items", []) if isinstance(data, dict) else [])
-                        pids_in_order = set()
-                        for item in items_list:
-                            item_pid = item.get("product_id")
-                            if item_pid is not None:
-                                try:
-                                    pids_in_order.add(int(item_pid))
-                                except (ValueError, TypeError):
-                                    pass
-                        for pid in pids_in_order:
-                            tx_counts[pid] += 1
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-    # 3. In-memory inventory transactions: duyệt 1 lần duy nhất
-    mem_tx_by_pid = defaultdict(int)
-    for tx in INVENTORY_TRANSACTIONS:
-        tx_pid = getattr(tx, "product_id", None) or (tx.get("product_id") if isinstance(tx, dict) else None)
-        if tx_pid is not None:
-            try:
-                mem_tx_by_pid[int(tx_pid)] += 1
-            except (ValueError, TypeError):
-                pass
-
-    # 4. Database inventory transactions: Group by product_id trong 1 câu SQL duy nhất!
-    db_tx_by_pid = defaultdict(int)
-    if db:
-        try:
-            rows = db.query(
-                InventoryTransactionEntity.product_id,
-                func.count(InventoryTransactionEntity.id)
-            ).group_by(InventoryTransactionEntity.product_id).all()
-            for pid, count_val in rows:
-                if pid is not None:
-                    try:
-                        db_tx_by_pid[int(pid)] = int(count_val)
-                    except (ValueError, TypeError):
-                        pass
-        except Exception:
-            pass
-
-    all_pids = set(tx_counts.keys()) | set(mem_tx_by_pid.keys()) | set(db_tx_by_pid.keys())
-    res = defaultdict(int)
-    for pid in all_pids:
-        inv_cnt = max(mem_tx_by_pid.get(pid, 0), db_tx_by_pid.get(pid, 0))
-        res[pid] = tx_counts.get(pid, 0) + inv_cnt
-
-    return res
-
-def _get_product_transaction_count(product_id: int, db: Session) -> int:
-    return _get_all_product_transaction_counts(db).get(product_id, 0)
 
 
 @router.get("", response_model=ProductListResponse)
 def get_products(
-    page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
-    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng mục mỗi trang"),
-    search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
-    category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_READ.value))
 ):
@@ -301,24 +99,6 @@ def get_products(
       CHỈ ĐƯỢC PHÉP TRẢ VỀ khi người dùng có quyền 'cost:read' (Vai trò: Quản lý kinh doanh hoặc Quản trị hệ thống).
     - Đối với Thủ kho, Nhân viên kinh doanh, Kế toán...: Server BÓC TÁCH & GỠ BỎ HOÀN TOÀN các trường này (None).
     """
-    # 1. Phân lập luồng: Role Customer áp dụng Dynamic Pricing Engine (LEFT OUTER JOIN với bảng giá có hiệu lực)
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_customer = (
-        (current_user.role and current_user.role.lower() == "customer")
-        or ("customer" in [r.lower() for r in user_roles] and not any(r.lower() in ["admin", "sales_manager", "sales", "accountant"] for r in user_roles))
-    )
-
-    if is_customer:
-        from app.services.pricing_service import get_products_for_customer
-        return get_products_for_customer(
-            db=db,
-            current_user=current_user,
-            page=page,
-            limit=limit,
-            search=search,
-            category=category,
-        )
-
     from app.models.entities import ProductEntity
 
     can_view_cost = current_user.can_view_cost or (Permission.COST_READ.value in current_user.permissions)
@@ -327,127 +107,34 @@ def get_products(
     db_products = db.query(ProductEntity).all()
     db_prod_map = {p.id: p for p in db_products}
 
-    # Tự động lấy bảng giá mới nhất map theo product_id để fallback nếu sản phẩm chưa có giá
-    pb_price_map = {}
-    try:
-        from app.models.price_book import PriceBookItemEntity, PriceBookEntity
-        latest_pb_items = (
-            db.query(PriceBookItemEntity)
-            .join(PriceBookEntity, PriceBookItemEntity.price_book_id == PriceBookEntity.id)
-            .order_by(PriceBookItemEntity.id.desc())
-            .all()
-        )
-        for pb_item in latest_pb_items:
-            if pb_item.product_id not in pb_price_map:
-                s_val = pb_item.sale_price if pb_item.sale_price is not None else pb_item.price
-                f_val = pb_item.floor_price if pb_item.floor_price is not None else pb_item.min_price
-                pb_price_map[pb_item.product_id] = {
-                    "sell_price": float(s_val or 0.0),
-                    "floor_price": float(f_val or 0.0),
-                }
-    except Exception:
-        pass
-
-    # Tự động tính tổng tồn kho thực tế từ tất cả các kho (WH01, WH02, WH03...)
-    wh_stock_map = {}
-    try:
-        from app.models.entities import WarehouseStockEntity
-        from sqlalchemy import func
-        wh_rows = (
-            db.query(
-                WarehouseStockEntity.product_id,
-                func.sum(WarehouseStockEntity.actual_stock - func.coalesce(WarehouseStockEntity.reserved_stock, 0))
-            )
-            .group_by(WarehouseStockEntity.product_id)
-            .all()
-        )
-        wh_stock_map = {pid: max(0, int(val)) for pid, val in wh_rows if val is not None}
-    except Exception:
-        pass
-
     sanitized_items: list[ProductItem] = []
     total_stock = 0
     total_sell_val = 0.0
     total_cost_val = 0.0
 
-    # Tối ưu hóa hiệu năng O(1) theo lô: Tính trước map số giao dịch cho tất cả sản phẩm
-    tx_counts_map = _get_all_product_transaction_counts(db)
-
     for p in RAW_PRODUCTS:
         db_p = db_prod_map.get(p["id"])
-        base_unit = getattr(db_p, "base_unit", None) if db_p else None
-        if not base_unit:
-            base_unit = p.get("base_unit", "Cái")
-        units_raw = getattr(db_p, "units", None) if db_p else None
-        if not units_raw:
-            units_raw = p.get("units", [])
+        base_unit = db_p.base_unit if (db_p and db_p.base_unit) else p.get("base_unit", "Cái")
+        units_raw = db_p.units if (db_p and db_p.units) else p.get("units", [])
         units_converted = [UnitConversionItem(unit_name=u["unit_name"], conversion_rate=float(u["conversion_rate"])) for u in units_raw]
 
         stock = p["stock"]
-        sell_price = p.get("sell_price", 0.0)
-        floor_price = p.get("floor_price", 0.0)
-        cost_price = p.get("cost_price", 0.0)
-
-        if db_p:
-            if db_p.sell_price is not None and db_p.sell_price > 0:
-                sell_price = float(db_p.sell_price)
-                p["sell_price"] = sell_price
-            if db_p.floor_price is not None and db_p.floor_price > 0:
-                floor_price = float(db_p.floor_price)
-                p["floor_price"] = floor_price
-            if db_p.cost_price is not None and db_p.cost_price > 0:
-                cost_price = float(db_p.cost_price)
-                p["cost_price"] = cost_price
-            if db_p.code:
-                p["code"] = db_p.code
-            if db_p.name:
-                p["name"] = db_p.name
-
-        # Ưu tiên tính tồn kho từ tổng thực tế tất cả các kho
-        if p["id"] in wh_stock_map:
-            stock = wh_stock_map[p["id"]]
-            p["stock"] = stock
-            if db_p and db_p.stock != stock:
-                db_p.stock = stock
-        elif db_p and db_p.stock is not None:
-            stock = int(db_p.stock)
-            p["stock"] = stock
-
-        # Tự động đồng bộ từ bảng giá mới nhất nếu sản phẩm chưa có giá niêm yết hoặc giá sàn
-        pid = p["id"]
-        if pid in pb_price_map:
-            pb_vals = pb_price_map[pid]
-            if (sell_price == 0 or sell_price is None) and pb_vals["sell_price"] > 0:
-                sell_price = pb_vals["sell_price"]
-                p["sell_price"] = sell_price
-                if db_p:
-                    db_p.sell_price = sell_price
-            if (floor_price == 0 or floor_price is None) and pb_vals["floor_price"] > 0:
-                floor_price = pb_vals["floor_price"]
-                p["floor_price"] = floor_price
-                if db_p:
-                    db_p.floor_price = floor_price
+        sell_price = p["sell_price"]
+        cost_price = p["cost_price"]
 
         total_stock += stock
         total_sell_val += sell_price * stock
 
-        db_images = getattr(db_p, "images", None) if db_p else None
-        images = db_images if (db_images and len(db_images) > 0) else (p.get("images") or [])
-        p["images"] = images
-        base_unit = p.get("base_unit") or "Cái"
-        packaging_spec = p.get("packaging_specification")
-        status_val = p.get("status") or "active"
         cat_name = db_p.category if (db_p and db_p.category) else p.get("category", "Chưa phân loại")
         cat_id = db_p.category_id if (db_p and db_p.category_id is not None) else p.get("category_id")
         p["category"] = cat_name
         p["category_id"] = cat_id
-        is_batch_val = bool(db_p.is_batch_managed) if (db_p and getattr(db_p, "is_batch_managed", None) is not None) else bool(p.get("is_batch_managed", False))
 
         if can_view_cost:
             profit_unit = sell_price - cost_price
             margin = round((profit_unit / sell_price) * 100, 2) if sell_price > 0 else 0.0
             total_cost_val += cost_price * stock
-            sanitized_items.append(ProductItem(
+            item = ProductItem(
                 id=p["id"],
                 code=p["code"],
                 name=p["name"],
@@ -455,21 +142,15 @@ def get_products(
                 category_id=cat_id,
                 stock=stock,
                 sell_price=sell_price,
-                floor_price=floor_price,
                 base_unit=base_unit,
                 units=units_converted,
                 cost_price=cost_price,
                 profit_margin=margin,
                 profit_per_unit=profit_unit,
-                images=images,
-                packaging_specification=packaging_spec,
-                status=status_val,
-                is_batch_managed=is_batch_val,
-                transaction_count=tx_counts_map.get(p["id"], 0),
-            ))
+            )
         else:
             # AC 3: Filter/strip bỏ hoàn toàn trường nhạy cảm trước khi gửi JSON về client
-            sanitized_items.append(ProductItem(
+            item = ProductItem(
                 id=p["id"],
                 code=p["code"],
                 name=p["name"],
@@ -477,112 +158,13 @@ def get_products(
                 category_id=cat_id,
                 stock=stock,
                 sell_price=sell_price,
-                floor_price=floor_price,
                 base_unit=base_unit,
                 units=units_converted,
                 cost_price=None,
                 profit_margin=None,
                 profit_per_unit=None,
-                images=images,
-                packaging_specification=packaging_spec,
-                status=status_val,
-                is_batch_managed=is_batch_val,
-                transaction_count=tx_counts_map.get(p["id"], 0),
-            ))
-
-    # Xử lý các sản phẩm có trong Database nhưng chưa có trong in-memory RAW_PRODUCTS
-    raw_ids = {item["id"] for item in RAW_PRODUCTS}
-    for db_p in db_products:
-        if db_p.id not in raw_ids:
-            base_u = getattr(db_p, "base_unit", None) or "Cái"
-            units_raw = getattr(db_p, "units", None) or []
-            units_converted = [UnitConversionItem(unit_name=u["unit_name"], conversion_rate=float(u["conversion_rate"])) for u in units_raw]
-            stock = int(db_p.stock or 0)
-            sell_price = float(db_p.sell_price or 0.0)
-            floor_price = float(db_p.floor_price or 0.0)
-            cost_price = float(db_p.cost_price or 0.0)
-
-            if db_p.id in pb_price_map:
-                pb_vals = pb_price_map[db_p.id]
-                if sell_price == 0 and pb_vals["sell_price"] > 0:
-                    sell_price = pb_vals["sell_price"]
-                    db_p.sell_price = sell_price
-                if floor_price == 0 and pb_vals["floor_price"] > 0:
-                    floor_price = pb_vals["floor_price"]
-                    db_p.floor_price = floor_price
-
-            total_stock += stock
-            total_sell_val += sell_price * stock
-            cat_name = db_p.category or "Chưa phân loại"
-            cat_id = db_p.category_id
-            images_list = getattr(db_p, "images", None) or []
-            packaging_spec = getattr(db_p, "packaging_specification", None) or ""
-            status_val = getattr(db_p, "status", None) or "active"
-            is_batch_val = bool(getattr(db_p, "is_batch_managed", False))
-
-            RAW_PRODUCTS.append({
-                "id": db_p.id,
-                "code": db_p.code,
-                "name": db_p.name,
-                "category": cat_name,
-                "category_id": cat_id,
-                "base_unit": base_u,
-                "units": units_raw,
-                "packaging_specification": packaging_spec,
-                "images": images_list,
-                "status": status_val,
-                "stock": stock,
-                "cost_price": cost_price,
-                "sell_price": sell_price,
-                "floor_price": floor_price,
-                "is_batch_managed": is_batch_val,
-            })
-
-            if can_view_cost:
-                profit_unit = sell_price - cost_price
-                margin = round((profit_unit / sell_price) * 100, 2) if sell_price > 0 else 0.0
-                total_cost_val += cost_price * stock
-                sanitized_items.append(ProductItem(
-                    id=db_p.id,
-                    code=db_p.code,
-                    name=db_p.name,
-                    category=cat_name,
-                    category_id=cat_id,
-                    stock=stock,
-                    sell_price=sell_price,
-                    floor_price=floor_price,
-                    base_unit=base_u,
-                    units=units_converted,
-                    cost_price=cost_price,
-                    profit_margin=margin,
-                    profit_per_unit=profit_unit,
-                    images=images_list,
-                    packaging_specification=packaging_spec,
-                    status=status_val,
-                    is_batch_managed=is_batch_val,
-                    transaction_count=tx_counts_map.get(db_p.id, 0),
-                ))
-            else:
-                sanitized_items.append(ProductItem(
-                    id=db_p.id,
-                    code=db_p.code,
-                    name=db_p.name,
-                    category=cat_name,
-                    category_id=cat_id,
-                    stock=stock,
-                    sell_price=sell_price,
-                    floor_price=floor_price,
-                    base_unit=base_u,
-                    units=units_converted,
-                    cost_price=None,
-                    profit_margin=None,
-                    profit_per_unit=None,
-                    images=images_list,
-                    packaging_specification=packaging_spec,
-                    status=status_val,
-                    is_batch_managed=is_batch_val,
-                    transaction_count=tx_counts_map.get(db_p.id, 0),
-                ))
+            )
+        sanitized_items.append(item)
 
     if can_view_cost:
         gross_profit = total_sell_val - total_cost_val
@@ -605,49 +187,12 @@ def get_products(
             average_margin_percent=None,
         )
 
-    total_count = len(sanitized_items)
-    is_paginated = page is not None or limit is not None
-    current_page = max(1, page) if page is not None else 1
-    page_limit = max(1, limit) if limit is not None else (20 if is_paginated else (total_count if total_count > 0 else 20))
-    total_pages = max(1, (total_count + page_limit - 1) // page_limit) if total_count > 0 else 1
-
-    paginated_items = sanitized_items
-    if is_paginated:
-        start_idx = (current_page - 1) * page_limit
-        paginated_items = sanitized_items[start_idx : start_idx + page_limit]
-
     return ProductListResponse(
-        items=paginated_items,
-        data=paginated_items,
-        total=total_count,
-        page=current_page,
-        limit=page_limit,
-        total_pages=total_pages,
+        items=sanitized_items,
+        total=len(sanitized_items),
         user_role=current_user.role,
         is_cost_price_visible=can_view_cost,
         summary=summary,
-    )
-
-@router.get("/customer", response_model=ProductListResponse)
-def get_products_for_customer_endpoint(
-    page: int = Query(1, ge=1, description="Số trang (1-indexed)"),
-    limit: int = Query(20, ge=1, le=100, description="Số lượng mục mỗi trang"),
-    search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
-    category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
-    db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_READ.value))
-):
-    """
-    API lấy danh sách sản phẩm phân trang cho Cổng Đại lý (Role Customer).
-    """
-    from app.services.pricing_service import get_products_for_customer
-    return get_products_for_customer(
-        db=db,
-        current_user=current_user,
-        page=page,
-        limit=limit,
-        search=search,
-        category=category,
     )
 
 from app.core.database import SessionLocal
@@ -655,6 +200,8 @@ from app.models.entities import CategoryEntity
 
 @router.put("/{product_id}/stock")
 @router.patch("/{product_id}/stock")
+@router.put("/{product_id}")
+@router.patch("/{product_id}")
 def update_product_stock(
     product_id: int,
     payload: dict,
@@ -684,150 +231,6 @@ def update_product_stock(
                 )
             return {"status": "success", "message": "Cập nhật tồn kho thành công", "product": p}
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy sản phẩm")
-
-
-@router.put("/{product_id}", response_model=ProductItem)
-@router.patch("/{product_id}", response_model=ProductItem)
-def update_product_details(
-    product_id: int,
-    payload: ProductUpdateRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
-):
-    """
-    Cập nhật chi tiết sản phẩm từ Product Drawer (4 khối chức năng).
-    """
-    target = None
-    for p in RAW_PRODUCTS:
-        if p["id"] == product_id:
-            target = p
-            break
-
-    if not target:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy sản phẩm")
-
-    can_view_cost = current_user.can_view_cost or (Permission.COST_READ.value in current_user.permissions)
-    old_data = dict(target)
-
-    # Cập nhật các trường
-    if payload.code is not None and payload.code.strip():
-        clean_sku = payload.code.strip().upper()
-        # Kiểm tra trùng SKU nếu đổi mã
-        for other in RAW_PRODUCTS:
-            if other["id"] != product_id and other["code"].upper() == clean_sku:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Mã SKU '{clean_sku}' đã được sản phẩm khác sử dụng."
-                )
-        target["code"] = clean_sku
-
-    if payload.name is not None and payload.name.strip():
-        target["name"] = payload.name.strip()
-
-    if payload.category is not None:
-        target["category"] = payload.category.strip()
-
-    if payload.category_id is not None:
-        target["category_id"] = payload.category_id
-
-    if payload.base_unit is not None:
-        target["base_unit"] = payload.base_unit
-
-    if payload.units is not None:
-        target["units"] = [u.dict() for u in payload.units]
-
-    if payload.packaging_specification is not None:
-        target["packaging_specification"] = payload.packaging_specification
-
-    if payload.sell_price is not None:
-        target["sell_price"] = payload.sell_price
-
-    if payload.floor_price is not None:
-        target["floor_price"] = payload.floor_price
-
-    if payload.cost_price is not None and can_view_cost:
-        target["cost_price"] = payload.cost_price
-
-    if payload.images is not None:
-        processed_images = save_product_images(payload.images, target["code"])
-        target["images"] = processed_images
-
-    if payload.status is not None:
-        target["status"] = payload.status
-
-    # Đồng bộ lưu vào SQLite
-    try:
-        from app.models.entities import ProductEntity
-        db_prod = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
-        if db_prod:
-            db_prod.code = target["code"]
-            db_prod.name = target["name"]
-            db_prod.category = target["category"]
-            if target.get("category_id"):
-                db_prod.category_id = target["category_id"]
-            db_prod.sell_price = target["sell_price"]
-            if payload.floor_price is not None:
-                db_prod.floor_price = target["floor_price"]
-            if can_view_cost and target.get("cost_price") is not None:
-                db_prod.cost_price = target["cost_price"]
-            if payload.base_unit is not None:
-                db_prod.base_unit = target["base_unit"]
-            if payload.units is not None:
-                db_prod.units = target["units"]
-            if payload.images is not None:
-                db_prod.images_json = json.dumps(target["images"], ensure_ascii=False)
-            if payload.status is not None:
-                db_prod.status = target["status"]
-            db.commit()
-    except Exception as db_err:
-        db.rollback()
-        print(f"Warning: update product to DB: {db_err}")
-
-    # Ghi audit log
-    log_audit_event(
-        db=db,
-        user=current_user,
-        action_type="PRODUCT_UPDATE",
-        entity_type="Product",
-        entity_id=target["code"],
-        old_val=old_data,
-        new_val=target,
-        reason=f"Cập nhật thông tin sản phẩm {target['name']}",
-        request=request,
-    )
-
-    cost = target.get("cost_price", 0.0)
-    sell = target.get("sell_price", 0.0)
-    floor = target.get("floor_price", 0.0)
-    profit_unit = sell - cost if can_view_cost else None
-    margin = round((profit_unit / sell) * 100, 2) if (can_view_cost and sell > 0) else None
-
-    return ProductItem(
-        id=target["id"],
-        code=target["code"],
-        name=target["name"],
-        category=target["category"],
-        category_id=target.get("category_id"),
-        base_unit=target.get("base_unit", "Cái"),
-        units=[
-            u if isinstance(u, UnitConversionItem) else UnitConversionItem(
-                unit_name=u["unit_name"],
-                conversion_rate=float(u["conversion_rate"]),
-            )
-            for u in target.get("units", [])
-        ],
-        packaging_specification=target.get("packaging_specification"),
-        images=target.get("images", []),
-        status=target.get("status", "active"),
-        stock=target.get("stock", 0),
-        sell_price=sell,
-        floor_price=floor,
-        cost_price=cost if can_view_cost else None,
-        profit_margin=margin,
-        profit_per_unit=profit_unit,
-        transaction_count=_get_product_transaction_count(target["id"], db)
-    )
 
 from app.core.rbac import Role
 from app.api.deps import require_roles
@@ -888,372 +291,67 @@ def update_product_price(
     """
     Thay đổi giá bán niêm yết hoặc giá vốn nhập kho.
     Ghi vết vào bảng audit_logs với action_type='PRICE_CHANGE'.
-    Đảm bảo commit vào Database và đồng bộ realtime.
     """
-    from app.models.entities import ProductEntity
-
-    db_p = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
-    p = _find_product_in_raw(product_id)
-
-    if not db_p and not p:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy sản phẩm")
-
-    old_val = {}
-    new_val = {}
-
-    current_sell = float(db_p.sell_price if db_p and db_p.sell_price is not None else (p.get("sell_price") if p else 0.0))
-    current_floor = float(db_p.floor_price if db_p and db_p.floor_price is not None else (p.get("floor_price") if p else 0.0))
-    current_cost = float(db_p.cost_price if db_p and db_p.cost_price is not None else (p.get("cost_price") if p else 0.0))
-
-    if data.sell_price is not None and data.sell_price != current_sell:
-        old_val["sell_price"] = current_sell
-        new_val["sell_price"] = float(data.sell_price)
-    if data.floor_price is not None and data.floor_price != current_floor:
-        old_val["floor_price"] = current_floor
-        new_val["floor_price"] = float(data.floor_price)
-    if data.cost_price is not None and data.cost_price != current_cost:
-        old_val["cost_price"] = current_cost
-        new_val["cost_price"] = float(data.cost_price)
-
-    if not new_val:
-        return {
-            "status": "success",
-            "message": "Giá sản phẩm không thay đổi.",
-            "product": p or {
-                "id": db_p.id,
-                "code": db_p.code,
-                "name": db_p.name,
-                "sell_price": db_p.sell_price,
-                "floor_price": getattr(db_p, "floor_price", 0.0) or 0.0,
-                "cost_price": db_p.cost_price,
-            },
-        }
-
-    # 1. Cập nhật hoặc tạo mới trong DB
-    if not db_p and p:
-        db_p = ProductEntity(
-            id=p["id"],
-            code=p["code"],
-            name=p["name"],
-            category=p.get("category", "Thời trang"),
-            category_id=p.get("category_id"),
-            base_unit=p.get("base_unit", "Cái"),
-            stock=p.get("stock", 0),
-            sell_price=new_val.get("sell_price", current_sell),
-            floor_price=new_val.get("floor_price", current_floor),
-            cost_price=new_val.get("cost_price", current_cost),
-            status=p.get("status", "active"),
-        )
-        db.add(db_p)
-    elif db_p:
-        if "sell_price" in new_val:
-            db_p.sell_price = new_val["sell_price"]
-        if "floor_price" in new_val:
-            db_p.floor_price = new_val["floor_price"]
-        if "cost_price" in new_val:
-            db_p.cost_price = new_val["cost_price"]
-
-        # Tự động đồng bộ sang tất cả bảng giá đang ACTIVE chứa sản phẩm này
-        try:
-            from app.models.price_book import PriceBookEntity, PriceBookItemEntity
-            active_items = db.query(PriceBookItemEntity).join(PriceBookEntity).filter(
-                PriceBookItemEntity.product_id == db_p.id,
-                PriceBookEntity.status == "ACTIVE"
-            ).all()
-            for pbi in active_items:
-                if "sell_price" in new_val:
-                    pbi.sale_price = float(new_val["sell_price"])
-                    pbi.price = float(new_val["sell_price"])
-                if "floor_price" in new_val:
-                    pbi.floor_price = float(new_val["floor_price"])
-                    pbi.min_price = float(new_val["floor_price"])
-        except Exception:
-            pass
-
-    db.commit()
-    if db_p:
-        db.refresh(db_p)
-
-    # 2. Đồng bộ in-memory RAW_PRODUCTS
-    if not p and db_p:
-        p = {
-            "id": db_p.id,
-            "code": db_p.code,
-            "name": db_p.name,
-            "category": db_p.category or "Thời trang",
-            "category_id": db_p.category_id,
-            "stock": db_p.stock or 0,
-            "cost_price": db_p.cost_price or 0.0,
-            "sell_price": db_p.sell_price or 0.0,
-            "floor_price": db_p.floor_price or 0.0,
-            "base_unit": db_p.base_unit or "Cái",
-            "units": [],
-        }
-        RAW_PRODUCTS.append(p)
-    elif p and db_p:
-        p["sell_price"] = db_p.sell_price
-        p["floor_price"] = getattr(db_p, "floor_price", 0.0) or 0.0
-        p["cost_price"] = db_p.cost_price
-
-    if p and p.get("cost_price") is not None and p.get("sell_price") and p["sell_price"] > 0:
-        p["profit_per_unit"] = p["sell_price"] - p["cost_price"]
-        p["profit_margin"] = round(((p["sell_price"] - p["cost_price"]) / p["sell_price"]) * 100, 1)
-
-    # 3. Ghi audit log
-    log_audit_event(
-        db=db,
-        user=current_user,
-        action_type="PRICE_CHANGE",
-        entity_type="Product",
-        entity_id=db_p.code if db_p else p["code"],
-        old_val=old_val,
-        new_val=new_val,
-        reason=data.reason or "Điều chỉnh giá sản phẩm",
-        request=request,
-    )
-
-    prod_name = db_p.name if db_p else p["name"]
-    return {
-        "status": "success",
-        "message": f"Đã cập nhật giá cho sản phẩm {prod_name}.",
-        "product": p or {
-            "id": db_p.id,
-            "code": db_p.code,
-            "name": db_p.name,
-            "sell_price": db_p.sell_price,
-            "floor_price": getattr(db_p, "floor_price", 0.0) or 0.0,
-            "cost_price": db_p.cost_price,
-        }
-    }
-
-
-@router.get("/check-sku")
-def check_sku_availability(
-    sku: str,
-    exclude_id: int | None = None,
-    current_user: UserResponse = Depends(get_current_user)
-):
-    """
-    Kiểm tra tính duy nhất của mã SKU realtime toàn hệ thống.
-    """
-    clean_sku = sku.strip().upper()
-    if not clean_sku:
-        return {"available": False, "message": "Mã SKU không được để trống"}
-
     for p in RAW_PRODUCTS:
-        if p["code"].upper() == clean_sku:
-            if exclude_id is not None and p["id"] == exclude_id:
-                continue
-            return {"available": False, "message": f"Mã SKU '{clean_sku}' đã tồn tại trên hệ thống"}
+        if p["id"] == product_id:
+            old_val = {}
+            new_val = {}
+            if data.sell_price is not None and data.sell_price != p["sell_price"]:
+                old_val["sell_price"] = p["sell_price"]
+                p["sell_price"] = data.sell_price
+                new_val["sell_price"] = data.sell_price
+            if data.cost_price is not None and data.cost_price != p["cost_price"]:
+                old_val["cost_price"] = p["cost_price"]
+                p["cost_price"] = data.cost_price
+                new_val["cost_price"] = data.cost_price
 
-    return {"available": True, "message": "Mã SKU hợp lệ và chưa được sử dụng"}
+            if not new_val:
+                return {
+                    "status": "success",
+                    "message": "Giá sản phẩm không thay đổi.",
+                    "product": p,
+                }
 
+            # Đồng bộ thay đổi vào DB nếu tồn tại bản ghi ProductEntity
+            from app.models.entities import ProductEntity
+            try:
+                db_p = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
+                if db_p:
+                    if "sell_price" in new_val:
+                        db_p.sell_price = data.sell_price
+                    if "cost_price" in new_val:
+                        db_p.cost_price = data.cost_price
+                    db.commit()
+            except Exception as e:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                print(f"Warning syncing product price to DB: {e}")
 
-@router.post("", response_model=ProductItem, status_code=status.HTTP_201_CREATED)
-def create_product(
-    payload: ProductCreateRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
-):
-    """
-    Khai báo sản phẩm mới (Product Form 4 khối chức năng).
-    Bao gồm kiểm tra SKU duy nhất, lưu trữ thông tin cơ bản, quy cách & giá.
-    """
-    clean_sku = payload.code.strip().upper()
-    if not clean_sku:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mã SKU không được để trống")
+            # Cập nhật margin và profit_per_unit trong RAW_PRODUCTS
+            if p.get("cost_price") and p.get("sell_price") and p["sell_price"] > 0:
+                p["profit_per_unit"] = p["sell_price"] - p["cost_price"]
+                p["profit_margin"] = round(((p["sell_price"] - p["cost_price"]) / p["sell_price"]) * 100, 1)
 
-    # Kiểm tra trùng SKU
-    for p in RAW_PRODUCTS:
-        if p["code"].upper() == clean_sku:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Mã SKU '{clean_sku}' đã tồn tại trong hệ thống. Vui lòng chọn mã khác."
+            log_audit_event(
+                db=db,
+                user=current_user,
+                action_type="PRICE_CHANGE",
+                entity_type="Product",
+                entity_id=p["code"],
+                old_val=old_val,
+                new_val=new_val,
+                reason=data.reason,
+                request=request,
             )
 
-    can_view_cost = current_user.can_view_cost or (Permission.COST_READ.value in current_user.permissions)
-    cost = payload.cost_price if (can_view_cost and payload.cost_price is not None) else 0.0
-    from app.models.entities import ProductEntity
-    from sqlalchemy import func
-    max_db_id = db.query(func.max(ProductEntity.id)).scalar() or 0
-    max_raw_id = max([p["id"] for p in RAW_PRODUCTS], default=0)
-    new_id = max(max_db_id, max_raw_id) + 1
-    units_list = [u.dict() for u in payload.units] if payload.units else []
-    floor_val = payload.floor_price or 0.0
-    processed_images = save_product_images(payload.images or [], clean_sku)
-    new_product_dict = {
-        "id": new_id,
-        "code": clean_sku,
-        "name": payload.name.strip(),
-        "category": payload.category or "Thời trang",
-        "category_id": payload.category_id,
-        "base_unit": payload.base_unit or "Cái",
-        "units": units_list,
-        "packaging_specification": payload.packaging_specification or "",
-        "images": processed_images,
-        "status": payload.status or "active",
-        "stock": 0,
-        "cost_price": cost,
-        "sell_price": payload.sell_price or 0.0,
-        "floor_price": floor_val,
-    }
-
-    # Lưu vào in-memory RAW_PRODUCTS
-    RAW_PRODUCTS.append(new_product_dict)
-
-    # Đồng bộ lưu vào SQLite ProductEntity
-    try:
-        from app.models.entities import ProductEntity
-        db_prod = ProductEntity(
-            id=new_id,
-            code=clean_sku,
-            name=payload.name.strip(),
-            category=payload.category or "Thời trang",
-            category_id=payload.category_id,
-            base_unit=payload.base_unit or "Cái",
-            units_json=json.dumps(units_list, ensure_ascii=False),
-            images_json=json.dumps(processed_images, ensure_ascii=False),
-            packaging_specification=payload.packaging_specification or "",
-            status=payload.status or "active",
-            stock=0,
-            cost_price=cost,
-            sell_price=payload.sell_price or 0.0,
-            floor_price=floor_val,
-        )
-        db.add(db_prod)
-        db.commit()
-    except Exception as db_err:
-        db.rollback()
-        # Non-fatal nếu trùng ID trên database, vẫn giữ in-memory
-        print(f"Warning: sync product to DB: {db_err}")
-
-    # Ghi audit log
-    log_audit_event(
-        db=db,
-        user=current_user,
-        action_type="PRODUCT_CREATE",
-        entity_type="Product",
-        entity_id=clean_sku,
-        old_val=None,
-        new_val=new_product_dict,
-        reason=f"Khai báo sản phẩm mới: {payload.name.strip()}",
-        request=request,
-    )
-
-    clean_sell_price = payload.sell_price or 0.0
-    profit_unit = clean_sell_price - cost if can_view_cost else None
-    margin = round((profit_unit / clean_sell_price) * 100, 2) if (can_view_cost and clean_sell_price > 0) else None
-
-    return ProductItem(
-        id=new_id,
-        code=clean_sku,
-        name=payload.name.strip(),
-        category=payload.category or "Thời trang",
-        category_id=payload.category_id,
-        base_unit=payload.base_unit or "Cái",
-        units=[UnitConversionItem(**u) for u in units_list],
-        packaging_specification=payload.packaging_specification,
-        images=processed_images,
-        status=payload.status or "active",
-        stock=0,
-        sell_price=clean_sell_price,
-        floor_price=floor_val,
-        cost_price=cost if can_view_cost else None,
-        profit_margin=margin,
-        profit_per_unit=profit_unit,
-        transaction_count=0
-    )
-
-
-@router.delete("/{product_id}", status_code=status.HTTP_200_OK)
-def delete_product(
-    product_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
-):
-    """
-    Xóa sản phẩm (chỉ cho phép nếu sản phẩm chưa phát sinh giao dịch).
-    """
-    transaction_count = _get_product_transaction_count(product_id, db)
-    if transaction_count > 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Sản phẩm đã phát sinh giao dịch, không thể xóa. Vui lòng chuyển sang trạng thái Ngừng kinh doanh."
-        )
-
-    target = None
-    for idx, p in enumerate(RAW_PRODUCTS):
-        if p["id"] == product_id:
-            target = p
-            RAW_PRODUCTS.pop(idx)
-            break
-
-    db_prod = None
-    if db:
-        from app.models.entities import ProductEntity
-        db_prod = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
-
-    if not target and not db_prod:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy sản phẩm")
-
-    prod_code = target["code"] if target else db_prod.code
-    prod_name = target["name"] if target else db_prod.name
-    deleted_val = target if target else {
-        "id": db_prod.id,
-        "code": db_prod.code,
-        "name": db_prod.name,
-        "category": db_prod.category,
-        "stock": db_prod.stock,
-        "cost_price": db_prod.cost_price,
-        "sell_price": db_prod.sell_price,
-    }
-
-    if db_prod:
-        try:
-            from app.models.entities import WarehouseStockEntity
-            db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id == product_id).delete(synchronize_session=False)
-            try:
-                from app.models.warehouse import LocationStockEntity
-                db.query(LocationStockEntity).filter(LocationStockEntity.product_id == product_id).delete(synchronize_session=False)
-            except Exception:
-                pass
-            try:
-                from app.models.price_book import PriceBookItemEntity
-                db.query(PriceBookItemEntity).filter(PriceBookItemEntity.product_id == product_id).delete(synchronize_session=False)
-            except Exception:
-                pass
-            try:
-                from app.models.entities import OrderItemEntity
-                db.query(OrderItemEntity).filter(OrderItemEntity.product_id == product_id).delete(synchronize_session=False)
-            except Exception:
-                pass
-            try:
-                from app.models.goods_receipt import GoodsReceiptItemEntity
-                db.query(GoodsReceiptItemEntity).filter(GoodsReceiptItemEntity.product_id == product_id).delete(synchronize_session=False)
-            except Exception:
-                pass
-            db.delete(db_prod)
-            db.commit()
-        except Exception as db_err:
-            db.rollback()
-            print(f"Warning: delete product from DB: {db_err}")
-
-    log_audit_event(
-        db=db,
-        user=current_user,
-        action_type="PRODUCT_DELETE",
-        entity_type="Product",
-        entity_id=prod_code,
-        old_val=deleted_val,
-        new_val=None,
-        reason=f"Xóa vĩnh viễn sản phẩm {prod_name}",
-        request=request,
-    )
-
-    return {"status": "success", "message": f"Đã xóa sản phẩm {prod_code} thành công"}
-
+            return {
+                "status": "success",
+                "message": f"Đã cập nhật giá cho sản phẩm {p['name']}.",
+                "product": p
+            }
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy sản phẩm")
 
 @router.put("/{product_id}/units")
 @router.patch("/{product_id}/units")
@@ -1423,5 +521,4 @@ def bulk_confirm_products(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
 

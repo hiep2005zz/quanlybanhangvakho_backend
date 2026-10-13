@@ -36,12 +36,7 @@ def test_order_creation_with_floor_price_and_approval():
         d = db.query(DealerEntity).filter(DealerEntity.id == 1).first()
         if d:
             d.customer_group = "Dai_ly_cap_1"
-            d.credit_limit = 10_000_000_000.0
             db.commit()
-        from app.api.v1.endpoints.orders import DEALERS_DB
-        if 1 in DEALERS_DB:
-            DEALERS_DB[1].customer_group = "Dai_ly_cap_1"
-            DEALERS_DB[1].credit_limit = 10_000_000_000.0
 
         # Tạo bảng giá hiệu lực cho nhóm Dai_ly_cap_1
         # SP 1: sale_price = 190.000, floor_price = 165.000
@@ -118,9 +113,9 @@ def test_order_creation_with_floor_price_and_approval():
             f"/api/v1/orders/{order_code}/approve",
             headers={"Authorization": f"Bearer {sm_token}"}
         )
-        assert res_approve.status_code == 200, f"Approve failed: {res_approve.text}"
+        assert res_approve.status_code == 200
         approved_data = res_approve.json()
-        assert approved_data["status"] in ("APPROVED", "CONFIRMED")
+        assert approved_data["status"] == "CONFIRMED"
         assert approved_data.get("requires_approval") is False
         assert approved_data.get("approved_by") == "sales_manager"
 
@@ -155,7 +150,7 @@ def test_order_creation_with_floor_price_and_approval():
             headers={"Authorization": f"Bearer {admin_token}"}
         )
         assert res_admin_approve.status_code == 200
-        assert res_admin_approve.json()["status"] in ("APPROVED", "CONFIRMED")
+        assert res_admin_approve.json()["status"] == "CONFIRMED"
 
         # 8. Test từ chối duyệt đơn (reject)
         res_order_low3 = client.post(

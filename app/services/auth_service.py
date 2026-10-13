@@ -1,5 +1,4 @@
 # backend/app/services/auth_service.py
-from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from fastapi import HTTPException, status
@@ -10,7 +9,6 @@ from app.schemas.auth import TokenResponse, UserResponse
 
 # Global track for failed attempts by username (even if user doesn't exist in DB, to prevent enumeration)
 FAILED_ATTEMPTS: dict[str, dict] = {}
-
 
 def get_current_utc() -> datetime:
     return datetime.now(timezone.utc)
