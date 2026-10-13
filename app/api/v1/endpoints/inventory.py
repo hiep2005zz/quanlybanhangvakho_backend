@@ -151,6 +151,12 @@ def adjust_stock(
     chosen_unit, chosen_rate, base_unit = _resolve_unit_and_rate(product, prod_entity, data.unit_name, data.conversion_rate)
     base_adjustment = int(round(data.adjustment * chosen_rate))
 
+    if abs(data.adjustment) > 10_000_000 or abs(base_adjustment) > 100_000_000:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Số lượng điều chỉnh quá lớn (tối đa 10.000.000 đơn vị). Vui lòng nhập số lượng hợp lý."
+        )
+
     previous_stock = product["stock"] if product else prod_entity.stock
     new_stock = previous_stock + base_adjustment
     if new_stock < 0:
@@ -271,6 +277,12 @@ def create_stock_receipt(
     chosen_unit, chosen_rate, base_unit = _resolve_unit_and_rate(product, prod_entity, data.unit_name, data.conversion_rate)
     base_qty = int(round(data.quantity * chosen_rate))
 
+    if abs(data.quantity) > 10_000_000 or abs(base_qty) > 100_000_000:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Số lượng nhập kho quá lớn (tối đa 10.000.000 đơn vị). Vui lòng nhập số lượng hợp lý."
+        )
+
     previous_stock = product["stock"] if product else prod_entity.stock
     new_stock = previous_stock + base_qty
 
@@ -387,6 +399,12 @@ def create_stock_issue(
 
     chosen_unit, chosen_rate, base_unit = _resolve_unit_and_rate(product, prod_entity, data.unit_name, data.conversion_rate)
     base_qty = int(round(data.quantity * chosen_rate))
+
+    if abs(data.quantity) > 10_000_000 or abs(base_qty) > 100_000_000:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Số lượng xuất kho quá lớn (tối đa 10.000.000 đơn vị). Vui lòng nhập số lượng hợp lý."
+        )
 
     previous_stock = product["stock"] if product else prod_entity.stock
     if previous_stock < base_qty:

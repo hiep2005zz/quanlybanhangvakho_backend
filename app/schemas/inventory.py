@@ -5,14 +5,14 @@ from pydantic import BaseModel, Field
 
 class StockAdjustRequest(BaseModel):
     product_id: int
-    adjustment: int  # Số lượng thay đổi (dương hoặc âm) theo đơn vị đã chọn (hoặc đơn vị cơ sở)
+    adjustment: int = Field(..., ge=-10_000_000, le=10_000_000, description="Số lượng thay đổi (tối đa 10.000.000)")
     reason: str = Field(..., min_length=2, max_length=200)
     unit_name: Optional[str] = None
     conversion_rate: Optional[float] = Field(None, gt=0)
 
 class StockReceiptRequest(BaseModel):
     product_id: int
-    quantity: int = Field(..., gt=0)
+    quantity: int = Field(..., gt=0, le=10_000_000, description="Số lượng nhập kho (tối đa 10.000.000)")
     supplier: str = Field(..., min_length=2, max_length=150)
     note: Optional[str] = None
     unit_name: Optional[str] = None
@@ -20,7 +20,7 @@ class StockReceiptRequest(BaseModel):
 
 class StockIssueRequest(BaseModel):
     product_id: int
-    quantity: int = Field(..., gt=0)
+    quantity: int = Field(..., gt=0, le=10_000_000, description="Số lượng xuất kho (tối đa 10.000.000)")
     destination: str = Field(..., min_length=2, max_length=150)
     note: Optional[str] = None
     unit_name: Optional[str] = None
