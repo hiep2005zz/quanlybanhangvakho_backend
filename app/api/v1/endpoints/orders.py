@@ -1496,9 +1496,16 @@ def create_order(
     )
     best_pct = float(best_disc["discount_percent"])
 
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
+    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
+
     req_discount = data.discount_rate if data.discount_rate is not None and data.discount_percent == 0 else data.discount_percent
 
-    if req_discount == 0:
+    if is_customer:
+        # Đại lý tự đặt đơn: Cố định áp dụng đúng chính sách chiết khấu bậc sản lượng, không được tự ý sửa chiết khấu
+        effective_pct = best_pct
+    elif req_discount == 0:
         effective_pct = best_pct
     else:
         effective_pct = req_discount
@@ -1510,9 +1517,6 @@ def create_order(
                 f"Chiết khấu ({effective_pct}%) vượt mức chính sách {pol_desc} cần quản lý duyệt"
             )
 
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
-    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
     if is_customer:
         requires_approval = True
         approval_reasons.append("Đơn hàng do Đại lý tự đặt từ Cổng Đại lý (Chờ nhân viên phụ trách xác nhận)")
