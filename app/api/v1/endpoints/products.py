@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import Optional, List, Dict, Any, Union
 import json
 import os
@@ -659,7 +660,7 @@ def get_products(
             ]
 
     total_filtered = len(filtered_items)
-    effective_size = page_size or limit
+    effective_size = page_size if page_size is not None else limit
 
     if effective_size and effective_size > 0:
         import math
