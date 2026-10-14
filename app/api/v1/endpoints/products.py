@@ -195,17 +195,22 @@ def _find_product_in_raw(product_id: int):
 _TX_COUNTS_CACHE = None
 _TX_COUNTS_CACHE_TIME = 0.0
 
+def invalidate_tx_counts_cache():
+    global _TX_COUNTS_CACHE, _TX_COUNTS_CACHE_TIME
+    _TX_COUNTS_CACHE = None
+    _TX_COUNTS_CACHE_TIME = 0.0
+
 def _get_all_product_transaction_counts(db: Session) -> dict[int, int]:
     """
     Tối ưu hóa hiệu năng O(1) theo lô (Bulk batching):
     Thay vì chạy 20.000 câu query trong vòng lặp N+1 làm đứng hệ thống khi có 10.000 sản phẩm,
     hàm này gom nhóm tính toán transaction_count cho TẤT CẢ sản phẩm chỉ trong 1 lần duyệt (0.01s),
-    kết hợp in-memory TTL cache 20s.
+    kết hợp in-memory TTL cache 2s.
     """
     import time
     global _TX_COUNTS_CACHE, _TX_COUNTS_CACHE_TIME
     now = time.time()
-    if _TX_COUNTS_CACHE is not None and (now - _TX_COUNTS_CACHE_TIME) < 20:
+    if _TX_COUNTS_CACHE is not None and (now - _TX_COUNTS_CACHE_TIME) < 2:
         return _TX_COUNTS_CACHE
 
     from app.api.v1.endpoints.orders import ORDERS_DB
@@ -301,6 +306,7 @@ def get_products(
     page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
     page_size: Optional[int] = Query(None, ge=1, description="Số lượng mục mỗi trang"),
     limit: Optional[int] = Query(None, ge=1, le=100, description="Alias cho page_size"),
+    skip: Optional[int] = Query(None, ge=0, description="Số lượng mục bỏ qua"),
     search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
     category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
     only_low_stock: Optional[bool] = Query(False, description="Chỉ lấy sản phẩm dưới định mức"),
@@ -328,7 +334,9 @@ def get_products(
             db=db,
             current_user=current_user,
             page=page,
+            page_size=page_size,
             limit=limit,
+            skip=skip,
             search=search,
             category=category,
         )
@@ -661,12 +669,18 @@ def get_products(
 
     total_filtered = len(filtered_items)
     effective_size = page_size if page_size is not None else limit
+    if effective_size is None and (page is not None or skip is not None):
+        effective_size = 10
 
     if effective_size and effective_size > 0:
         import math
         total_pages = max(1, math.ceil(total_filtered / effective_size))
-        cur_page = min(max(1, page or 1), total_pages)
-        start_idx = (cur_page - 1) * effective_size
+        if skip is not None and page is None:
+            cur_page = (skip // effective_size) + 1
+            start_idx = skip
+        else:
+            cur_page = min(max(1, page or 1), total_pages)
+            start_idx = (cur_page - 1) * effective_size
         end_idx = start_idx + effective_size
         paged_items = filtered_items[start_idx:end_idx]
 
@@ -681,6 +695,7 @@ def get_products(
             page_size=effective_size,
             limit=effective_size,
             total_pages=total_pages,
+            has_more=(start_idx + len(paged_items) < total_filtered),
         )
 
     return ProductListResponse(
@@ -694,12 +709,15 @@ def get_products(
         page_size=total_filtered,
         limit=total_filtered,
         total_pages=1,
+        has_more=False,
     )
 
 @router.get("/customer", response_model=ProductListResponse)
 def get_products_for_customer_endpoint(
-    page: int = Query(1, ge=1, description="Số trang (1-indexed)"),
-    limit: int = Query(20, ge=1, le=100, description="Số lượng mục mỗi trang"),
+    page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
+    page_size: Optional[int] = Query(None, ge=1, description="Số lượng mục mỗi trang"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng mục mỗi trang"),
+    skip: Optional[int] = Query(None, ge=0, description="Số bản ghi bỏ qua"),
     search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
     category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
     db: Session = Depends(get_db),
@@ -713,7 +731,9 @@ def get_products_for_customer_endpoint(
         db=db,
         current_user=current_user,
         page=page,
+        page_size=page_size,
         limit=limit,
+        skip=skip,
         search=search,
         category=category,
     )
@@ -1213,6 +1233,7 @@ def create_product(
 
     # Lưu vào in-memory RAW_PRODUCTS
     RAW_PRODUCTS.append(new_product_dict)
+    invalidate_tx_counts_cache()
 
     # Đồng bộ lưu vào SQLite ProductEntity và khởi tạo kho
     try:
@@ -1381,6 +1402,7 @@ def delete_product(
         request=request,
     )
 
+    invalidate_tx_counts_cache()
     return {"status": "success", "message": f"Đã xóa sản phẩm {prod_code} thành công"}
 
 
