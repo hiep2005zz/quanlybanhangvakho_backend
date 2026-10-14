@@ -22,6 +22,42 @@ DEFAULT_WAREHOUSES = {
 }
 
 
+def sync_missing_warehouse_stocks(db: Session) -> bool:
+    """
+    Đảm bảo tất cả sản phẩm đều được đồng bộ đầy đủ bản ghi trong bảng warehouse_stocks cho tất cả các kho.
+    Nếu sản phẩm mới thêm chưa có kho, tự động khởi tạo bản ghi với actual_stock = 0.
+    """
+    if not db:
+        return False
+    try:
+        from app.models.entities import WarehouseStockEntity, ProductEntity
+        existing_pairs = set(db.query(WarehouseStockEntity.product_id, WarehouseStockEntity.warehouse_id).all())
+        prods = db.query(ProductEntity.id, ProductEntity.min_stock).all()
+        created = False
+        for p_id, p_min in prods:
+            for wid, wname in DEFAULT_WAREHOUSES.items():
+                if (p_id, wid) not in existing_pairs:
+                    db.add(WarehouseStockEntity(
+                        warehouse_id=wid,
+                        warehouse_name=wname,
+                        product_id=p_id,
+                        actual_stock=0,
+                        reserved_stock=0,
+                        quantity_on_hand=0,
+                        reserved_quantity=0,
+                        min_stock=p_min or 10,
+                    ))
+                    existing_pairs.add((p_id, wid))
+                    created = True
+        if created:
+            db.commit()
+        return created
+    except Exception as err:
+        db.rollback()
+        print(f"Warning syncing missing warehouse stocks: {err}")
+        return False
+
+
 def resolve_dealer_warehouse(dealer: Any) -> Tuple[str, str]:
     """
     Xác định kho phục vụ riêng cho đại lý.

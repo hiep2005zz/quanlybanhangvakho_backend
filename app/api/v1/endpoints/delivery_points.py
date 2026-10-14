@@ -223,7 +223,13 @@ def list_points(dealer_id: int, db: Session = Depends(get_db), user=Depends(get_
         DealerDeliveryPointEntity.is_active == True,  # noqa: E712
     ).order_by(DealerDeliveryPointEntity.is_default.desc(), DealerDeliveryPointEntity.id)
     pts = list(db.scalars(q).all())
-    if not pts and dealer and getattr(dealer, "address", None):
+
+    # Chỉ tự động khởi tạo điểm giao mặc định nếu đại lý chưa từng có bất kỳ bản ghi điểm giao nào trong lịch sử
+    has_history = db.scalars(
+        select(DealerDeliveryPointEntity.id).where(DealerDeliveryPointEntity.dealer_id == dealer_id)
+    ).first()
+
+    if not pts and not has_history and dealer and getattr(dealer, "address", None):
         clean_phone = (getattr(dealer, "phone", None) or "0987654321").replace(" ", "").replace(".", "").replace("-", "")
         if not re.fullmatch(r"^\d{10}$", clean_phone):
             clean_phone = "0987654321"
@@ -374,11 +380,8 @@ def delete_point(dealer_id: int, point_id: int,
             used = True
 
     was_default = point.is_default
-    if used:
-        point.is_active = False      # đã có đơn dùng -> ẩn đi, không xóa cứng
-        point.is_default = False
-    else:
-        db.delete(point)
+    point.is_active = False      # Luôn vô hiệu hóa is_active = False để lưu vết xóa, tránh tự động sinh lại
+    point.is_default = False
     db.flush()
 
     if was_default:                  # xóa điểm mặc định -> đẩy điểm khác lên thay
