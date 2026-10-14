@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import Optional, List, Dict, Any, Union
 import json
 import os
@@ -298,11 +299,11 @@ def _get_product_transaction_count(product_id: int, db: Session) -> int:
 @router.get("", response_model=ProductListResponse)
 def get_products(
     page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
-    page_size: Optional[int] = Query(None, ge=1, description="Số lượng mục mỗi trang"),
-    limit: Optional[int] = Query(None, ge=1, le=100, description="Alias cho page_size"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng mục mỗi trang"),
+    page_size: Optional[int] = Query(None, ge=1, description="Số lượng mục mỗi trang (alias của limit)"),
     search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
     category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
-    only_low_stock: Optional[bool] = Query(False, description="Chỉ lấy sản phẩm dưới định mức"),
+    only_low_stock: Optional[bool] = Query(False, description="Chỉ lấy sản phẩm sắp hết hàng"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_READ.value))
 ):
@@ -659,14 +660,15 @@ def get_products(
             ]
 
     total_filtered = len(filtered_items)
-    effective_size = page_size or limit
+    effective_limit = page_size if page_size is not None else limit
+    is_paginated = page is not None or effective_limit is not None
 
-    if effective_size and effective_size > 0:
+    if is_paginated and effective_limit and effective_limit > 0:
         import math
-        total_pages = max(1, math.ceil(total_filtered / effective_size))
+        total_pages = max(1, math.ceil(total_filtered / effective_limit))
         cur_page = min(max(1, page or 1), total_pages)
-        start_idx = (cur_page - 1) * effective_size
-        end_idx = start_idx + effective_size
+        start_idx = (cur_page - 1) * effective_limit
+        end_idx = start_idx + effective_limit
         paged_items = filtered_items[start_idx:end_idx]
 
         return ProductListResponse(
@@ -677,8 +679,8 @@ def get_products(
             is_cost_price_visible=can_view_cost,
             summary=summary,
             page=cur_page,
-            page_size=effective_size,
-            limit=effective_size,
+            limit=effective_limit,
+            page_size=effective_limit,
             total_pages=total_pages,
         )
 
@@ -690,8 +692,8 @@ def get_products(
         is_cost_price_visible=can_view_cost,
         summary=summary,
         page=1,
+        limit=total_filtered if total_filtered > 0 else 20,
         page_size=total_filtered,
-        limit=total_filtered,
         total_pages=1,
     )
 

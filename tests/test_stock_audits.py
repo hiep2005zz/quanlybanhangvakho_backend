@@ -76,15 +76,24 @@ def test_rbac_stock_audit_permission_restriction(
     )
     assert res_acc.status_code == 403
 
-    # 3. Thủ kho (warehouse) tạo phiếu -> 403 (Chỉ Quản lý kho mới được làm kiểm kê)
+    # 3. Thủ kho (warehouse) tạo phiếu -> 201 Created (Thủ kho được phép tạo phiếu kiểm kê)
     res_staff = client.post(
         "/api/v1/stock-audits",
         json={"warehouse_id": "WH01", "scope_type": "WAREHOUSE"},
         headers=warehouse_staff_headers,
     )
-    assert res_staff.status_code == 403
+    assert res_staff.status_code == 201
+    staff_audit_id = res_staff.json()["id"]
 
-    # 4. Quản lý kho (warehouse_mgr) tạo phiếu -> 201 Created
+    # 4. Thủ kho (warehouse) KHÔNG ĐƯỢC DUYỆT / XÁC NHẬN -> 403 Forbidden
+    res_staff_confirm = client.post(
+        f"/api/v1/stock-audits/{staff_audit_id}/confirm",
+        json={"items": []},
+        headers=warehouse_staff_headers,
+    )
+    assert res_staff_confirm.status_code == 403
+
+    # 5. Quản lý kho (warehouse_mgr) tạo phiếu -> 201 Created
     res_mgr = client.post(
         "/api/v1/stock-audits",
         json={"warehouse_id": "WH01", "scope_type": "WAREHOUSE"},
