@@ -309,7 +309,7 @@ def get_products(
     skip: Optional[int] = Query(None, ge=0, description="Số lượng mục bỏ qua"),
     search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
     category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
-    only_low_stock: Optional[bool] = Query(False, description="Chỉ lấy sản phẩm dưới định mức"),
+    only_low_stock: Optional[bool] = Query(False, description="Chỉ lấy sản phẩm sắp hết hàng"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_READ.value))
 ):
@@ -668,20 +668,21 @@ def get_products(
             ]
 
     total_filtered = len(filtered_items)
-    effective_size = page_size if page_size is not None else limit
-    if effective_size is None and (page is not None or skip is not None):
-        effective_size = 10
+    effective_limit = page_size if page_size is not None else limit
+    is_paginated = page is not None or skip is not None or effective_limit is not None
 
-    if effective_size and effective_size > 0:
+    if is_paginated:
+        if effective_limit is None:
+            effective_limit = 10
         import math
-        total_pages = max(1, math.ceil(total_filtered / effective_size))
+        total_pages = max(1, math.ceil(total_filtered / effective_limit))
         if skip is not None and page is None:
-            cur_page = (skip // effective_size) + 1
+            cur_page = (skip // effective_limit) + 1
             start_idx = skip
         else:
             cur_page = min(max(1, page or 1), total_pages)
-            start_idx = (cur_page - 1) * effective_size
-        end_idx = start_idx + effective_size
+            start_idx = (cur_page - 1) * effective_limit
+        end_idx = start_idx + effective_limit
         paged_items = filtered_items[start_idx:end_idx]
 
         return ProductListResponse(
@@ -692,8 +693,8 @@ def get_products(
             is_cost_price_visible=can_view_cost,
             summary=summary,
             page=cur_page,
-            page_size=effective_size,
-            limit=effective_size,
+            limit=effective_limit,
+            page_size=effective_limit,
             total_pages=total_pages,
             has_more=(start_idx + len(paged_items) < total_filtered),
         )
@@ -706,8 +707,8 @@ def get_products(
         is_cost_price_visible=can_view_cost,
         summary=summary,
         page=1,
+        limit=total_filtered if total_filtered > 0 else 20,
         page_size=total_filtered,
-        limit=total_filtered,
         total_pages=1,
         has_more=False,
     )
