@@ -188,7 +188,9 @@ def get_products_for_customer(
     db: Session,
     current_user: UserResponse,
     page: Optional[int] = None,
+    page_size: Optional[int] = None,
     limit: Optional[int] = None,
+    skip: Optional[int] = None,
     search: Optional[str] = None,
     category: Optional[str] = None,
 ) -> ProductListResponse:
@@ -305,14 +307,22 @@ def get_products_for_customer(
     # Sắp xếp theo ID
     query = query.order_by(ProductEntity.id.asc())
 
-    # Phân trang Server-Side (Bắt buộc dùng SQLAlchemy offset & limit - Mặc định 20 sp/trang)
-    # Tuyệt đối không bao giờ query toàn bộ 10.000 sản phẩm về bộ nhớ cùng lúc
-    current_page = max(1, page) if (page is not None and page > 0) else 1
-    page_limit = min(max(1, limit), 100) if (limit is not None and limit > 0) else 20
+    # Phân trang Server-Side (Bắt buộc dùng SQLAlchemy offset & limit)
+    effective_limit = page_size if page_size is not None else limit
+    if effective_limit is None and (page is not None or skip is not None):
+        effective_limit = 10
+    page_limit = min(max(1, effective_limit), 100) if (effective_limit is not None and effective_limit > 0) else 20
     total_pages = max(1, math.ceil(total / page_limit)) if total > 0 else 1
 
+    if skip is not None and page is None:
+        offset_val = max(0, skip)
+        current_page = (offset_val // page_limit) + 1
+    else:
+        current_page = max(1, page) if (page is not None and page > 0) else 1
+        offset_val = (current_page - 1) * page_limit
+
     # Cắt dữ liệu trực tiếp trong CSDL bằng offset/limit
-    query = query.offset((current_page - 1) * page_limit).limit(page_limit)
+    query = query.offset(offset_val).limit(page_limit)
     rows = query.all()
 
     # 3. Chuẩn hóa danh sách sản phẩm trả về tầng Schema/DTO (Bảo toàn tuyệt đối dữ liệu CSDL)
@@ -390,13 +400,16 @@ def get_products_for_customer(
     )
 
     applied_name = active_pb.name if active_pb else None
+    has_more = (offset_val + len(rows)) < total
     return ProductListResponse(
         items=items,
         data=items,
         total=total,
         page=current_page,
+        page_size=page_limit,
         limit=page_limit,
         total_pages=total_pages,
+        has_more=has_more,
         user_role=current_user.role,
         is_cost_price_visible=False,
         summary=summary,

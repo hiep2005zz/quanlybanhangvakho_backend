@@ -34,10 +34,11 @@ def sync_missing_warehouse_stocks(db: Session) -> bool:
         existing_pairs = set(db.query(WarehouseStockEntity.product_id, WarehouseStockEntity.warehouse_id).all())
         prods = db.query(ProductEntity.id, ProductEntity.min_stock).all()
         created = False
+        new_items = []
         for p_id, p_min in prods:
             for wid, wname in DEFAULT_WAREHOUSES.items():
                 if (p_id, wid) not in existing_pairs:
-                    db.add(WarehouseStockEntity(
+                    new_items.append(WarehouseStockEntity(
                         warehouse_id=wid,
                         warehouse_name=wname,
                         product_id=p_id,
@@ -49,7 +50,8 @@ def sync_missing_warehouse_stocks(db: Session) -> bool:
                     ))
                     existing_pairs.add((p_id, wid))
                     created = True
-        if created:
+        if created and new_items:
+            db.bulk_save_objects(new_items)
             db.commit()
         return created
     except Exception as err:
