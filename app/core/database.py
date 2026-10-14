@@ -11,8 +11,10 @@ is_mssql = "mssql" in settings.DATABASE_URL
 
 engine_kwargs = {
     "echo": False,
-    "connect_args": {"check_same_thread": False} if is_sqlite else {},
+    "connect_args": {"check_same_thread": False} if is_sqlite else ({"timeout": 5} if is_mssql else {}),
     "poolclass": NullPool if is_sqlite else None,
+    "pool_pre_ping": True,
+    "pool_recycle": 300,
 }
 if is_mssql:
     engine_kwargs["fast_executemany"] = True

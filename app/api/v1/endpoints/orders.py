@@ -487,7 +487,6 @@ def get_order_dealer_credit_info(
 
 
 
-
 class PurchaseHistoryItem(BaseModel):
     product_id: int
     product_code: str
@@ -730,6 +729,7 @@ def get_dealer_purchase_history(
         last_order_items=last_order_items,
     )
 
+
 def _format_order_response(
     order: OrderEntity,
     db: Session,
@@ -849,7 +849,12 @@ def _format_order_response(
     if order.status in ("PENDING_APPROVAL", "PENDING"):
         req_appr = True
         if not appr_reason:
-            if disc_rate > 0:
+            c_user = USERS_DB.get((order.created_by or "").lower())
+            c_roles = [str(r).lower() for r in (c_user.get_roles() if c_user else []) if r]
+            is_c_cust = any(r in ["customer", "agent"] for r in c_roles) or (order.created_by or "").lower() not in ["admin", "sales_manager", "sales", "tran_ban_hang"]
+            if is_c_cust:
+                appr_reason = "Đơn hàng do Đại lý tự đặt từ Cổng Đại lý (Chờ nhân viên phụ trách xác nhận)"
+            elif disc_rate > 0:
                 appr_reason = f"Chiết khấu ({disc_rate}%) vượt hạn mức chính sách cần duyệt"
             else:
                 appr_reason = "Bán dưới giá sàn cần quản lý duyệt"
@@ -906,14 +911,24 @@ def _format_order_response(
     created_at_str = order.created_at.isoformat() if hasattr(order.created_at, "isoformat") else str(order.created_at or "")
     desired_del_date_str = desired_delivery_date.isoformat() if hasattr(desired_delivery_date, "isoformat") else (str(desired_delivery_date) if desired_delivery_date else None)
 
+    cur_assigned_sale_id = order.assigned_sale_id
+    cur_assigned_sale_name = order.assigned_sale_name
+    if not cur_assigned_sale_id and d_obj:
+        cur_assigned_sale_id = getattr(d_obj, "assigned_sale_id", None)
+        cur_assigned_sale_name = getattr(d_obj, "assigned_sale_name", None)
+    if not cur_assigned_sale_name and cur_assigned_sale_id:
+        u = USERS_DB.get(str(cur_assigned_sale_id)) or next((usr for usr in USERS_DB.values() if usr.id == cur_assigned_sale_id), None)
+        if u:
+            cur_assigned_sale_name = u.full_name or u.username
+
     return OrderResponse(
         id=order.id,
         order_code=order.order_code,
         dealer_id=order.dealer_id,
         dealer_name=order.dealer_name,
         created_by=order.created_by,
-        assigned_sale_id=order.assigned_sale_id,
-        assigned_sale_name=order.assigned_sale_name,
+        assigned_sale_id=cur_assigned_sale_id,
+        assigned_sale_name=cur_assigned_sale_name,
         total_amount=order.total_amount,
         subtotal_amount=sub_amt,
         discount_percent=disc_rate,
@@ -1505,9 +1520,16 @@ def create_order(
     )
     best_pct = float(best_disc["discount_percent"])
 
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
+    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
+
     req_discount = data.discount_rate if data.discount_rate is not None and data.discount_percent == 0 else data.discount_percent
 
-    if req_discount == 0:
+    if is_customer:
+        # Đại lý tự đặt đơn: Cố định áp dụng đúng chính sách chiết khấu bậc sản lượng, không được tự ý sửa chiết khấu
+        effective_pct = best_pct
+    elif req_discount == 0:
         effective_pct = best_pct
     else:
         effective_pct = req_discount
@@ -1519,9 +1541,6 @@ def create_order(
                 f"Chiết khấu ({effective_pct}%) vượt mức chính sách {pol_desc} cần quản lý duyệt"
             )
 
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
-    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
     if is_customer:
         requires_approval = True
         approval_reasons.append("Đơn hàng do Đại lý tự đặt từ Cổng Đại lý (Chờ nhân viên phụ trách xác nhận)")
@@ -2867,6 +2886,12 @@ def approve_order(
         )
 
     assigned_id = target.get("assigned_sale_id") if target else (db_order.assigned_sale_id if db_order else None)
+    dealer_id = target.get("dealer_id") if target else (db_order.dealer_id if db_order else None)
+    if not assigned_id and dealer_id:
+        d_ent = DEALERS_DB.get(dealer_id) or (db.get(DealerEntity, dealer_id) if db else None)
+        if d_ent:
+            assigned_id = getattr(d_ent, "assigned_sale_id", None)
+
     created_by = target.get("created_by") if target else (db_order.created_by if db_order else "")
     approval_reason = (target.get("approval_reason") if target else (db_order.approval_reason if db_order else "")) or ""
     is_floor_price_order = "giá sàn" in approval_reason.lower()
@@ -2874,9 +2899,10 @@ def approve_order(
 
     if is_sales and not is_admin_or_sm:
         # 1. Tuyệt đối không cho sales duyệt đơn do Admin hoặc Quản lý cấp trên tạo
-        creator_user = USERS_DB.get(created_by.lower()) if created_by else None
-        creator_roles = creator_user.get_roles() if creator_user else []
-        is_creator_admin_or_sm = any(r.lower() in ["admin", "sales_manager"] for r in creator_roles) or created_by.lower() in ["admin", "sales_manager"]
+        created_by_str = (created_by or "").lower()
+        creator_user = USERS_DB.get(created_by_str) if created_by_str else None
+        creator_roles = [str(r).lower() for r in (creator_user.get_roles() if creator_user else []) if r]
+        is_creator_admin_or_sm = any(r in ["admin", "sales_manager"] for r in creator_roles) or created_by_str in ["admin", "sales_manager"]
         if is_creator_admin_or_sm:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2884,21 +2910,30 @@ def approve_order(
             )
 
         # 2. Nhân viên bán hàng CHỈ ĐƯỢC DUYỆT đại lý do mình phụ trách
-        if not assigned_id or assigned_id != current_user.id:
+        is_dealer_assigned_to_user = (assigned_id is not None and assigned_id == current_user.id)
+        if not is_dealer_assigned_to_user and dealer_id:
+            d_ent = DEALERS_DB.get(dealer_id) or (db.get(DealerEntity, dealer_id) if db else None)
+            if d_ent and getattr(d_ent, "assigned_sale_id", None) == current_user.id:
+                is_dealer_assigned_to_user = True
+
+        if not is_dealer_assigned_to_user:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Bạn chỉ có quyền duyệt đơn hàng của đại lý do mình phụ trách."
             )
 
+        # Kiểm tra xem đơn có phải do đại lý / khách hàng tự đặt không
+        is_created_by_customer = any(r in ["customer", "agent"] for r in creator_roles) or (created_by_str not in ["admin", "sales_manager", "sales", "tran_ban_hang"] and not is_creator_admin_or_sm)
+
         # 3. Nếu là đơn do sales tự tạo cần duyệt (giá sàn, chiết khấu, ...) -> Không được tự duyệt
-        if (is_floor_price_order or is_discount_order or "chờ duyệt" in approval_reason.lower()) and (created_by.lower() == current_user.username.lower() or created_by.lower() in ["sales", "tran_ban_hang"]):
+        if not is_created_by_customer and (is_floor_price_order or is_discount_order or "chờ duyệt" in approval_reason.lower()) and (created_by_str == current_user.username.lower() or created_by_str in ["sales", "tran_ban_hang"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Nhân viên kinh doanh không được phép tự duyệt đơn hàng bán dưới giá sàn của chính mình."
             )
 
-        # 4. Nếu đơn vi phạm giá sàn hoặc chiết khấu vượt mức -> bắt buộc quản lý duyệt
-        if is_floor_price_order or is_discount_order:
+        # 4. Nếu đơn do sales tạo mà vi phạm giá sàn hoặc chiết khấu vượt mức -> bắt buộc quản lý duyệt
+        if not is_created_by_customer and (is_floor_price_order or is_discount_order):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Nhân viên kinh doanh không được phép duyệt đơn hàng bán dưới giá sàn hoặc chiết khấu cao. Chức năng này yêu cầu Quản lý kinh doanh duyệt."
@@ -2990,6 +3025,7 @@ class ApprovalHistoryItem(BaseModel):
     created_at: str
 
 
+
 @router.post("/{order_code}/reject", response_model=OrderResponse)
 def reject_order(
     order_code: str,
@@ -3063,20 +3099,33 @@ def reject_order(
         }
         ORDERS_DB[db_order.id] = target
 
-    assigned_id = target.get("assigned_sale_id")
+    assigned_id = target.get("assigned_sale_id") if target else (db_order.assigned_sale_id if db_order else None)
+    dealer_id = target.get("dealer_id") if target else (db_order.dealer_id if db_order else None)
+    if not assigned_id and dealer_id:
+        d_ent = DEALERS_DB.get(dealer_id) or (db.get(DealerEntity, dealer_id) if db else None)
+        if d_ent:
+            assigned_id = getattr(d_ent, "assigned_sale_id", None)
+
     created_by = target.get("created_by") or ""
 
     if is_sales and not is_admin_or_sm:
-        creator_user = USERS_DB.get(created_by.lower()) if created_by else None
-        creator_roles = creator_user.get_roles() if creator_user else []
-        is_creator_admin_or_sm = any(r.lower() in ["admin", "sales_manager"] for r in creator_roles) or created_by.lower() in ["admin", "sales_manager"]
+        created_by_str = (created_by or "").lower()
+        creator_user = USERS_DB.get(created_by_str) if created_by_str else None
+        creator_roles = [str(r).lower() for r in (creator_user.get_roles() if creator_user else []) if r]
+        is_creator_admin_or_sm = any(r in ["admin", "sales_manager"] for r in creator_roles) or created_by_str in ["admin", "sales_manager"]
         if is_creator_admin_or_sm:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Nhân viên kinh doanh không được phép từ chối đơn hàng do Quản trị viên (Admin) hoặc Quản lý kinh doanh tạo."
             )
 
-        if not assigned_id or assigned_id != current_user.id:
+        is_dealer_assigned_to_user = (assigned_id is not None and assigned_id == current_user.id)
+        if not is_dealer_assigned_to_user and dealer_id:
+            d_ent = DEALERS_DB.get(dealer_id) or (db.get(DealerEntity, dealer_id) if db else None)
+            if d_ent and getattr(d_ent, "assigned_sale_id", None) == current_user.id:
+                is_dealer_assigned_to_user = True
+
+        if not is_dealer_assigned_to_user:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Bạn chỉ có quyền từ chối đơn hàng của đại lý do mình phụ trách."
@@ -3329,7 +3378,6 @@ def get_order_approval_history(
             )
         )
     return items
-
 
 ORDER_STATUS_RANKS = {
     "DRAFT": 1,
