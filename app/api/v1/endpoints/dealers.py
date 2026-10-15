@@ -1584,3 +1584,59 @@ def get_dealer_purchase_history_alias(
 ):
     from app.api.v1.endpoints.orders import get_dealer_purchase_history
     return get_dealer_purchase_history(dealer_id=dealer_id, db=db, current_user=current_user)
+
+
+@router.get("/debt-ledger")
+def get_dealer_debt_ledger_endpoint(
+    region: Optional[str] = Query(None, description="Lọc theo khu vực"),
+    assigned_sale_id: Optional[int] = Query(None, description="Lọc theo nhân viên phụ trách"),
+    overdue_only: bool = Query(False, description="Lọc riêng các đại lý có nợ quá hạn"),
+    search: Optional[str] = Query(None, description="Tìm kiếm theo mã, tên, SĐT đại lý"),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "accountant"])),
+):
+    """
+    SCRUM-91: Báo cáo Sổ công nợ theo đại lý với phân tích tuổi nợ (0-30, 31-60, 61-90, >90 ngày).
+    Chỉ cho phép Kế toán (accountant), Quản lý kinh doanh (sales_manager) và Admin truy cập.
+    """
+    from app.services.debt_ledger_service import compute_debt_ledger_data
+    return compute_debt_ledger_data(
+        db=db,
+        region=region,
+        assigned_sale_id=assigned_sale_id,
+        overdue_only=overdue_only,
+        search=search,
+    )
+
+
+@router.get("/debt-ledger/export")
+def export_dealer_debt_ledger_endpoint(
+    region: Optional[str] = Query(None, description="Lọc theo khu vực"),
+    assigned_sale_id: Optional[int] = Query(None, description="Lọc theo nhân viên phụ trách"),
+    overdue_only: bool = Query(False, description="Lọc riêng các đại lý có nợ quá hạn"),
+    search: Optional[str] = Query(None, description="Tìm kiếm theo mã, tên, SĐT đại lý"),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "accountant"])),
+):
+    """
+    SCRUM-91: Xuất file Excel báo cáo Sổ công nợ và Phân tích tuổi nợ theo đúng bộ lọc.
+    """
+    from fastapi.responses import Response
+    from app.services.debt_ledger_service import compute_debt_ledger_data, export_debt_ledger_excel
+
+    data = compute_debt_ledger_data(
+        db=db,
+        region=region,
+        assigned_sale_id=assigned_sale_id,
+        overdue_only=overdue_only,
+        search=search,
+    )
+    excel_bytes = export_debt_ledger_excel(data)
+
+    filename = f"So_Cong_No_Va_Tuoi_No_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+

@@ -444,8 +444,44 @@ def create_stock_issue(
     INVENTORY_TRANSACTIONS.insert(0, tx)
 
     if db:
+        # SCRUM-81: Xử lý trừ tồn lô và kiểm tra lý do đổi lô nếu sản phẩm quản lý theo lô
+        from app.models.goods_receipt import WarehouseEntity
+        from app.services.batch_suggestion_service import (
+            resolve_warehouse_id_int,
+            validate_batch_change_reason,
+            execute_batch_deduction,
+            check_warehouse_user_permission,
+        )
+
+        target_wh_id_int = resolve_warehouse_id_int(db, data.warehouse_id or "WH01")
+        wh_entity = db.query(WarehouseEntity).filter(WarehouseEntity.id == target_wh_id_int).first() if target_wh_id_int else None
+        check_warehouse_user_permission(current_user, wh_entity)
+
+        is_batch_managed = bool(prod_entity.is_batch_managed) if prod_entity else False
+        if is_batch_managed or data.selected_batch_id:
+            # Tiêu chí 2: Validate lý do đổi lô nếu chọn lô khác với lô gợi ý
+            clean_reason = validate_batch_change_reason(
+                selected_batch_id=data.selected_batch_id,
+                suggested_batch_id=data.suggested_batch_id,
+                batch_change_reason=data.batch_change_reason,
+            )
+            # Tiêu chí 3: Mở lock và trừ đúng tồn lô đã chọn trong DB transaction
+            execute_batch_deduction(
+                db=db,
+                product=prod_entity,
+                warehouse_id=target_wh_id_int or 1,
+                base_qty=base_qty,
+                selected_batch_id=data.selected_batch_id,
+                suggested_batch_id=data.suggested_batch_id,
+                batch_change_reason=clean_reason,
+                reference_code=f"XK-{int(time.time())}",
+                performed_by=current_user.username,
+                note=reason_str,
+            )
+
+        target_wh_code = wh_entity.code if wh_entity else (str(data.warehouse_id) if data.warehouse_id else "WH01")
         ws = db.query(WarehouseStockEntity).filter(
-            WarehouseStockEntity.warehouse_id == "WH01",
+            WarehouseStockEntity.warehouse_id == target_wh_code,
             WarehouseStockEntity.product_id == data.product_id
         ).first()
         if ws:
@@ -1744,5 +1780,41 @@ def cancel_stock_transfer(
     )
 
     return _format_stock_transfer_response(transfer)
+
+
+@router.get("/batches/suggest")
+def suggest_batches_for_product(
+    product_id: int = Query(..., description="ID sản phẩm (SKU)"),
+    warehouse_id: Optional[str] = Query("WH01", description="Mã kho hoặc ID kho"),
+    quantity: float = Query(1.0, description="Số lượng cần xuất"),
+    conversion_rate: float = Query(1.0, description="Hệ số quy đổi sang đơn vị cơ sở"),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_permission(Permission.INVENTORY_READ.value)),
+):
+    """
+    SCRUM-81: API truy vấn trực tiếp từ CSDL gợi ý lô theo FEFO (hạn dùng gần nhất xếp trước).
+    Trả về:
+    - suggested_batch: Lô đầu tiên có HSD gần nhất còn đủ số lượng.
+    - available_batches: Toàn bộ danh sách lô còn hạn và còn tồn khả dụng của SKU tại kho.
+    """
+    from app.services.batch_suggestion_service import resolve_warehouse_id_int, get_fefo_batch_suggestions
+    wh_id_int = resolve_warehouse_id_int(db, warehouse_id) or 1
+    base_qty = float(quantity) * float(conversion_rate or 1.0)
+
+    suggested, avail_list = get_fefo_batch_suggestions(
+        db=db,
+        product_id=product_id,
+        warehouse_id=wh_id_int,
+        required_base_qty=base_qty,
+    )
+
+    return {
+        "product_id": product_id,
+        "warehouse_id": wh_id_int,
+        "required_base_qty": base_qty,
+        "suggested_batch": suggested,
+        "available_batches": avail_list,
+    }
+
 
 

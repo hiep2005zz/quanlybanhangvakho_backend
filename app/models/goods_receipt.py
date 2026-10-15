@@ -11,6 +11,7 @@ from sqlalchemy import (
     Unicode,
     UnicodeText,
     ForeignKey,
+    Index,
 )
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -98,13 +99,23 @@ class ProductBatchEntity(Base):
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False, index=True)
     batch_number = Column(String(100), nullable=False, index=True)
+    manufacturing_date = Column(DateTime, nullable=True)
     expiry_date = Column(DateTime, nullable=True)
-    quantity = Column(Float, default=0.0, nullable=False)  # Tồn kho theo lô
+    quantity = Column(Float, default=0.0, nullable=False)  # Tồn kho thực tế theo lô (theo đơn vị cơ sở)
+    reserved_quantity = Column(Float, default=0.0, nullable=False)  # Đang giữ chỗ / chờ xuất
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 
+    __table_args__ = (
+        Index("ix_product_batches_sku_wh_expiry", "product_id", "warehouse_id", "expiry_date"),
+    )
+
     product = relationship("ProductEntity", foreign_keys=[product_id])
     warehouse = relationship("WarehouseEntity", foreign_keys=[warehouse_id])
+
+    @property
+    def available_quantity(self) -> float:
+        return max(0.0, float(self.quantity or 0.0) - float(self.reserved_quantity or 0.0))
 
 
 class InventoryLedgerEntity(Base):

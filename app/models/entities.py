@@ -281,10 +281,16 @@ class OrderItemEntity(Base):
     unit_name = Column(Unicode(50), nullable=True)
     conversion_rate = Column(Float, default=1.0)
     is_reserved = Column(Boolean, default=False, nullable=False)
+    # SCRUM-81: Gợi ý và chọn lô xuất kho (FEFO)
+    suggested_batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True, index=True)
+    selected_batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True, index=True)
+    batch_change_reason = Column(Unicode(500), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
     order_rel = relationship("OrderEntity", backref="items_rel")
     product_rel = relationship("ProductEntity", backref="order_items")
+    suggested_batch_rel = relationship("ProductBatchEntity", foreign_keys=[suggested_batch_id])
+    selected_batch_rel = relationship("ProductBatchEntity", foreign_keys=[selected_batch_id])
 
 
 # Alias for OrderEntity

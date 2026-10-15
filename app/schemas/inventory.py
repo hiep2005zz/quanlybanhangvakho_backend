@@ -1,6 +1,6 @@
 # backend/app/schemas/inventory.py
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Union
 from pydantic import BaseModel, Field
 
 class StockAdjustRequest(BaseModel):
@@ -25,6 +25,11 @@ class StockIssueRequest(BaseModel):
     note: Optional[str] = None
     unit_name: Optional[str] = None
     conversion_rate: Optional[float] = Field(None, gt=0)
+    # SCRUM-81: Quản lý lô xuất kho
+    warehouse_id: Optional[Union[int, str]] = None
+    selected_batch_id: Optional[int] = None
+    suggested_batch_id: Optional[int] = None
+    batch_change_reason: Optional[str] = None
 
 class StockUpdateRequest(BaseModel):
     new_stock: int = Field(..., ge=0)
