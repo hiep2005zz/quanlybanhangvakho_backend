@@ -1,9 +1,11 @@
+from __future__ import annotations
 from typing import Optional, List, Dict, Any, Union
 import json
 import os
 import base64
 import uuid
 import re
+from typing import Optional, List, Dict, Any, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_permission
@@ -191,12 +193,27 @@ def _find_product_in_raw(product_id: int):
             return p
     return None
 
+_TX_COUNTS_CACHE = None
+_TX_COUNTS_CACHE_TIME = 0.0
+
+def invalidate_tx_counts_cache():
+    global _TX_COUNTS_CACHE, _TX_COUNTS_CACHE_TIME
+    _TX_COUNTS_CACHE = None
+    _TX_COUNTS_CACHE_TIME = 0.0
+
 def _get_all_product_transaction_counts(db: Session) -> dict[int, int]:
     """
     Tối ưu hóa hiệu năng O(1) theo lô (Bulk batching):
     Thay vì chạy 20.000 câu query trong vòng lặp N+1 làm đứng hệ thống khi có 10.000 sản phẩm,
-    hàm này gom nhóm tính toán transaction_count cho TẤT CẢ sản phẩm chỉ trong 1 lần duyệt (0.01s).
+    hàm này gom nhóm tính toán transaction_count cho TẤT CẢ sản phẩm chỉ trong 1 lần duyệt (0.01s),
+    kết hợp in-memory TTL cache 2s.
     """
+    import time
+    global _TX_COUNTS_CACHE, _TX_COUNTS_CACHE_TIME
+    now = time.time()
+    if _TX_COUNTS_CACHE is not None and (now - _TX_COUNTS_CACHE_TIME) < 2:
+        return _TX_COUNTS_CACHE
+
     from app.api.v1.endpoints.orders import ORDERS_DB
     from app.api.v1.endpoints.inventory import INVENTORY_TRANSACTIONS
     from app.models.entities import OrderEntity, InventoryTransactionEntity
@@ -277,6 +294,8 @@ def _get_all_product_transaction_counts(db: Session) -> dict[int, int]:
         inv_cnt = max(mem_tx_by_pid.get(pid, 0), db_tx_by_pid.get(pid, 0))
         res[pid] = tx_counts.get(pid, 0) + inv_cnt
 
+    _TX_COUNTS_CACHE = res
+    _TX_COUNTS_CACHE_TIME = now
     return res
 
 def _get_product_transaction_count(product_id: int, db: Session) -> int:
@@ -288,9 +307,10 @@ def get_products(
     page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
     page_size: Optional[int] = Query(None, ge=1, description="Số lượng mục mỗi trang"),
     limit: Optional[int] = Query(None, ge=1, le=100, description="Alias cho page_size"),
+    skip: Optional[int] = Query(None, ge=0, description="Số lượng mục bỏ qua"),
     search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
     category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
-    only_low_stock: Optional[bool] = Query(False, description="Chỉ lấy sản phẩm dưới định mức"),
+    only_low_stock: Optional[bool] = Query(False, description="Chỉ lấy sản phẩm sắp hết hàng"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_READ.value))
 ):
@@ -315,7 +335,9 @@ def get_products(
             db=db,
             current_user=current_user,
             page=page,
+            page_size=page_size,
             limit=limit,
+            skip=skip,
             search=search,
             category=category,
         )
@@ -327,6 +349,9 @@ def get_products(
     # Đồng bộ từ DB nếu có
     db_products = db.query(ProductEntity).all()
     db_prod_map = {p.id: p for p in db_products}
+    if db_products:
+        # Tự động loại bỏ các sản phẩm đã xóa khỏi CSDL ra khỏi in-memory RAW_PRODUCTS
+        RAW_PRODUCTS[:] = [p for p in RAW_PRODUCTS if p.get("id") in db_prod_map]
 
     # Tự động lấy bảng giá mới nhất map theo product_id để fallback nếu sản phẩm chưa có giá
     pb_price_map = {}
@@ -349,9 +374,11 @@ def get_products(
     except Exception:
         pass
 
-    # Tự động tính tổng tồn kho thực tế từ tất cả các kho (WH01, WH02, WH03...)
+    # Tự động đồng bộ và tính tổng tồn kho thực tế từ tất cả các kho (WH01, WH02, WH03...)
     wh_stock_map = {}
     try:
+        from app.services.inventory_availability_service import sync_missing_warehouse_stocks
+        sync_missing_warehouse_stocks(db)
         from app.models.entities import WarehouseStockEntity
         from sqlalchemy import func
         wh_rows = (
@@ -624,7 +651,12 @@ def get_products(
         # Lọc sản phẩm dưới định mức: Đồng bộ chính xác với cảnh báo định mức tồn kho (/inventory/low-stock-alerts)
         from app.api.v1.endpoints.inventory import get_inventory_thresholds
         try:
-            threshold_items = get_inventory_thresholds(warehouse_id=None, db=db, current_user=current_user)
+            threshold_items = get_inventory_thresholds(
+                warehouse_id=None,
+                only_low_stock=True,
+                db=db,
+                current_user=current_user
+            )
             low_stock_pids = set(it.product_id for it in threshold_items if it.is_low_stock)
             filtered_items = [
                 it for it in filtered_items
@@ -637,14 +669,21 @@ def get_products(
             ]
 
     total_filtered = len(filtered_items)
-    effective_size = page_size or limit
+    effective_limit = page_size if page_size is not None else limit
+    is_paginated = page is not None or skip is not None or effective_limit is not None
 
-    if effective_size and effective_size > 0:
+    if is_paginated:
+        if effective_limit is None:
+            effective_limit = 10
         import math
-        total_pages = max(1, math.ceil(total_filtered / effective_size))
-        cur_page = min(max(1, page or 1), total_pages)
-        start_idx = (cur_page - 1) * effective_size
-        end_idx = start_idx + effective_size
+        total_pages = max(1, math.ceil(total_filtered / effective_limit))
+        if skip is not None and page is None:
+            cur_page = (skip // effective_limit) + 1
+            start_idx = skip
+        else:
+            cur_page = min(max(1, page or 1), total_pages)
+            start_idx = (cur_page - 1) * effective_limit
+        end_idx = start_idx + effective_limit
         paged_items = filtered_items[start_idx:end_idx]
 
         return ProductListResponse(
@@ -655,9 +694,10 @@ def get_products(
             is_cost_price_visible=can_view_cost,
             summary=summary,
             page=cur_page,
-            page_size=effective_size,
-            limit=effective_size,
+            limit=effective_limit,
+            page_size=effective_limit,
             total_pages=total_pages,
+            has_more=(start_idx + len(paged_items) < total_filtered),
         )
 
     return ProductListResponse(
@@ -668,15 +708,18 @@ def get_products(
         is_cost_price_visible=can_view_cost,
         summary=summary,
         page=1,
+        limit=total_filtered if total_filtered > 0 else 20,
         page_size=total_filtered,
-        limit=total_filtered,
         total_pages=1,
+        has_more=False,
     )
 
 @router.get("/customer", response_model=ProductListResponse)
 def get_products_for_customer_endpoint(
-    page: int = Query(1, ge=1, description="Số trang (1-indexed)"),
-    limit: int = Query(20, ge=1, le=100, description="Số lượng mục mỗi trang"),
+    page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
+    page_size: Optional[int] = Query(None, ge=1, description="Số lượng mục mỗi trang"),
+    limit: Optional[int] = Query(None, ge=1, le=100, description="Số lượng mục mỗi trang"),
+    skip: Optional[int] = Query(None, ge=0, description="Số bản ghi bỏ qua"),
     search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
     category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
     db: Session = Depends(get_db),
@@ -690,7 +733,9 @@ def get_products_for_customer_endpoint(
         db=db,
         current_user=current_user,
         page=page,
+        page_size=page_size,
         limit=limit,
+        skip=skip,
         search=search,
         category=category,
     )
@@ -829,7 +874,41 @@ def update_product_details(
         db.rollback()
         print(f"Warning: update product to DB: {db_err}")
 
-    # Ghi audit log
+    # Kiểm tra thay đổi giá để ghi nhật ký PRICE_CHANGE chuẩn
+    old_sell = float(old_data.get("sell_price") or 0.0)
+    new_sell = float(target.get("sell_price") or 0.0)
+    old_floor = float(old_data.get("floor_price") or 0.0)
+    new_floor = float(target.get("floor_price") or 0.0)
+    old_cost = float(old_data.get("cost_price") or 0.0)
+    new_cost = float(target.get("cost_price") or 0.0)
+
+    price_changed = (old_sell != new_sell) or (old_floor != new_floor) or (can_view_cost and old_cost != new_cost)
+    if price_changed:
+        price_old_val = {}
+        price_new_val = {}
+        if old_sell != new_sell:
+            price_old_val["sell_price"] = old_sell
+            price_new_val["sell_price"] = new_sell
+        if old_floor != new_floor:
+            price_old_val["floor_price"] = old_floor
+            price_new_val["floor_price"] = new_floor
+        if can_view_cost and old_cost != new_cost:
+            price_old_val["cost_price"] = old_cost
+            price_new_val["cost_price"] = new_cost
+
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action_type="PRICE_CHANGE",
+            entity_type="Product",
+            entity_id=target["code"],
+            old_val=price_old_val,
+            new_val=price_new_val,
+            reason=f"Điều chỉnh giá sản phẩm {target['name']}",
+            request=request,
+        )
+
+    # Ghi audit log cập nhật thông tin sản phẩm
     log_audit_event(
         db=db,
         user=current_user,
@@ -1156,10 +1235,12 @@ def create_product(
 
     # Lưu vào in-memory RAW_PRODUCTS
     RAW_PRODUCTS.append(new_product_dict)
+    invalidate_tx_counts_cache()
 
-    # Đồng bộ lưu vào SQLite ProductEntity
+    # Đồng bộ lưu vào SQLite ProductEntity và khởi tạo kho
     try:
-        from app.models.entities import ProductEntity
+        from app.models.entities import ProductEntity, WarehouseStockEntity
+        from app.services.inventory_availability_service import DEFAULT_WAREHOUSES
         db_prod = ProductEntity(
             id=new_id,
             code=clean_sku,
@@ -1177,6 +1258,22 @@ def create_product(
             floor_price=floor_val,
         )
         db.add(db_prod)
+        db.flush()
+
+        # Tự động đồng bộ bản ghi tồn kho cho tất cả các kho
+        for wid, wname in DEFAULT_WAREHOUSES.items():
+            ws_item = WarehouseStockEntity(
+                warehouse_id=wid,
+                warehouse_name=wname,
+                product_id=new_id,
+                actual_stock=0,
+                reserved_stock=0,
+                quantity_on_hand=0,
+                reserved_quantity=0,
+                min_stock=10,
+            )
+            db.add(ws_item)
+
         db.commit()
     except Exception as db_err:
         db.rollback()
@@ -1307,6 +1404,7 @@ def delete_product(
         request=request,
     )
 
+    invalidate_tx_counts_cache()
     return {"status": "success", "message": f"Đã xóa sản phẩm {prod_code} thành công"}
 
 

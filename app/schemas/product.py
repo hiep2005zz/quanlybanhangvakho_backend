@@ -84,6 +84,7 @@ class ProductListResponse(BaseModel):
     applied_price_book: Optional[str] = None
     data: Optional[List[ProductItem]] = None
     page: Optional[int] = 1
-    limit: Optional[int] = 20
     page_size: Optional[int] = None
+    limit: Optional[int] = 20
     total_pages: Optional[int] = 1
+    has_more: Optional[bool] = None

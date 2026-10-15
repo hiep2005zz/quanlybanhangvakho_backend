@@ -7,7 +7,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.core.database import get_db
-from app.api.deps import require_warehouse_manager, require_warehouse_read
+from app.api.deps import (
+    require_warehouse_manager,
+    require_warehouse_read,
+    require_warehouse_audit_manage,
+)
 from app.schemas.auth import UserResponse
 from app.models.entities import (
     StockAuditEntity,
@@ -184,11 +188,15 @@ def preview_audit_products(
     warehouse_id: str = Query(..., description="Mã kho cần kiểm kê"),
     scope_type: str = Query("WAREHOUSE", description="Phạm vi: WAREHOUSE hoặc CATEGORY"),
     category_id: Optional[int] = Query(None, description="ID nhóm hàng nếu scope_type == CATEGORY"),
+    page: int = Query(1, ge=1, description="Trang hiện tại"),
+    page_size: int = Query(20, ge=1, le=100, description="Số sản phẩm mỗi trang (mặc định 20)"),
+    search: Optional[str] = Query(None, description="Tìm theo mã hoặc tên sản phẩm"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_warehouse_read),
 ):
     """
     Xem trước danh sách sản phẩm và số lượng tồn chốt dự kiến theo phạm vi kiểm kê.
+    Hỗ trợ phân trang 20 sản phẩm/trang để tải nhanh từng trang theo yêu cầu.
     """
     if warehouse_id not in DEFAULT_WAREHOUSES:
         raise HTTPException(
@@ -217,7 +225,18 @@ def preview_audit_products(
         cat_names = {c.name for c in db.query(CategoryEntity).filter(CategoryEntity.id.in_(cat_ids)).all()}
         query = query.filter((ProductEntity.category_id.in_(cat_ids)) | (ProductEntity.category.in_(cat_names)))
 
-    products = query.order_by(ProductEntity.id.asc()).all()
+    if search and search.strip():
+        search_kw = f"%{search.strip()}%"
+        query = query.filter(
+            (ProductEntity.code.ilike(search_kw)) | 
+            (ProductEntity.name.ilike(search_kw)) | 
+            (ProductEntity.category.ilike(search_kw))
+        )
+
+    total_items = query.count()
+    total_pages = max(1, (total_items + page_size - 1) // page_size) if total_items > 0 else 1
+
+    products = query.order_by(ProductEntity.id.asc()).offset((page - 1) * page_size).limit(page_size).all()
 
     items = []
     for prod in products:
@@ -238,7 +257,10 @@ def preview_audit_products(
         "warehouse_name": warehouse_name,
         "scope_type": scope_type,
         "category_id": category_id,
-        "total_items": len(items),
+        "total_items": total_items,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
         "items": items,
     }
 
@@ -342,11 +364,11 @@ def get_stock_audit_detail(
 def create_stock_audit(
     data: StockAuditCreate,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_warehouse_manager),
+    current_user: UserResponse = Depends(require_warehouse_audit_manage),
 ):
     """
     Chức năng 2: Tạo phiếu kiểm kê.
-    Chỉ Quản lý kho (Role: warehouse_manager) và Admin được phép tạo.
+    Cho phép Thủ kho (warehouse), Quản lý kho (warehouse_manager) và Admin tạo phiếu.
     Chốt số lượng tồn kho ban đầu của từng sản phẩm tại kho được chọn làm căn cứ.
     """
     if data.warehouse_id not in DEFAULT_WAREHOUSES:
@@ -451,7 +473,7 @@ def update_stock_audit_results(
     audit_id: int,
     data: StockAuditUpdate,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_warehouse_manager),
+    current_user: UserResponse = Depends(require_warehouse_audit_manage),
 ):
     """
     Chức năng 3: Nhập kết quả kiểm kê thực tế và lý do chênh lệch (Lưu nháp / cập nhật).
@@ -791,11 +813,11 @@ def cancel_stock_audit(
     audit_id: int,
     data: Optional[StockAuditCancel] = None,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_warehouse_manager),
+    current_user: UserResponse = Depends(require_warehouse_audit_manage),
 ):
     """
     Hủy phiếu kiểm kê khi phiếu chưa hoàn tất.
-    Chỉ Quản lý kho và Admin được phép hủy.
+    Quản lý kho, Admin hoặc Thủ kho được phép hủy phiếu khi đang kiểm kê.
     """
     audit = db.query(StockAuditEntity).filter(StockAuditEntity.id == audit_id).first()
     if not audit:
