@@ -1,6 +1,7 @@
 # backend/app/db/init_db.py
 import json
 import os
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import inspect, text
 from app.core.database import engine, Base, SessionLocal
 from app.models.entities import (
@@ -800,6 +801,130 @@ def init_db():
                 print("Default vehicles seeded successfully.")
         except Exception as seed_trip_err:
             print(f"Error seeding drivers/vehicles: {seed_trip_err}")
+
+        # 12. Khởi tạo danh sách Lô hàng & Hạn sử dụng (Product Batches) mẫu nếu chưa có
+        try:
+            if db.query(ProductBatchEntity).count() == 0:
+                p_beer = db.query(ProductEntity).filter(ProductEntity.code == "SP-BEER").first()
+                if not p_beer:
+                    p_beer = ProductEntity(
+                        code="SP-BEER",
+                        name="Bia Tiger Crystal Lon 330ml",
+                        stock=428,
+                        cost_price=12000.0,
+                        sell_price=18000.0,
+                        base_unit="Lon",
+                        is_batch_managed=True,
+                        status="active",
+                    )
+                    db.add(p_beer)
+                    db.flush()
+                else:
+                    p_beer.is_batch_managed = True
+                    p_beer.base_unit = "Lon"
+
+                p_amox = db.query(ProductEntity).filter(ProductEntity.code == "SKU-BATCH-01").first()
+                if not p_amox:
+                    p_amox = ProductEntity(
+                        code="SKU-BATCH-01",
+                        name="Thuốc Kháng Sinh Amoxicillin 500mg",
+                        stock=150,
+                        cost_price=45000.0,
+                        sell_price=65000.0,
+                        base_unit="Hộp",
+                        is_batch_managed=True,
+                        status="active",
+                    )
+                    db.add(p_amox)
+                    db.flush()
+                else:
+                    p_amox.is_batch_managed = True
+
+                now_utc = datetime.now(timezone.utc)
+                default_batches = [
+                    # 1. Bia Tiger - Lô an toàn (HSD 180 ngày)
+                    ProductBatchEntity(
+                        product_id=p_beer.id,
+                        warehouse_id=1,
+                        batch_number="LOT-2026-TIGER-01",
+                        manufacturing_date=now_utc - timedelta(days=90),
+                        expiry_date=now_utc + timedelta(days=180),
+                        quantity=180.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                    # 2. Bia Tiger - Lô cận hạn (HSD 18 ngày <= 30 ngày cảnh báo)
+                    ProductBatchEntity(
+                        product_id=p_beer.id,
+                        warehouse_id=1,
+                        batch_number="LOT-2026-TIGER-NEAR",
+                        manufacturing_date=now_utc - timedelta(days=330),
+                        expiry_date=now_utc + timedelta(days=18),
+                        quantity=80.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                    # 3. Bia Tiger - Lô quá hạn (HSD đã qua 10 ngày -> CHẶN XUẤT)
+                    ProductBatchEntity(
+                        product_id=p_beer.id,
+                        warehouse_id=1,
+                        batch_number="LOT-2025-TIGER-EXP",
+                        manufacturing_date=now_utc - timedelta(days=400),
+                        expiry_date=now_utc - timedelta(days=10),
+                        quantity=45.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                    # 4. Bia Tiger - Lô an toàn tại Kho Đà Nẵng
+                    ProductBatchEntity(
+                        product_id=p_beer.id,
+                        warehouse_id=2,
+                        batch_number="LOT-2026-TIGER-DN01",
+                        manufacturing_date=now_utc - timedelta(days=60),
+                        expiry_date=now_utc + timedelta(days=240),
+                        quantity=123.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                    # 5. Amoxicillin - Lô an toàn (HSD 300 ngày)
+                    ProductBatchEntity(
+                        product_id=p_amox.id,
+                        warehouse_id=1,
+                        batch_number="LOT-AMOX-2026-A1",
+                        manufacturing_date=now_utc - timedelta(days=60),
+                        expiry_date=now_utc + timedelta(days=300),
+                        quantity=100.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                    # 6. Amoxicillin - Lô cận hạn (HSD 22 ngày <= 30 ngày)
+                    ProductBatchEntity(
+                        product_id=p_amox.id,
+                        warehouse_id=1,
+                        batch_number="LOT-AMOX-2026-WARN",
+                        manufacturing_date=now_utc - timedelta(days=340),
+                        expiry_date=now_utc + timedelta(days=22),
+                        quantity=30.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                    # 7. Amoxicillin - Lô quá hạn (HSD cách đây 15 ngày -> CHẶN XUẤT)
+                    ProductBatchEntity(
+                        product_id=p_amox.id,
+                        warehouse_id=1,
+                        batch_number="LOT-AMOX-2025-EXP",
+                        manufacturing_date=now_utc - timedelta(days=500),
+                        expiry_date=now_utc - timedelta(days=15),
+                        quantity=20.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                ]
+                db.add_all(default_batches)
+                db.commit()
+                print("Default product batches seeded successfully.")
+        except Exception as seed_batch_err:
+            print(f"Error seeding product batches: {seed_batch_err}")
 
         print("Database initialization completed successfully.")
     except Exception as e:
