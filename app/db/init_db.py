@@ -120,6 +120,9 @@ def _ensure_legacy_columns(bind=engine):
             "manufacturing_date": ("DATETIME NULL", "DATETIME NULL"),
             "reserved_quantity": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
         },
+        "goods_receipt_note_items": {
+            "manufacturing_date": ("DATETIME NULL", "DATETIME NULL"),
+        },
         "order_items": {
             "suggested_batch_id": ("INTEGER NULL", "INT NULL"),
             "selected_batch_id": ("INTEGER NULL", "INT NULL"),

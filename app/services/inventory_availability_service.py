@@ -22,13 +22,22 @@ DEFAULT_WAREHOUSES = {
 }
 
 
-def sync_missing_warehouse_stocks(db: Session) -> bool:
+_LAST_SYNC_TIME = 0.0
+
+def sync_missing_warehouse_stocks(db: Session, force: bool = False) -> bool:
     """
     Đảm bảo tất cả sản phẩm đều được đồng bộ đầy đủ bản ghi trong bảng warehouse_stocks cho tất cả các kho.
     Nếu sản phẩm mới thêm chưa có kho, tự động khởi tạo bản ghi với actual_stock = 0.
+    Có TTL cache 60s để tránh query 40.000 bản ghi trên mỗi HTTP request.
     """
+    global _LAST_SYNC_TIME
+    import time
+    now = time.time()
+    if not force and (now - _LAST_SYNC_TIME) < 60:
+        return False
     if not db:
         return False
+    _LAST_SYNC_TIME = now
     try:
         from app.models.entities import WarehouseStockEntity, ProductEntity
         existing_pairs = set(db.query(WarehouseStockEntity.product_id, WarehouseStockEntity.warehouse_id).all())

@@ -406,6 +406,68 @@ def create_stock_issue(
             detail="Số lượng xuất kho quá lớn (tối đa 10.000.000 đơn vị). Vui lòng nhập số lượng hợp lý."
         )
 
+    # Quản lý xuất theo lô: Xử lý hài hòa giữa SCRUM-81 (FEFO selected_batch_id) và Quản lý lô (batch_number)
+    deducted_batch = None
+    clean_reason = None
+    target_wh_id_int = None
+    wh_entity = None
+    if db and prod_entity:
+        from app.models.goods_receipt import WarehouseEntity, ProductBatchEntity
+        from app.services.batch_suggestion_service import (
+            resolve_warehouse_id_int,
+            validate_batch_change_reason,
+            check_warehouse_user_permission,
+        )
+
+        target_wh_id_int = resolve_warehouse_id_int(db, data.warehouse_id or "WH01")
+        wh_entity = db.query(WarehouseEntity).filter(WarehouseEntity.id == target_wh_id_int).first() if target_wh_id_int else None
+        check_warehouse_user_permission(current_user, wh_entity)
+
+        is_batch_managed = bool(getattr(prod_entity, "is_batch_managed", False))
+
+        if data.selected_batch_id:
+            # Luồng SCRUM-81: Gợi ý theo FEFO và chọn lô theo ID
+            clean_reason = validate_batch_change_reason(
+                selected_batch_id=data.selected_batch_id,
+                suggested_batch_id=data.suggested_batch_id,
+                batch_change_reason=data.batch_change_reason,
+            )
+            b_chk = db.query(ProductBatchEntity).filter(
+                ProductBatchEntity.id == data.selected_batch_id,
+                ProductBatchEntity.product_id == prod_entity.id,
+            ).first()
+            if not b_chk:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Không tìm thấy lô hàng ID {data.selected_batch_id} của sản phẩm '{prod_entity.name}' tại kho."
+                )
+            if b_chk.quantity < base_qty:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Lô hàng '{b_chk.batch_number}' không đủ số lượng tồn để xuất. Tồn hiện tại: {b_chk.quantity}, yêu cầu xuất: {base_qty}."
+                )
+        elif data.batch_number:
+            # Luồng Quản lý lô: Chỉ định trực tiếp số lô (kèm kiểm tra HSD & cờ override)
+            from app.services.batch_service import validate_and_deduct_batch_for_issue
+            deducted_batch = validate_and_deduct_batch_for_issue(
+                db=db,
+                product=prod_entity,
+                batch_number=data.batch_number,
+                quantity_to_deduct=float(base_qty),
+                warehouse_id=target_wh_id_int or 1,
+                override_expired=bool(data.override_expired),
+                override_reason=data.override_reason,
+                current_user=current_user,
+            )
+        elif is_batch_managed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Sản phẩm '{prod_entity.name}' (Mã: {prod_entity.code}) đã bật cấu hình quản lý lô "
+                    f"(is_batch_managed=True). Bắt buộc phải chỉ định số lô (batch_number) khi xuất kho."
+                ),
+            )
+
     previous_stock = product["stock"] if product else prod_entity.stock
     if previous_stock < base_qty:
         raise HTTPException(
@@ -422,8 +484,9 @@ def create_stock_issue(
     prod_name = product["name"] if product else prod_entity.name
     prod_code = product["code"] if product else prod_entity.code
 
+    batch_info_str = f" [Lô: {deducted_batch.batch_number}]" if deducted_batch else ""
     unit_info_str = f" ({data.quantity} {chosen_unit} = {base_qty} {base_unit})" if chosen_unit != base_unit else ""
-    reason_str = f"Xuất kho tới: {data.destination}. {data.note or ''}{unit_info_str}".strip()
+    reason_str = f"Xuất kho tới: {data.destination}. {data.note or ''}{unit_info_str}{batch_info_str}".strip()
 
     tx = InventoryTransaction(
         id=len(INVENTORY_TRANSACTIONS) + 1,
@@ -444,29 +507,10 @@ def create_stock_issue(
     INVENTORY_TRANSACTIONS.insert(0, tx)
 
     if db:
-        # SCRUM-81: Xử lý trừ tồn lô và kiểm tra lý do đổi lô nếu sản phẩm quản lý theo lô
-        from app.models.goods_receipt import WarehouseEntity
-        from app.services.batch_suggestion_service import (
-            resolve_warehouse_id_int,
-            validate_batch_change_reason,
-            execute_batch_deduction,
-            check_warehouse_user_permission,
-        )
-
-        target_wh_id_int = resolve_warehouse_id_int(db, data.warehouse_id or "WH01")
-        wh_entity = db.query(WarehouseEntity).filter(WarehouseEntity.id == target_wh_id_int).first() if target_wh_id_int else None
-        check_warehouse_user_permission(current_user, wh_entity)
-
-        is_batch_managed = bool(prod_entity.is_batch_managed) if prod_entity else False
-        if is_batch_managed or data.selected_batch_id:
-            # Tiêu chí 2: Validate lý do đổi lô nếu chọn lô khác với lô gợi ý
-            clean_reason = validate_batch_change_reason(
-                selected_batch_id=data.selected_batch_id,
-                suggested_batch_id=data.suggested_batch_id,
-                batch_change_reason=data.batch_change_reason,
-            )
-            # Tiêu chí 3: Mở lock và trừ đúng tồn lô đã chọn trong DB transaction
-            execute_batch_deduction(
+        if data.selected_batch_id:
+            # SCRUM-81: Tiêu chí 3: Mở lock và trừ đúng tồn lô đã chọn trong DB transaction
+            from app.services.batch_suggestion_service import execute_batch_deduction
+            deducted_batch = execute_batch_deduction(
                 db=db,
                 product=prod_entity,
                 warehouse_id=target_wh_id_int or 1,
@@ -507,6 +551,25 @@ def create_stock_issue(
             reason=reason_str,
         )
         db.add(db_tx)
+
+        if deducted_batch:
+            from app.models.goods_receipt import InventoryLedgerEntity
+            db.add(
+                InventoryLedgerEntity(
+                    product_id=prod_entity.id,
+                    warehouse_id=deducted_batch.warehouse_id,
+                    reference_code=f"ISSUE-{deducted_batch.batch_number}",
+                    transaction_type="ISSUE",
+                    quantity=-float(base_qty),
+                    previous_stock=float(previous_stock),
+                    new_stock=float(new_stock),
+                    batch_number=deducted_batch.batch_number,
+                    performed_by=current_user.full_name or current_user.username,
+                    note=reason_str,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+
         db.commit()
 
     # Ghi nhật ký xuất kho (đầy đủ các trường quy đổi trước và sau)

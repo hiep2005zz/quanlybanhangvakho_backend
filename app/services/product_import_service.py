@@ -150,7 +150,8 @@ class ProductBulkImportService:
         page: int = 1,
         page_size: Optional[int] = None,
         status_filter: str = "ALL",
-        file_id: Optional[str] = None
+        file_id: Optional[str] = None,
+        search: Optional[str] = None
     ) -> ProductBulkPreviewResponse:
         """
         Parse file Excel, validate từng dòng và so khớp SKU trong database.
@@ -357,10 +358,19 @@ class ProductBulkImportService:
                 filtered_total=total_rows,
             )
 
-        # Nếu có page_size (ví dụ 20): cắt lát theo status_filter
+        # Nếu có page_size (ví dụ 20): cắt lát theo status_filter và search
         filtered_rows = rows_result
         if status_filter and status_filter.upper() != "ALL":
             filtered_rows = [r for r in rows_result if r.status == status_filter.upper()]
+
+        if search and search.strip():
+            q = search.strip().lower()
+            filtered_rows = [
+                r for r in filtered_rows
+                if (r.sku and q in r.sku.lower())
+                or (r.name and q in r.name.lower())
+                or (r.category and q in r.category.lower())
+            ]
 
         filtered_total = len(filtered_rows)
         total_pages = max(1, math.ceil(filtered_total / page_size))
@@ -388,7 +398,8 @@ class ProductBulkImportService:
         file_id: str,
         page: int = 1,
         page_size: int = 20,
-        status_filter: str = "ALL"
+        status_filter: str = "ALL",
+        search: Optional[str] = None
     ) -> ProductBulkPreviewResponse:
         cached = BULK_PREVIEW_CACHE.get(file_id)
         if not cached:
@@ -404,6 +415,15 @@ class ProductBulkImportService:
         filtered_rows = rows_result
         if status_filter and status_filter.upper() != "ALL":
             filtered_rows = [r for r in rows_result if r.status == status_filter.upper()]
+
+        if search and search.strip():
+            q = search.strip().lower()
+            filtered_rows = [
+                r for r in filtered_rows
+                if (r.sku and q in r.sku.lower())
+                or (r.name and q in r.name.lower())
+                or (r.category and q in r.category.lower())
+            ]
 
         filtered_total = len(filtered_rows)
         total_pages = max(1, math.ceil(filtered_total / page_size))

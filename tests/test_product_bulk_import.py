@@ -224,3 +224,29 @@ def test_bulk_confirm_large_dataset_exceeding_2100_limit():
     assert data["created_count"] == 2500
     assert data["status"] == "success"
 
+def test_preview_with_search_filter():
+    """Kiểm tra tìm kiếm sản phẩm theo SKU hoặc Tên trong bảng preview."""
+    token = get_token("sales_manager")
+    rows = [
+        ["SP_SEARCH_01", "Bàn Phím Cơ Không Dây", "Cái", 1200000, 600000, "Công nghệ", 15],
+        ["SP_SEARCH_02", "Chuột Gaming Không Dây", "Cái", 850000, 400000, "Công nghệ", 25],
+        ["SP_OTHER_03", "Áo Khoác Gió Nam", "Cái", 350000, 150000, "Thời trang", 50]
+    ]
+    file_buf = make_excel_file(rows)
+    files = {"file": ("test_search.xlsx", file_buf, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+
+    # 1. Tìm theo tên 'Bàn Phím'
+    res = client.post("/api/v1/products/bulk-preview?page=1&page_size=10&search=Bàn Phím", headers={"Authorization": f"Bearer {token}"}, files=files)
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data["rows"]) == 1
+    assert data["rows"][0]["sku"] == "SP_SEARCH_01"
+
+    # 2. Tìm theo SKU 'SP_SEARCH_02' thông qua endpoint pagination file_id
+    file_id = data["file_id"]
+    res_page = client.get(f"/api/v1/products/bulk-preview/{file_id}?page=1&page_size=10&search=SEARCH_02", headers={"Authorization": f"Bearer {token}"})
+    assert res_page.status_code == 200
+    page_data = res_page.json()
+    assert len(page_data["rows"]) == 1
+    assert page_data["rows"][0]["sku"] == "SP_SEARCH_02"
+
