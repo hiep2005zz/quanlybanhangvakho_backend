@@ -67,6 +67,10 @@ class OrderResponse(BaseModel):
     created_at: str
     approved_by: Optional[str] = None
     approved_at: Optional[str] = None
+    picking_at: Optional[str] = None
+    exported_at: Optional[str] = None
+    shipped_at: Optional[str] = None
+    delivered_at: Optional[str] = None
     subtotal_amount: Optional[float] = 0.0
     discount_percent: float = 0.0
     discount_rate: Optional[float] = 0.0
@@ -2299,7 +2303,25 @@ def get_order_detail(
             )
 
     ord_st = (order_record.get("status") or "").upper()
-    is_order_dispatched = ord_st in ("DELIVERED", "CLOSED", "COMPLETED", "EXPORTED", "SHIPPED")
+    is_order_dispatched = ord_st in ("DELIVERED", "CLOSED", "COMPLETED", "EXPORTED", "SHIPPED", "DISPATCHED", "DELIVERING", "IN_TRANSIT")
+
+    # Tự động gán mốc thời gian giao hàng nếu chưa có sẵn
+    if ord_st in ("DELIVERED", "CLOSED", "COMPLETED"):
+        if not order_record.get("delivered_at"):
+            order_record["delivered_at"] = order_record.get("desired_delivery_date") or order_record.get("created_at")
+    if ord_st in ("SHIPPED", "DISPATCHED", "DELIVERING", "IN_TRANSIT", "DELIVERED", "CLOSED", "COMPLETED"):
+        if not order_record.get("shipped_at"):
+            order_record["shipped_at"] = order_record.get("desired_delivery_date") or order_record.get("created_at")
+    if ord_st in ("EXPORTED", "SHIPPED", "DISPATCHED", "DELIVERING", "IN_TRANSIT", "DELIVERED", "CLOSED", "COMPLETED"):
+        if not order_record.get("exported_at"):
+            order_record["exported_at"] = order_record.get("created_at")
+    if ord_st in ("PICKING", "PREPARING", "PACKING", "EXPORTED", "SHIPPED", "DISPATCHED", "DELIVERING", "IN_TRANSIT", "DELIVERED", "CLOSED", "COMPLETED"):
+        if not order_record.get("picking_at"):
+            order_record["picking_at"] = order_record.get("approved_at") or order_record.get("created_at")
+    if ord_st in ("CONFIRMED", "APPROVED", "PICKING", "PREPARING", "PACKING", "EXPORTED", "SHIPPED", "DISPATCHED", "DELIVERING", "IN_TRANSIT", "DELIVERED", "CLOSED", "COMPLETED"):
+        if not order_record.get("approved_at"):
+            order_record["approved_at"] = order_record.get("created_at")
+
     for item in items:
         is_dict = isinstance(item, dict)
         qty = item.get("quantity", 0) if is_dict else getattr(item, "quantity", 0)
@@ -2309,8 +2331,8 @@ def get_order_detail(
                 del_qty = qty
             shortage = max(0, int(qty) - int(del_qty))
         else:
-            del_qty = None
-            shortage = 0
+            del_qty = del_qty if del_qty is not None else None
+            shortage = max(0, int(qty) - int(del_qty)) if del_qty is not None else 0
 
         if is_dict:
             item["delivered_quantity"] = del_qty
@@ -2334,6 +2356,10 @@ def get_order_detail(
         "dealer_code": getattr(d, "code", None) if d else None,
         "dealer_phone": getattr(d, "phone", None) if d else None,
         "dealer_address": getattr(d, "address", None) if d else None,
+        "picking_at": order_record.get("picking_at"),
+        "exported_at": order_record.get("exported_at"),
+        "shipped_at": order_record.get("shipped_at"),
+        "delivered_at": order_record.get("delivered_at"),
     })
     return SalesOrderResponse(**detail_response)
 

@@ -11,6 +11,7 @@ from sqlalchemy import (
     Unicode,
     UnicodeText,
     ForeignKey,
+    CheckConstraint,
 )
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -83,6 +84,7 @@ class GoodsReceiptNoteItemEntity(Base):
     base_quantity = Column(Float, nullable=False)  # Số lượng theo ĐVT cơ sở = quantity * conversion_rate
     unit_price = Column(Float, default=0.0)
     batch_number = Column(String(100), nullable=True)  # Số lô (nếu sản phẩm quản lý lô)
+    manufacturing_date = Column(DateTime, nullable=True)  # Ngày sản xuất (nếu quản lý lô)
     expiry_date = Column(DateTime, nullable=True)  # Hạn sử dụng (nếu quản lý lô)
     note = Column(UnicodeText, nullable=True)
 
@@ -98,10 +100,27 @@ class ProductBatchEntity(Base):
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False, index=True)
     batch_number = Column(String(100), nullable=False, index=True)
-    expiry_date = Column(DateTime, nullable=True)
-    quantity = Column(Float, default=0.0, nullable=False)  # Tồn kho theo lô
+    manufacturing_date = Column(DateTime, nullable=True)  # Ngày sản xuất
+    expiry_date = Column(DateTime, nullable=True)  # Hạn sử dụng
+    quantity = Column(Float, default=0.0, nullable=False)  # Tồn kho còn lại theo lô (remaining_quantity)
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="chk_product_batch_quantity_non_negative"),
+        CheckConstraint(
+            "expiry_date IS NULL OR manufacturing_date IS NULL OR expiry_date > manufacturing_date",
+            name="chk_product_batch_expiry_after_mfg",
+        ),
+    )
+
+    @property
+    def remaining_quantity(self) -> float:
+        return float(self.quantity or 0.0)
+
+    @remaining_quantity.setter
+    def remaining_quantity(self, val: float):
+        self.quantity = float(val or 0.0)
 
     product = relationship("ProductEntity", foreign_keys=[product_id])
     warehouse = relationship("WarehouseEntity", foreign_keys=[warehouse_id])
