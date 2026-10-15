@@ -28,6 +28,7 @@ from app.schemas.inventory import (
     StockBookItem,
     StockBookSummary,
     StockBookResponse,
+    StockCardResponse,
 )
 from app.api.v1.endpoints.products import RAW_PRODUCTS
 from app.models.entities import ProductEntity, WarehouseStockEntity
@@ -1320,8 +1321,40 @@ def get_stock_book(
 
 
 # ==========================================
+# THẺ KHO SẢN PHẨM (PRODUCT STOCK CARD)
+# ==========================================
+
+@router.get("/stock-card", response_model=StockCardResponse)
+def get_stock_card_endpoint(
+    product_id: int = Query(..., description="ID sản phẩm cần xem thẻ kho"),
+    warehouse_id: Optional[str] = Query(None, description="Mã kho lọc (WH01, WH02, WH03 hoặc all)"),
+    from_date: Optional[str] = Query(None, description="Từ ngày (YYYY-MM-DD hoặc ISO)"),
+    to_date: Optional[str] = Query(None, description="Đến ngày (YYYY-MM-DD hoặc ISO)"),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_permission(Permission.INVENTORY_READ.value)),
+):
+    """
+    Xem Thẻ kho (Stock Card) chi tiết của một sản phẩm.
+    Phục vụ Nhân viên kho / Quản lý kho truy nguyên biến động và nguồn gốc số tồn bị lệch.
+    Đạt chuẩn 3 tiêu chí:
+    1. Toàn bộ phát sinh nhập, xuất, chuyển, điều chỉnh theo thứ tự thời gian.
+    2. Mỗi dòng hiển thị tồn sau phát sinh và liên kết tới chứng từ gốc.
+    3. Lọc theo kho và khoảng thời gian.
+    """
+    from app.services.stock_card_service import get_stock_card_for_product
+    return get_stock_card_for_product(
+        db=db,
+        product_id=product_id,
+        warehouse_filter=warehouse_id,
+        from_date_str=from_date,
+        to_date_str=to_date,
+    )
+
+
+# ==========================================
 # QUẢN LÝ CHUYỂN KHO NỘI BỘ (STOCK TRANSFERS)
 # ==========================================
+
 
 from app.models.entities import StockTransferEntity
 from app.schemas.stock_transfer import (

@@ -1,6 +1,6 @@
 # backend/app/schemas/inventory.py
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Union
 from pydantic import BaseModel, Field
 
 class StockAdjustRequest(BaseModel):
@@ -169,5 +169,51 @@ class StockBookResponse(BaseModel):
     total: Optional[int] = None
     page: Optional[int] = None
     page_size: Optional[int] = None
+
+
+class StockCardVoucherInfo(BaseModel):
+    voucher_type: str  # "grn", "order", "transfer", "audit", "adjustment", "initial", "other"
+    voucher_code: str
+    voucher_id: Optional[Union[int, str]] = None
+    url: Optional[str] = None
+
+
+class StockCardEntry(BaseModel):
+    id: Union[int, str]
+    created_at: str
+    transaction_type: str  # "RECEIPT", "ISSUE", "TRANSFER", "ADJUST"
+    transaction_label: str  # "Nhập kho", "Xuất kho", "Chuyển kho", "Điều chỉnh / Kiểm kê"
+    reference_code: str
+    voucher_info: Optional[StockCardVoucherInfo] = None
+    warehouse_id: str
+    warehouse_name: str
+    quantity: float  # signed (+ or -)
+    receipt_quantity: float = 0.0  # >= 0
+    issue_quantity: float = 0.0  # >= 0
+    previous_stock: float
+    balance_stock: float  # Tồn sau phát sinh
+    performed_by: Optional[str] = None
+    note: Optional[str] = None
+
+
+class StockCardSummary(BaseModel):
+    product_id: int
+    product_code: str
+    product_name: str
+    category: Optional[str] = None
+    base_unit: str = "Cái"
+    current_actual_stock: int
+    opening_stock: float
+    total_receipt: float
+    total_issue: float
+    closing_stock: float
+    total_records: int
+
+
+class StockCardResponse(BaseModel):
+    summary: StockCardSummary
+    entries: List[StockCardEntry]
+    warehouses: List[WarehouseInfo]
+
 
 
