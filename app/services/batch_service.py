@@ -528,6 +528,12 @@ def validate_and_deduct_batch_for_issue(
         )
 
     # Tiêu chí 2: Kiểm tra số lượng tồn và trừ tồn an toàn
+    if quantity_to_deduct <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Số lượng xuất kho từ lô phải lớn hơn 0."
+        )
+
     current_batch_qty = float(batch.quantity or 0.0)
     if current_batch_qty < quantity_to_deduct:
         raise HTTPException(

@@ -226,3 +226,90 @@ class WarehouseMasterDataResponse(BaseModel):
     racks: List[MasterDataOptionItem] = []
     bins: List[MasterDataOptionItem] = []
 
+
+# ==========================================================
+# 6. PHIẾU SOẠN HÀNG THEO LỘ TRÌNH (WAVE / BATCH PICKING)
+# ==========================================================
+
+class OrderBreakdownItem(BaseModel):
+    order_code: str
+    quantity: int
+    dealer_name: Optional[str] = None
+    desired_delivery_date: Optional[str] = None
+
+
+class BatchPickingRouteItem(BaseModel):
+    step_number: int                        # Thứ tự bước nhặt theo tuyến đường
+    product_id: int
+    product_code: str
+    product_name: str
+    unit_name: str
+    total_ordered_quantity: int
+    available_stock: int = 0
+    # Thông tin vị trí lưu trữ và tọa độ lộ trình
+    location_id: Optional[int] = None
+    location_code: str                      # Mã vị trí (vd: A-01-R02-B01 hoặc "CHƯA PHÂN BỔ")
+    location_name: str                      # Tên vị trí đầy đủ
+    zone: Optional[str] = None              # Khu vực (Khu A, Khu B,...)
+    aisle: Optional[str] = None             # Dãy (Dãy 01, Dãy 02,...)
+    rack: Optional[str] = None              # Kệ / Tầng (Kệ 01, Kệ 02,...)
+    bin: Optional[str] = None               # Ô chứa (Ô 01, Ô 02,...)
+    pick_path_code: str                     # Chuỗi định tuyến tổng hợp để sắp xếp
+    order_breakdown: List[OrderBreakdownItem] = []
+
+
+class BatchPickingPreviewResponse(BaseModel):
+    batch_code: str
+    warehouse_id: Optional[int] = None
+    warehouse_name: Optional[str] = None
+    selected_order_codes: List[str] = []
+    total_orders: int = 0
+    total_unique_items: int = 0
+    total_pick_units: int = 0
+    route_items: List[BatchPickingRouteItem] = []
+
+
+class EligiblePickingOrder(BaseModel):
+    order_code: str
+    dealer_id: Optional[int] = None
+    dealer_name: Optional[str] = None
+    status: str
+    created_at: Optional[str] = None
+    desired_delivery_date: Optional[str] = None
+    delivery_point: Optional[str] = None
+    total_items: int = 0
+    total_quantity: int = 0
+    items_summary: List[str] = []
+
+
+class BatchPickingPreviewRequest(BaseModel):
+    order_codes: List[str] = Field(..., min_length=1, description="Danh sách mã đơn hàng cần gộp soạn")
+
+
+class PickingItemExecution(BaseModel):
+    product_id: int
+    product_code: str
+    ordered_quantity: int
+    picked_quantity: int
+    shortage_reason: Optional[str] = None
+    location_code: Optional[str] = None
+
+
+class BatchPickingCompleteRequest(BaseModel):
+    batch_code: Optional[str] = None
+    order_codes: List[str] = Field(..., min_length=1)
+    items: List[PickingItemExecution] = Field(..., min_length=1)
+    picker_name: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class BatchPickingCompleteResponse(BaseModel):
+    success: bool
+    batch_code: str
+    message: str
+    total_orders_updated: int
+    total_items_picked: int
+    shortage_items_count: int
+    updated_at: str
+
+

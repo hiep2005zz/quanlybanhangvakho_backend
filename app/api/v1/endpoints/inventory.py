@@ -400,6 +400,12 @@ def create_stock_issue(
     chosen_unit, chosen_rate, base_unit = _resolve_unit_and_rate(product, prod_entity, data.unit_name, data.conversion_rate)
     base_qty = int(round(data.quantity * chosen_rate))
 
+    if data.quantity <= 0 or base_qty <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Số lượng xuất kho phải lớn hơn 0."
+        )
+
     if abs(data.quantity) > 10_000_000 or abs(base_qty) > 100_000_000:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -508,7 +514,18 @@ def create_stock_issue(
 
         db.commit()
 
-    # Ghi nhật ký xuất kho (đầy đủ các trường quy đổi trước và sau)
+    # Ghi nhật ký xuất kho (đầy đủ các trường quy đổi trước và sau, kèm số lô)
+    new_val_payload = {
+        "stock": new_stock,
+        "unit_name": chosen_unit,
+        "conversion_rate": chosen_rate,
+        "base_quantity": -base_qty,
+        "destination": data.destination,
+    }
+    if deducted_batch:
+        new_val_payload["batch_number"] = deducted_batch.batch_number
+        new_val_payload["expiry_date"] = str(deducted_batch.expiry_date) if deducted_batch.expiry_date else None
+
     log_audit_event(
         db=db,
         user=current_user,
@@ -516,7 +533,7 @@ def create_stock_issue(
         entity_type="Product",
         entity_id=prod_code,
         old_val={"stock": previous_stock, "unit_name": base_unit, "conversion_rate": 1.0, "base_quantity": 0},
-        new_val={"stock": new_stock, "unit_name": chosen_unit, "conversion_rate": chosen_rate, "base_quantity": -base_qty},
+        new_val=new_val_payload,
         reason=reason_str,
         request=request,
     )
