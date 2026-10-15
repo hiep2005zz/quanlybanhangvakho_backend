@@ -16,6 +16,12 @@ from app.models.entities import (
     WarehouseStockEntity,
     StockAuditEntity,
     StockTransferEntity,
+    OrderDispatchEntity,
+    DriverEntity,
+    VehicleEntity,
+    DeliveryTripEntity,
+    DeliveryTripStopEntity,
+    DeliveryTripDispatchEntity,
 )
 from app.models.supplier import SupplierEntity
 from app.models.goods_receipt import (
@@ -762,6 +768,32 @@ def init_db():
             print("Product stocks synchronized from warehouses successfully.")
         except Exception as sync_err:
             print(f"Error syncing product stocks from warehouses: {sync_err}")
+
+        # 11. Khởi tạo danh sách tài xế và phương tiện vận chuyển mẫu nếu chưa có
+        try:
+            if db.query(DriverEntity).count() == 0:
+                default_drivers = [
+                    DriverEntity(code="TX001", name="Nguyễn Văn Hùng", phone="0912345678", license_number="B2-12345678", status="ACTIVE"),
+                    DriverEntity(code="TX002", name="Trần Quốc Tài", phone="0987654321", license_number="C-87654321", status="ACTIVE"),
+                    DriverEntity(code="TX003", name="Lê Hoàng Long", phone="0905112233", license_number="C-45678912", status="ACTIVE"),
+                    DriverEntity(code="TX004", name="Phạm Minh Tuấn", phone="0938445566", license_number="D-98761234", status="ACTIVE"),
+                ]
+                db.add_all(default_drivers)
+                db.commit()
+                print("Default drivers seeded successfully.")
+
+            if db.query(VehicleEntity).count() == 0:
+                default_vehicles = [
+                    VehicleEntity(plate_number="29C-888.99", vehicle_type="Xe tải 1.5 tấn", capacity_kg=1500.0, status="ACTIVE"),
+                    VehicleEntity(plate_number="29C-678.90", vehicle_type="Xe tải 2.5 tấn", capacity_kg=2500.0, status="ACTIVE"),
+                    VehicleEntity(plate_number="51D-999.88", vehicle_type="Xe tải 3.5 tấn", capacity_kg=3500.0, status="ACTIVE"),
+                    VehicleEntity(plate_number="29B-123.45", vehicle_type="Xe Van 850kg", capacity_kg=850.0, status="ACTIVE"),
+                ]
+                db.add_all(default_vehicles)
+                db.commit()
+                print("Default vehicles seeded successfully.")
+        except Exception as seed_trip_err:
+            print(f"Error seeding drivers/vehicles: {seed_trip_err}")
 
         print("Database initialization completed successfully.")
     except Exception as e:

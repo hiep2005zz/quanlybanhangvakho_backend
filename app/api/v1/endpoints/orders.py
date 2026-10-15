@@ -8,7 +8,18 @@ Nếu tài khoản nhân viên đang ở trạng thái LOCKED, từ chối tạo
 """
 import json
 from uuid import uuid4
-from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEntity, Order, ProductEntity, OrderItemEntity, OrderStatus
+from app.models.entities import (
+    DealerDeliveryPointEntity,
+    DealerEntity,
+    OrderEntity,
+    Order,
+    ProductEntity,
+    OrderItemEntity,
+    OrderStatus,
+    OrderDispatchEntity,
+    InventoryTransactionEntity,
+    WarehouseStockEntity,
+)
 from typing import List, Optional, Union
 from datetime import date, datetime, timezone, timedelta
 from pydantic import BaseModel, Field
@@ -27,6 +38,7 @@ from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.user import USERS_DB
 from app.services.audit_service import log_audit_event
 from app.api.v1.endpoints.discounts import resolve_best_discount
+from app.services.inventory_availability_service import resolve_dealer_warehouse, get_or_create_warehouse_stock
 
 router = APIRouter()
 
@@ -990,7 +1002,277 @@ def get_order_regions(
     for r in db.query(DealerEntity.region).filter(DealerEntity.region.isnot(None)).all():
         if r[0]:
             regions.add(r[0].strip())
-    return sorted(list(regions))
+def _require_warehouse_or_admin(current_user: UserResponse) -> None:
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (current_user.roles or [current_user.role])
+    user_roles_lower = {str(r).lower() for r in user_roles}
+    if not (user_roles_lower & {"admin", "warehouse", "warehouse_manager", "warehouse_staff"}):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kho và Quản trị viên."
+        )
+
+
+@router.get("/warehouse/dispatch-pending")
+def get_warehouse_dispatch_pending(
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Tab 1: Lấy danh sách các đơn hàng đủ điều kiện xuất kho lần đầu.
+    Bao gồm các đơn ở trạng thái CONFIRMED, APPROVED, PICKING mà chưa hoàn tất xuất kho.
+    """
+    _require_warehouse_or_admin(current_user)
+
+    db_orders = db.query(OrderEntity).filter(
+        OrderEntity.status.in_(["CONFIRMED", "APPROVED", "PICKING"])
+    ).order_by(OrderEntity.id.desc()).all()
+
+    order_map = {}
+    for ord_obj in db_orders:
+        order_map[ord_obj.order_code.upper()] = ord_obj
+
+    for o in ORDERS_DB.values():
+        c_code = o.get("order_code", "").upper()
+        if o.get("status") in ["CONFIRMED", "APPROVED", "PICKING"] and c_code not in order_map:
+            order_map[c_code] = o
+
+    results = []
+    for code, ord_item in order_map.items():
+        is_entity = isinstance(ord_item, OrderEntity)
+        ord_id = ord_item.id if is_entity else ord_item.get("id")
+        dealer_id = ord_item.dealer_id if is_entity else ord_item.get("dealer_id")
+        dealer_name = ord_item.dealer_name if is_entity else ord_item.get("dealer_name")
+        created_at = ord_item.created_at if is_entity else ord_item.get("created_at")
+        ord_status = ord_item.status if is_entity else ord_item.get("status")
+        total_amount = ord_item.total_amount if is_entity else ord_item.get("total_amount", 0.0)
+        note = ord_item.note if is_entity else ord_item.get("note")
+
+        # Xác định kho phục vụ
+        dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+        if not dealer:
+            load_dealers_db()
+            dealer = DEALERS_DB.get(dealer_id)
+        warehouse_id, warehouse_name = resolve_dealer_warehouse(dealer)
+
+        items = []
+        if is_entity and ord_item.items_json:
+            try:
+                stored = json.loads(ord_item.items_json)
+                items = stored if isinstance(stored, list) else stored.get("items", [])
+            except Exception:
+                pass
+        elif not is_entity and ord_item.get("items"):
+            items = ord_item.get("items", [])
+
+        dispatch_count = db.query(OrderDispatchEntity).filter(
+            func.upper(OrderDispatchEntity.order_code) == code
+        ).count()
+
+        enriched_items = []
+        for it in items:
+            pid = it.get("product_id")
+            qty = int(it.get("quantity", 0))
+            delivered = int(it.get("delivered_quantity") or 0)
+            remaining = max(0, qty - delivered)
+
+            stock_rec = get_or_create_warehouse_stock(db, warehouse_id, warehouse_name, pid)
+            avail_stock = stock_rec.actual_stock if stock_rec.actual_stock is not None else (stock_rec.quantity_on_hand or 0)
+
+            enriched_items.append({
+                "product_id": pid,
+                "sku_id": it.get("sku_id") or it.get("product_code") or f"SP{pid:03d}",
+                "product_name": it.get("product_name") or f"SP #{pid}",
+                "quantity": qty,
+                "delivered_quantity": delivered,
+                "remaining_quantity": remaining,
+                "unit": it.get("unit_name", it.get("unit", "Cái")),
+                "available_stock": avail_stock,
+            })
+
+        if any(it["remaining_quantity"] > 0 for it in enriched_items):
+            results.append({
+                "id": ord_id,
+                "order_code": code,
+                "dealer_id": dealer_id,
+                "dealer_name": dealer_name,
+                "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                "status": ord_status,
+                "total_amount": total_amount,
+                "total_items": len(enriched_items),
+                "note": note,
+                "warehouse_id": warehouse_id,
+                "warehouse_name": warehouse_name,
+                "dispatch_count": dispatch_count,
+                "items": enriched_items,
+            })
+
+    return results
+
+
+@router.get("/warehouse/supplementary-pending")
+def get_warehouse_supplementary_pending(
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Tab 2: Lấy danh sách các đơn hàng còn nợ hàng (PARTIALLY_DELIVERED hoặc có shortage_quantity > 0).
+    """
+    _require_warehouse_or_admin(current_user)
+
+    all_active_orders = db.query(OrderEntity).filter(
+        OrderEntity.status.in_(["PARTIALLY_DELIVERED", "CONFIRMED", "PICKING", "APPROVED", "DELIVERED"])
+    ).order_by(OrderEntity.id.desc()).all()
+
+    order_map = {}
+    for ord_obj in all_active_orders:
+        order_map[ord_obj.order_code.upper()] = ord_obj
+
+    for o in ORDERS_DB.values():
+        c_code = o.get("order_code", "").upper()
+        if o.get("status") == "PARTIALLY_DELIVERED" and c_code not in order_map:
+            order_map[c_code] = o
+
+    results = []
+    for code, ord_item in order_map.items():
+        is_entity = isinstance(ord_item, OrderEntity)
+        ord_id = ord_item.id if is_entity else ord_item.get("id")
+        dealer_id = ord_item.dealer_id if is_entity else ord_item.get("dealer_id")
+        dealer_name = ord_item.dealer_name if is_entity else ord_item.get("dealer_name")
+        created_at = ord_item.created_at if is_entity else ord_item.get("created_at")
+        ord_status = ord_item.status if is_entity else ord_item.get("status")
+        total_amount = ord_item.total_amount if is_entity else ord_item.get("total_amount", 0.0)
+        note = ord_item.note if is_entity else ord_item.get("note")
+
+        dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+        if not dealer:
+            load_dealers_db()
+            dealer = DEALERS_DB.get(dealer_id)
+        warehouse_id, warehouse_name = resolve_dealer_warehouse(dealer)
+
+        items = []
+        if is_entity and ord_item.items_json:
+            try:
+                stored = json.loads(ord_item.items_json)
+                items = stored if isinstance(stored, list) else stored.get("items", [])
+            except Exception:
+                pass
+        elif not is_entity and ord_item.get("items"):
+            items = ord_item.get("items", [])
+
+        dispatches = db.query(OrderDispatchEntity).filter(
+            func.upper(OrderDispatchEntity.order_code) == code
+        ).order_by(OrderDispatchEntity.created_at.desc()).all()
+
+        last_dispatch = dispatches[0] if dispatches else None
+        last_dispatch_date = last_dispatch.created_at.isoformat() if (last_dispatch and hasattr(last_dispatch.created_at, "isoformat")) else (str(last_dispatch.created_at) if last_dispatch else None)
+
+        shortage_items = []
+        total_shortage_qty = 0
+
+        for it in items:
+            pid = it.get("product_id")
+            qty = int(it.get("quantity", 0))
+            delivered = int(it.get("delivered_quantity") or 0)
+            shortage = max(0, qty - delivered)
+
+            if shortage > 0:
+                stock_rec = get_or_create_warehouse_stock(db, warehouse_id, warehouse_name, pid)
+                avail_stock = stock_rec.actual_stock if stock_rec.actual_stock is not None else (stock_rec.quantity_on_hand or 0)
+
+                shortage_items.append({
+                    "product_id": pid,
+                    "sku_id": it.get("sku_id") or it.get("product_code") or f"SP{pid:03d}",
+                    "product_name": it.get("product_name") or f"SP #{pid}",
+                    "quantity": qty,
+                    "delivered_quantity": delivered,
+                    "shortage_quantity": shortage,
+                    "unit": it.get("unit_name", it.get("unit", "Cái")),
+                    "available_stock": avail_stock,
+                })
+                total_shortage_qty += shortage
+
+        if shortage_items and (ord_status == "PARTIALLY_DELIVERED" or len(dispatches) > 0):
+            results.append({
+                "id": ord_id,
+                "order_code": code,
+                "dealer_id": dealer_id,
+                "dealer_name": dealer_name,
+                "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                "status": ord_status,
+                "total_amount": total_amount,
+                "shortage_items_count": len(shortage_items),
+                "total_shortage_quantity": total_shortage_qty,
+                "last_dispatch_date": last_dispatch_date,
+                "dispatch_count": len(dispatches),
+                "note": note,
+                "warehouse_id": warehouse_id,
+                "warehouse_name": warehouse_name,
+                "items": shortage_items,
+            })
+
+    return results
+
+
+@router.get("/warehouse/dispatches")
+def get_warehouse_all_dispatches(
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Tab 3: Lấy danh sách tất cả các phiếu xuất kho (OrderDispatchEntity) trong hệ thống.
+    Dù đơn hàng đã hoàn thành 100% hay đang giao một phần, tất cả phiếu xuất kho đều được lưu trữ vĩnh viễn và không bao giờ bị ẩn đi.
+    """
+    _require_warehouse_or_admin(current_user)
+    dispatches = db.query(OrderDispatchEntity).order_by(OrderDispatchEntity.id.desc()).all()
+
+    results = []
+    for d in dispatches:
+        parsed_items = []
+        if d.items_json:
+            try:
+                parsed_items = json.loads(d.items_json)
+            except Exception:
+                pass
+
+        order = db.query(OrderEntity).filter(OrderEntity.id == d.order_id).first()
+        if not order and d.order_code:
+            order = db.query(OrderEntity).filter(func.upper(OrderEntity.order_code) == d.order_code.upper()).first()
+
+        dealer_name = ""
+        order_status = ""
+        total_order_amount = 0.0
+        if order:
+            dealer_name = order.dealer_name or ""
+            order_status = order.status or ""
+            total_order_amount = order.total_amount or 0.0
+        elif d.order_code and d.order_code in ORDERS_DB:
+            mem_ord = ORDERS_DB[d.order_code]
+            dealer_name = mem_ord.get("dealer_name", "")
+            order_status = mem_ord.get("status", "")
+            total_order_amount = mem_ord.get("total_amount", 0.0)
+
+        total_dispatched_qty = sum(int(it.get("dispatched_this_round") or it.get("quantity") or 0) for it in parsed_items)
+
+        results.append({
+            "id": d.id,
+            "dispatch_code": d.dispatch_code,
+            "order_id": d.order_id,
+            "order_code": d.order_code,
+            "dealer_name": dealer_name,
+            "order_status": order_status,
+            "total_order_amount": total_order_amount,
+            "dispatch_type": d.dispatch_type,
+            "round_number": d.round_number,
+            "warehouse_id": d.warehouse_id,
+            "warehouse_name": d.warehouse_name,
+            "performed_by": d.performed_by,
+            "note": d.note,
+            "created_at": d.created_at.isoformat() if hasattr(d.created_at, "isoformat") else str(d.created_at),
+            "items_count": len(parsed_items),
+            "total_dispatched_qty": total_dispatched_qty,
+            "items": parsed_items,
+        })
+    return results
 
 
 @router.get("", response_model=Union[OrderListFilteredResponse, List[OrderResponse]], dependencies=[Depends(RoleChecker(['Admin', 'Sales', 'Customer']))])
@@ -3645,28 +3927,41 @@ def unlock_dealer(
     return {"message": "Đã mở khóa giao dịch đại lý thành công.", "dealer": dealer}
 
 
+class ConfirmDispatchRequest(BaseModel):
+    delivered_quantities: dict[str, int]
+    note: Optional[str] = None
+
+
 class SupplementaryDeliveryRequest(BaseModel):
-    note: Optional[str] = "Giao bổ sung đợt 2 - hoàn tất đơn hàng"
+    note: Optional[str] = "Giao bổ sung - hoàn tất đơn hàng"
     delivered_quantities: Optional[dict[str, int]] = None
 
 
-@router.post("/{order_code}/supplementary-delivery")
-def execute_supplementary_delivery(
+def _execute_dispatch_transaction(
     order_code: str,
+    delivered_quantities: Optional[dict[str, int]],
+    note: Optional[str],
+    dispatch_type: str,
+    db: Session,
+    current_user: UserResponse,
     request: Request,
-    payload: Optional[SupplementaryDeliveryRequest] = None,
-    db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
 ):
     """
-    Xử lý giao bổ sung cho đơn hàng bị giao thiếu (Phương án 1).
-    Phân quyền: Nhân viên nội bộ (Admin, Sales Manager, Sales, Warehouse). Chặn vai trò customer.
+    Xử lý xuất kho thực tế (lần đầu hoặc giao bổ sung) có quản lý tồn kho và bảo toàn lịch sử phiếu xuất:
+    1. Kiểm tra quyền nhân viên kho (warehouse, warehouse_manager, admin). Chặn sales, customer, accountant.
+    2. Kiểm tra tính hợp lệ của số lượng xuất (không âm, không vượt quá SL còn thiếu, không vượt tồn kho khả dụng).
+    3. Trừ tồn giữ chỗ (reserved_stock) và trừ tồn thực tế (actual_stock / quantity_on_hand) trong DB Transaction.
+    4. Ghi nhận giao dịch xuất kho InventoryTransactionEntity (type='issue').
+    5. Tạo bản ghi Phiếu xuất kho OrderDispatchEntity (bất biến, không thể sửa sau khi đã xác nhận).
+    6. Cập nhật trạng thái đơn: PARTIALLY_DELIVERED nếu còn thiếu, DELIVERED nếu đã xuất đủ 100%.
     """
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    if "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "warehouse_manager", "warehouse_staff"]):
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (current_user.roles or [current_user.role])
+    user_roles_lower = {str(r).lower() for r in user_roles}
+    WAREHOUSE_ALLOWED = {"admin", "warehouse", "warehouse_manager", "warehouse_staff"}
+    if not (user_roles_lower & WAREHOUSE_ALLOWED):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Tài khoản đại lý không có quyền thực hiện giao hàng bổ sung."
+            detail="Truy cập bị từ chối (403 Forbidden). Chức năng xác nhận xuất kho chỉ dành cho Thủ kho và Quản trị viên."
         )
 
     target = None
@@ -3685,68 +3980,358 @@ def execute_supplementary_delivery(
             detail=f"Không tìm thấy đơn hàng có mã {order_code}."
         )
 
+    current_status = (db_order.status if db_order else target.get("status", "")).upper()
+    if current_status in ["CANCELLED", "REJECTED"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đơn hàng đang ở trạng thái '{current_status}', không thể thực hiện xuất kho."
+        )
+
+    # Đọc danh sách sản phẩm hiện tại
     items = []
-    if target and target.get("items"):
-        items = target["items"]
-    elif db_order and db_order.items_json:
+    if db_order and db_order.items_json:
         try:
             stored = json.loads(db_order.items_json)
             items = stored if isinstance(stored, list) else stored.get("items", [])
         except Exception:
             pass
+    if not items and target and target.get("items"):
+        items = target["items"]
 
-    req_map = (payload.delivered_quantities if payload and payload.delivered_quantities else {})
-    delivery_note = (payload.note if payload and payload.note else "Giao bổ sung đợt 2 - hoàn tất đơn hàng")
+    if not items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đơn hàng không có sản phẩm nào để xuất kho."
+        )
+
+    # Xác định kho hàng của đại lý
+    dealer_id = db_order.dealer_id if db_order else target.get("dealer_id")
+    dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+    if not dealer:
+        load_dealers_db()
+        dealer = DEALERS_DB.get(dealer_id)
+    warehouse_id, warehouse_name = resolve_dealer_warehouse(dealer)
+
+    req_map = {str(k): int(v) for k, v in delivered_quantities.items()} if delivered_quantities else {}
+
+    # Kiểm tra số lượng âm
+    for pid_str, q in req_map.items():
+        if q < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Số lượng xuất không được âm (Mã sản phẩm: {pid_str})."
+            )
+
+    # Đếm số lần xuất trước đó để gán mã phiếu xuất
+    prev_dispatches_count = db.query(OrderDispatchEntity).filter(
+        func.upper(OrderDispatchEntity.order_code) == order_code.upper()
+    ).count()
+    round_number = prev_dispatches_count + 1
+    dispatch_code = f"PXK-{order_code.upper()}-{round_number:02d}"
+
+    total_dispatch_this_round = 0
+    validated_dispatch_items = []
 
     for it in items:
-        p_id = str(it.get("product_id"))
-        qty = int(it.get("quantity", 0))
-        cur_del = int(it.get("delivered_quantity", 0))
-        if p_id in req_map:
-            add_qty = int(req_map[p_id])
-            it["delivered_quantity"] = min(qty, cur_del + add_qty)
-        else:
-            it["delivered_quantity"] = qty
-        it["shortage_quantity"] = max(0, qty - int(it["delivered_quantity"]))
+        pid = it.get("product_id")
+        pid_str = str(pid)
+        ordered_qty = int(it.get("quantity", 0))
+        cur_delivered = int(it.get("delivered_quantity") or 0)
+        remaining_qty = max(0, ordered_qty - cur_delivered)
+        conv_rate = float(it.get("conversion_rate", 1.0) or 1.0)
+        p_name = it.get("product_name") or f"SP #{pid}"
 
+        # Nếu không truyền trong request thì mặc định là 0 ở lần này
+        qty_to_dispatch = req_map.get(pid_str, 0)
+
+        if qty_to_dispatch > remaining_qty:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Số lượng xuất ({qty_to_dispatch}) vượt quá số lượng còn phải giao ({remaining_qty}) của sản phẩm '{p_name}'."
+            )
+
+        if qty_to_dispatch > 0:
+            # Kiểm tra tồn kho thực tế khả dụng tại kho
+            stock_rec = get_or_create_warehouse_stock(db, warehouse_id, warehouse_name, pid, for_update=True)
+            on_hand = stock_rec.actual_stock if stock_rec.actual_stock is not None else (stock_rec.quantity_on_hand or 0)
+            base_qty_to_deduct = int(round(qty_to_dispatch * conv_rate))
+            if base_qty_to_deduct > on_hand:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Số lượng xuất ({qty_to_dispatch}) vượt quá tồn kho thực tế khả dụng ({on_hand}) của sản phẩm '{p_name}' tại {warehouse_name}."
+                )
+
+        total_dispatch_this_round += qty_to_dispatch
+        validated_dispatch_items.append({
+            "item_ref": it,
+            "pid": pid,
+            "product_name": p_name,
+            "ordered_qty": ordered_qty,
+            "cur_delivered": cur_delivered,
+            "qty_to_dispatch": qty_to_dispatch,
+            "conv_rate": conv_rate,
+        })
+
+    if total_dispatch_this_round <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tổng số lượng xuất lần này phải lớn hơn 0."
+        )
+
+    now_utc = datetime.now(timezone.utc)
+    dispatch_snapshot_items = []
+
+    # Bắt đầu cập nhật kho và dữ liệu trong Database Transaction
+    for item_info in validated_dispatch_items:
+        it = item_info["item_ref"]
+        pid = item_info["pid"]
+        qty_out = item_info["qty_to_dispatch"]
+        conv = item_info["conv_rate"]
+        new_delivered = item_info["cur_delivered"] + qty_out
+        new_shortage = max(0, item_info["ordered_qty"] - new_delivered)
+
+        it["delivered_quantity"] = new_delivered
+        it["shortage_quantity"] = new_shortage
+
+        if qty_out > 0:
+            base_qty_deduct = int(round(qty_out * conv))
+            stock_rec = get_or_create_warehouse_stock(db, warehouse_id, warehouse_name, pid, for_update=True)
+            prev_stock = stock_rec.actual_stock or 0
+
+            # 1. Trừ tồn thực tế & nhả tồn giữ chỗ
+            stock_rec.actual_stock = max(0, (stock_rec.actual_stock or 0) - base_qty_deduct)
+            stock_rec.quantity_on_hand = stock_rec.actual_stock
+            stock_rec.reserved_stock = max(0, (stock_rec.reserved_stock or 0) - base_qty_deduct)
+            stock_rec.reserved_quantity = stock_rec.reserved_stock
+            stock_rec.updated_at = now_utc
+
+            # 2. Đồng bộ tồn bảng products
+            prod = db.query(ProductEntity).filter(ProductEntity.id == pid).first()
+            if prod and prod.stock is not None:
+                prod.stock = max(0, prod.stock - base_qty_deduct)
+
+            # 3. Ghi nhận giao dịch xuất kho InventoryTransactionEntity
+            inv_tx = InventoryTransactionEntity(
+                product_id=pid,
+                product_name=item_info["product_name"],
+                type="issue",
+                quantity=base_qty_deduct,
+                previous_stock=prev_stock,
+                new_stock=stock_rec.actual_stock,
+                performed_by=current_user.full_name or current_user.username,
+                user_role=current_user.role,
+                reason=f"Xuất kho đơn hàng {order_code} (Phiếu {dispatch_code})",
+                unit_name=it.get("unit_name", it.get("unit", "Cái")),
+                conversion_rate=conv,
+                base_quantity=float(base_qty_deduct),
+            )
+            db.add(inv_tx)
+
+        dispatch_snapshot_items.append({
+            "product_id": pid,
+            "sku_id": it.get("sku_id") or it.get("product_code") or f"SP{pid:03d}",
+            "product_name": item_info["product_name"],
+            "ordered_quantity": item_info["ordered_qty"],
+            "dispatched_this_round": qty_out,
+            "total_delivered": new_delivered,
+            "remaining_shortage": new_shortage,
+            "unit": it.get("unit_name", it.get("unit", "Cái")),
+        })
+
+    # Đánh giá trạng thái đơn hàng: Còn thiếu bất kỳ mặt hàng nào => PARTIALLY_DELIVERED
+    has_remaining_shortage = any(int(it.get("shortage_quantity", 0)) > 0 for it in items)
+    new_status = "PARTIALLY_DELIVERED" if has_remaining_shortage else "DELIVERED"
+
+    dispatch_note = (note.strip() if note and note.strip() else ("Xuất kho lần đầu" if round_number == 1 else f"Giao bổ sung đợt {round_number}"))
+
+    # 4. Tạo bản ghi Phiếu xuất kho OrderDispatchEntity (Bất biến, không cho phép sửa sau khi đã xác nhận)
+    dispatch_record = OrderDispatchEntity(
+        dispatch_code=dispatch_code,
+        order_id=db_order.id if db_order else (target.get("id") or 0),
+        order_code=order_code.upper(),
+        dispatch_type="INITIAL" if round_number == 1 else "SUPPLEMENTARY",
+        round_number=round_number,
+        warehouse_id=warehouse_id,
+        warehouse_name=warehouse_name,
+        performed_by=current_user.full_name or current_user.username,
+        note=dispatch_note,
+        items_json=json.dumps(dispatch_snapshot_items, ensure_ascii=False),
+        created_at=now_utc,
+    )
+    db.add(dispatch_record)
+
+    # 5. Cập nhật OrderEntity
+    if db_order:
+        db_order.status = new_status
+        db_order.items_json = json.dumps(items, ensure_ascii=False)
+        if db_order.note:
+            db_order.note += f" | {dispatch_code}: {dispatch_note}"
+        else:
+            db_order.note = f"{dispatch_code}: {dispatch_note}"
+
+    # 6. Cập nhật ORDERS_DB trong bộ nhớ
     if target:
         target["items"] = items
-        target["status"] = "DELIVERED"
+        target["status"] = new_status
         if target.get("note"):
-            target["note"] += f" | {delivery_note}"
+            target["note"] += f" | {dispatch_code}: {dispatch_note}"
         else:
-            target["note"] = delivery_note
+            target["note"] = f"{dispatch_code}: {dispatch_note}"
 
-    if db_order:
-        db_order.status = "DELIVERED"
-        try:
-            stored = json.loads(db_order.items_json) if db_order.items_json else {}
-            if isinstance(stored, dict):
-                stored["items"] = items
-                db_order.items_json = json.dumps(stored, ensure_ascii=False)
-            elif isinstance(stored, list):
-                db_order.items_json = json.dumps(items, ensure_ascii=False)
-        except Exception:
-            pass
-        if db_order.note:
-            db_order.note += f" | {delivery_note}"
-        else:
-            db_order.note = delivery_note
-        db.commit()
+    db.commit()
 
+    # 7. Ghi Audit Log cho hệ thống
     log_audit_event(
         db=db,
         user=current_user,
-        action_type="ORDER_SUPPLEMENTARY_DELIVERY",
+        action_type="ORDER_DISPATCH_CONFIRM" if round_number == 1 else "ORDER_SUPPLEMENTARY_DELIVERY",
         entity_type="Order",
         entity_id=order_code,
-        old_val={"action": "shortage_delivery"},
-        new_val={"items": items, "status": "DELIVERED"},
-        reason=delivery_note,
+        old_val={"status": current_status},
+        new_val={
+            "status": new_status,
+            "dispatch_code": dispatch_code,
+            "round": round_number,
+            "items": dispatch_snapshot_items,
+        },
+        reason=dispatch_note,
         request=request,
     )
 
-    if target:
-        return target
-    return get_order_detail(order_code=order_code, db=db, current_user=current_user)
+    return {
+        "status": new_status,
+        "success": True,
+        "message": f"Xác nhận xuất kho thành công phiếu {dispatch_code}.",
+        "dispatch_code": dispatch_code,
+        "round_number": round_number,
+        "order_status": new_status,
+        "items": items,
+        "order": target if target else {
+            "order_code": order_code,
+            "status": new_status,
+            "items": items,
+        },
+    }
+
+
+@router.post("/{order_code}/confirm-dispatch")
+def confirm_order_dispatch(
+    order_code: str,
+    payload: ConfirmDispatchRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Thủ kho xác nhận xuất kho lần đầu cho đơn hàng:
+    - Nhập số lượng thực xuất từng sản phẩm
+    - Trừ tồn giữ chỗ & trừ tồn thực tế
+    - Ghi nhận nợ hàng nếu xuất thiếu
+    - Sinh Phiếu xuất kho PXK bất biến
+    """
+    return _execute_dispatch_transaction(
+        order_code=order_code,
+        delivered_quantities=payload.delivered_quantities,
+        note=payload.note,
+        dispatch_type="INITIAL",
+        db=db,
+        current_user=current_user,
+        request=request,
+    )
+
+
+@router.post("/{order_code}/supplementary-delivery")
+def execute_supplementary_delivery(
+    order_code: str,
+    request: Request,
+    payload: Optional[SupplementaryDeliveryRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Xử lý giao bổ sung cho đơn hàng còn nợ hàng:
+    - Chỉ giao bổ sung các mặt hàng còn thiếu
+    - Cập nhật số lượng đã giao lũy kế
+    - Nếu còn thiếu tiếp tục giữ trạng thái PARTIALLY_DELIVERED, nếu đủ chuyển DELIVERED
+    - Sinh phiếu xuất kho PXK đợt bổ sung
+    """
+    deliv_map = payload.delivered_quantities if payload else None
+    deliv_note = payload.note if payload else None
+
+    # Nếu người dùng không gửi map chi tiết, đọc số lượng còn thiếu của đơn hàng để giao đủ số còn thiếu
+    if not deliv_map:
+        target = None
+        for o in ORDERS_DB.values():
+            if o["order_code"].upper() == order_code.upper():
+                target = o
+                break
+        db_order = db.query(OrderEntity).filter(func.upper(OrderEntity.order_code) == order_code.upper()).first()
+        items = []
+        if db_order and db_order.items_json:
+            try:
+                stored = json.loads(db_order.items_json)
+                items = stored if isinstance(stored, list) else stored.get("items", [])
+            except Exception:
+                pass
+        elif target and target.get("items"):
+            items = target["items"]
+
+        deliv_map = {}
+        for it in items:
+            q = int(it.get("quantity", 0))
+            d = int(it.get("delivered_quantity") or 0)
+            rem = max(0, q - d)
+            if rem > 0:
+                deliv_map[str(it.get("product_id"))] = rem
+
+    return _execute_dispatch_transaction(
+        order_code=order_code,
+        delivered_quantities=deliv_map,
+        note=deliv_note,
+        dispatch_type="SUPPLEMENTARY",
+        db=db,
+        current_user=current_user,
+        request=request,
+    )
+
+
+@router.get("/{order_code}/dispatch-history")
+def get_order_dispatch_history(
+    order_code: str,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Lấy lịch sử tất cả các phiếu xuất kho của đơn hàng (Phiếu xuất đợt 1, đợt 2...).
+    Phiếu xuất là bất biến (Read-Only) để đảm bảo tính minh bạch và truy vết.
+    """
+    dispatches = db.query(OrderDispatchEntity).filter(
+        func.upper(OrderDispatchEntity.order_code) == order_code.upper()
+    ).order_by(OrderDispatchEntity.round_number.asc()).all()
+
+    history = []
+    for d in dispatches:
+        parsed_items = []
+        if d.items_json:
+            try:
+                parsed_items = json.loads(d.items_json)
+            except Exception:
+                pass
+
+        history.append({
+            "id": d.id,
+            "dispatch_code": d.dispatch_code,
+            "order_code": d.order_code,
+            "dispatch_type": d.dispatch_type,
+            "round_number": d.round_number,
+            "warehouse_id": d.warehouse_id,
+            "warehouse_name": d.warehouse_name,
+            "performed_by": d.performed_by,
+            "note": d.note,
+            "created_at": d.created_at.isoformat() if hasattr(d.created_at, "isoformat") else str(d.created_at),
+            "items": parsed_items,
+        })
+
+    return history
+
 
