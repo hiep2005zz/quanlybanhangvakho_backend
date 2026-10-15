@@ -406,6 +406,21 @@ def create_stock_issue(
             detail="Số lượng xuất kho quá lớn (tối đa 10.000.000 đơn vị). Vui lòng nhập số lượng hợp lý."
         )
 
+    # Tiêu chí 1, 2, 4: Quản lý lô và chặn xuất lô quá hạn (kèm cơ chế ghi đè của Warehouse Manager)
+    deducted_batch = None
+    if db and prod_entity:
+        from app.services.batch_service import validate_and_deduct_batch_for_issue
+        deducted_batch = validate_and_deduct_batch_for_issue(
+            db=db,
+            product=prod_entity,
+            batch_number=data.batch_number,
+            quantity_to_deduct=float(base_qty),
+            warehouse_id=data.warehouse_id or 1,
+            override_expired=bool(data.override_expired),
+            override_reason=data.override_reason,
+            current_user=current_user,
+        )
+
     previous_stock = product["stock"] if product else prod_entity.stock
     if previous_stock < base_qty:
         raise HTTPException(
@@ -422,8 +437,9 @@ def create_stock_issue(
     prod_name = product["name"] if product else prod_entity.name
     prod_code = product["code"] if product else prod_entity.code
 
+    batch_info_str = f" [Lô: {deducted_batch.batch_number}]" if deducted_batch else ""
     unit_info_str = f" ({data.quantity} {chosen_unit} = {base_qty} {base_unit})" if chosen_unit != base_unit else ""
-    reason_str = f"Xuất kho tới: {data.destination}. {data.note or ''}{unit_info_str}".strip()
+    reason_str = f"Xuất kho tới: {data.destination}. {data.note or ''}{unit_info_str}{batch_info_str}".strip()
 
     tx = InventoryTransaction(
         id=len(INVENTORY_TRANSACTIONS) + 1,
@@ -471,6 +487,25 @@ def create_stock_issue(
             reason=reason_str,
         )
         db.add(db_tx)
+
+        if deducted_batch:
+            from app.models.goods_receipt import InventoryLedgerEntity
+            db.add(
+                InventoryLedgerEntity(
+                    product_id=prod_entity.id,
+                    warehouse_id=deducted_batch.warehouse_id,
+                    reference_code=f"ISSUE-{deducted_batch.batch_number}",
+                    transaction_type="ISSUE",
+                    quantity=-float(base_qty),
+                    previous_stock=float(previous_stock),
+                    new_stock=float(new_stock),
+                    batch_number=deducted_batch.batch_number,
+                    performed_by=current_user.full_name or current_user.username,
+                    note=reason_str,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+
         db.commit()
 
     # Ghi nhật ký xuất kho (đầy đủ các trường quy đổi trước và sau)

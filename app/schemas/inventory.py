@@ -25,6 +25,10 @@ class StockIssueRequest(BaseModel):
     note: Optional[str] = None
     unit_name: Optional[str] = None
     conversion_rate: Optional[float] = Field(None, gt=0)
+    batch_number: Optional[str] = Field(None, description="Số lô hàng xuất kho (bắt buộc nếu SKU quản lý lô)")
+    warehouse_id: Optional[int] = Field(1, description="ID kho xuất hàng")
+    override_expired: Optional[bool] = Field(False, description="Xác nhận ghi đè xuất lô quá hạn (chỉ Warehouse Manager)")
+    override_reason: Optional[str] = Field(None, description="Lý do xác nhận ghi đè xuất lô quá hạn")
 
 class StockUpdateRequest(BaseModel):
     new_stock: int = Field(..., ge=0)
