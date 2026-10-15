@@ -639,7 +639,9 @@ def get_products(
         q_term = search.strip().lower()
         filtered_items = [
             it for it in filtered_items
-            if (it.name and q_term in it.name.lower()) or (it.code and q_term in it.code.lower())
+            if (it.name and q_term in it.name.lower())
+            or (it.code and q_term in it.code.lower())
+            or (it.category and q_term in it.category.lower())
         ]
     if category and category.strip() and category.strip().lower() != "all":
         cat_term = category.strip().lower()
@@ -1516,6 +1518,7 @@ def bulk_preview_products(
     page: int = Query(1, ge=1),
     page_size: Optional[int] = Query(None),
     status_filter: str = Query("ALL"),
+    search: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
 ):
@@ -1523,7 +1526,7 @@ def bulk_preview_products(
     Endpoint 2: POST /api/v1/products/bulk-preview
     Nhận UploadFile Excel, validate từng dòng dữ liệu, so khớp SKU trong DB:
     - Báo lỗi chi tiết theo từng dòng (thiếu dữ liệu bắt buộc, sai định dạng số/chuỗi, đơn vị không hợp lệ).
-    - Hỗ trợ phân trang Server-side (mới đầu load 20 sản phẩm).
+    - Hỗ trợ phân trang Server-side (mới đầu load 20 sản phẩm) và tìm kiếm theo SKU/Tên/Danh mục.
     """
     if not file.filename.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(
@@ -1538,7 +1541,8 @@ def bulk_preview_products(
             db=db,
             page=page,
             page_size=page_size,
-            status_filter=status_filter
+            status_filter=status_filter,
+            search=search
         )
     except Exception as e:
         raise HTTPException(
@@ -1552,19 +1556,21 @@ def get_bulk_preview_page(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=500),
     status_filter: str = Query("ALL"),
+    search: Optional[str] = Query(None),
     current_user: UserResponse = Depends(require_permission(Permission.PRODUCT_WRITE.value))
 ):
     """
     Endpoint: GET /api/v1/products/bulk-preview/{file_id}
     Tải trang xem trước (Server-side Pagination 20 sản phẩm/trang) cho file đã upload:
-    - Khi người dùng bấm sang trang 2, 3... backend load tiếp 20 sản phẩm của trang đó.
+    - Khi người dùng bấm sang trang 2, 3... hoặc tìm kiếm, backend load tiếp sản phẩm tương ứng.
     """
     try:
         return ProductBulkImportService.get_preview_page(
             file_id=file_id,
             page=page,
             page_size=page_size,
-            status_filter=status_filter
+            status_filter=status_filter,
+            search=search
         )
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(ve))

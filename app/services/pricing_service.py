@@ -294,7 +294,8 @@ def get_products_for_customer(
         query = query.filter(
             or_(
                 func.lower(ProductEntity.name).like(term),
-                func.lower(ProductEntity.code).like(term)
+                func.lower(ProductEntity.code).like(term),
+                func.lower(ProductEntity.category).like(term),
             )
         )
 

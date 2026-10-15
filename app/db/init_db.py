@@ -116,6 +116,12 @@ def _ensure_legacy_columns(bind=engine):
             "discount_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
             "discount_type": ("VARCHAR(20) DEFAULT 'percent'", "NVARCHAR(20) DEFAULT 'percent'"),
         },
+        "product_batches": {
+            "manufacturing_date": ("DATETIME NULL", "DATETIME NULL"),
+        },
+        "goods_receipt_note_items": {
+            "manufacturing_date": ("DATETIME NULL", "DATETIME NULL"),
+        },
     }
     inspector = inspect(bind)
     dialect_name = bind.dialect.name
