@@ -149,9 +149,11 @@ def _format_adjustment_response(
         is_mgr = _is_manager_or_admin(current_user)
         is_adm = _is_admin(current_user)
         is_creator = False
-        if adj.created_by_id and current_user.id and adj.created_by_id == current_user.id:
+        if adj.created_by_id is not None and current_user.id is not None and str(adj.created_by_id) == str(current_user.id):
             is_creator = True
         elif adj.created_by and current_user.username and adj.created_by.strip().lower() == current_user.username.strip().lower():
+            is_creator = True
+        elif adj.created_by and current_user.full_name and adj.created_by.strip().lower() == current_user.full_name.strip().lower():
             is_creator = True
 
         # Four-Eyes áp dụng cho Quản lý kho, nhưng Admin tối cao được phép tự phê duyệt phiếu của chính mình
@@ -488,13 +490,14 @@ def approve_stock_adjustment(
 
     # 4. RÀNG BUỘC CỐT LÕI: FOUR-EYES PRINCIPLE (Người lập và người duyệt không được là một, NGOẠI TRỪ Admin tối cao)
     is_adm = _is_admin(current_user)
-    is_same_user_id = (adj.created_by_id is not None and current_user.id is not None and adj.created_by_id == current_user.id)
+    is_same_user_id = (adj.created_by_id is not None and current_user.id is not None and str(adj.created_by_id) == str(current_user.id))
     is_same_username = (adj.created_by and current_user.username and adj.created_by.strip().lower() == current_user.username.strip().lower())
+    is_same_fullname = (adj.created_by and current_user.full_name and adj.created_by.strip().lower() == current_user.full_name.strip().lower())
 
-    if (is_same_user_id or is_same_username) and not is_adm:
+    if (is_same_user_id or is_same_username or is_same_fullname) and not is_adm:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Quy chuẩn phê duyệt độc lập (Four-eyes principle): Người lập phiếu và người phê duyệt không được là một người. Vui lòng để một Quản lý kho khác hoặc Quản trị viên phê duyệt phiếu này."
+            detail="Quy chuẩn phê duyệt độc lập (Four-eyes principle): Quản lý kho không thể tự duyệt phiếu do chính mình lập. Vui lòng để một Quản lý kho khác hoặc Quản trị viên phê duyệt phiếu này."
         )
 
     # 5. Phân tích danh sách hàng để cân đối trừ kho
