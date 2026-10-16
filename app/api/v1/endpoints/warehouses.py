@@ -715,18 +715,7 @@ def assign_product_to_location(
 
     if payload.quantity <= 0:
         if stock_record:
-            old_qty = stock_record.quantity
             db.delete(stock_record)
-            if old_qty > 0:
-                prod.stock = max(0, (prod.stock or 0) - old_qty)
-                try:
-                    from app.api.v1.endpoints.products import RAW_PRODUCTS
-                    for raw_p in RAW_PRODUCTS:
-                        if raw_p.get("id") == prod.id:
-                            raw_p["stock"] = prod.stock
-                            break
-                except Exception:
-                    pass
             db.commit()
         return {
             "message": f"Đã giải phóng sản phẩm '{prod.name}' khỏi vị trí '{loc.location_code}'.",
@@ -735,6 +724,19 @@ def assign_product_to_location(
 
     old_qty = stock_record.quantity if stock_record else 0
     net_increase = payload.quantity - old_qty
+
+    # 0. Kiểm tra số lượng tồn chưa gán của sản phẩm (sản phẩm đã gán hết thì không thể gán thêm cho kệ khác)
+    total_assigned_other = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
+        LocationStockEntity.product_id == prod.id,
+        LocationStockEntity.id != (stock_record.id if stock_record else -1)
+    ).scalar() or 0
+    total_stock = prod.stock or 0
+    max_assignable = max(0, total_stock - int(total_assigned_other))
+    if payload.quantity > max_assignable:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Sản phẩm '{prod.name}' đã gán hết hoặc không đủ tồn kho chưa gán! Tổng tồn: {total_stock}, đã gán ở các kệ khác: {int(total_assigned_other)}. Tối đa chỉ có thể gán thêm {max_assignable} {prod.base_unit or 'Cái'} vào vị trí này."
+        )
 
     if net_increase > 0:
         # 1. Kiểm tra sức chứa & tải trọng tối đa của vị trí kệ (Location Capacity & Payload)
@@ -780,18 +782,6 @@ def assign_product_to_location(
             created_at=datetime.now(timezone.utc),
         )
         db.add(stock_record)
-
-    # Đồng bộ tổng tồn kho của sản phẩm (dữ liệu giả lập & DB) khi cập nhật tồn kệ
-    if net_increase != 0:
-        prod.stock = max(0, (prod.stock or 0) + net_increase)
-        try:
-            from app.api.v1.endpoints.products import RAW_PRODUCTS
-            for raw_p in RAW_PRODUCTS:
-                if raw_p.get("id") == prod.id:
-                    raw_p["stock"] = prod.stock
-                    break
-        except Exception:
-            pass
 
     db.commit()
 
