@@ -16,6 +16,8 @@ from app.models.entities import (
     WarehouseStockEntity,
     StockAuditEntity,
     StockTransferEntity,
+    DeliveryTripEntity,
+    DeliveryStopEntity,
     StockAdjustmentEntity,
 )
 from app.models.payment_collection import PaymentCollectionEntity
@@ -36,6 +38,7 @@ from app.models.warehouse import (
 )
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
+from app.models.invoice import InvoiceEntity
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 
@@ -86,6 +89,15 @@ def _ensure_legacy_columns(bind=engine):
             "unit_name": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
             "conversion_rate": ("FLOAT DEFAULT 1.0", "FLOAT DEFAULT 1.0"),
             "base_quantity": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "batch_number": ("VARCHAR(100) NULL", "NVARCHAR(100) NULL"),
+            "selected_batch_id": ("INTEGER NULL", "INT NULL"),
+            "suggested_batch_id": ("INTEGER NULL", "INT NULL"),
+            "batch_change_reason": ("NVARCHAR(500) NULL", "NVARCHAR(500) NULL"),
+        },
+        "inventory_ledgers": {
+            "selected_batch_id": ("INTEGER NULL", "INT NULL"),
+            "suggested_batch_id": ("INTEGER NULL", "INT NULL"),
+            "batch_change_reason": ("NVARCHAR(500) NULL", "NVARCHAR(500) NULL"),
         },
         "orders": {
             "delivery_point_id": ("INTEGER", "INT NULL"),
@@ -120,9 +132,35 @@ def _ensure_legacy_columns(bind=engine):
         },
         "product_batches": {
             "manufacturing_date": ("DATETIME NULL", "DATETIME NULL"),
+            "reserved_quantity": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
         },
         "goods_receipt_note_items": {
             "manufacturing_date": ("DATETIME NULL", "DATETIME NULL"),
+        },
+        "order_items": {
+            "suggested_batch_id": ("INTEGER NULL", "INT NULL"),
+            "selected_batch_id": ("INTEGER NULL", "INT NULL"),
+            "batch_change_reason": ("NVARCHAR(500) NULL", "NVARCHAR(500) NULL"),
+        },
+        "delivery_trips": {
+            "vehicle_plate": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
+            "driver_phone": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
+            "route_name": ("VARCHAR(255) NULL", "NVARCHAR(255) NULL"),
+            "warehouse_id": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
+            "warehouse_name": ("VARCHAR(255) NULL", "NVARCHAR(255) NULL"),
+            "estimated_delivery_time": ("DATETIME NULL", "DATETIME NULL"),
+            "dispatched_at": ("DATETIME NULL", "DATETIME NULL"),
+            "completed_at": ("DATETIME NULL", "DATETIME NULL"),
+            "note": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
+            "created_by": ("VARCHAR(100) DEFAULT ''", "NVARCHAR(100) DEFAULT ''"),
+        },
+        "delivery_stops": {
+            "actual_delivery_time": ("DATETIME NULL", "DATETIME NULL"),
+            "pod_image_url": ("VARCHAR(500) NULL", "NVARCHAR(500) NULL"),
+            "delivery_status": ("VARCHAR(30) NULL", "NVARCHAR(30) NULL"),
+            "failure_reason": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
+            "return_status": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
+            "items_detail": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
         },
     }
     inspector = inspect(bind)
@@ -317,6 +355,95 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (products.floor_price): {ex}")
+
+            # Migration bảng delivery_trips (SCRUM-84):
+            dt_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(delivery_trips)")).fetchall()]
+            if dt_cols:
+                if "license_plate" in dt_cols and "vehicle_plate" in dt_cols:
+                    conn.execute(text("UPDATE delivery_trips SET vehicle_plate = license_plate WHERE (vehicle_plate IS NULL OR vehicle_plate = '') AND license_plate IS NOT NULL;"))
+                if "departure_time" in dt_cols and "dispatched_at" in dt_cols:
+                    conn.execute(text("UPDATE delivery_trips SET dispatched_at = departure_time WHERE dispatched_at IS NULL AND departure_time IS NOT NULL;"))
+                if "expected_completion_time" in dt_cols and "estimated_delivery_time" in dt_cols:
+                    conn.execute(text("UPDATE delivery_trips SET estimated_delivery_time = expected_completion_time WHERE estimated_delivery_time IS NULL AND expected_completion_time IS NOT NULL;"))
+                if "actual_completion_time" in dt_cols and "completed_at" in dt_cols:
+                    conn.execute(text("UPDATE delivery_trips SET completed_at = actual_completion_time WHERE completed_at IS NULL AND actual_completion_time IS NOT NULL;"))
+                conn.commit()
+
+                # Xóa index của cột cũ trước khi drop column
+                for idx_name in [
+                    "ix_delivery_trips_expected_completion_time",
+                    "ix_delivery_trips_departure_time",
+                    "ix_delivery_trips_license_plate",
+                    "ix_delivery_trips_actual_completion_time",
+                ]:
+                    try:
+                        conn.execute(text(f"DROP INDEX IF EXISTS {idx_name};"))
+                        conn.commit()
+                    except Exception:
+                        pass
+
+                for old_c in ["license_plate", "departure_time", "expected_completion_time", "actual_completion_time"]:
+                    if old_c in dt_cols:
+                        try:
+                            conn.execute(text(f"ALTER TABLE delivery_trips DROP COLUMN {old_c};"))
+                            conn.commit()
+                        except Exception as ex:
+                            print(f"SQLite migration notice (delivery_trips DROP COLUMN {old_c}): {ex}")
+
+                try:
+                    conn.execute(text("DELETE FROM delivery_trips WHERE trip_code LIKE 'TRIP-DEMO-%' AND NOT EXISTS (SELECT 1 FROM delivery_stops WHERE delivery_stops.trip_id = delivery_trips.id);"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite cleanup notice (dummy delivery_trips): {ex}")
+
+            # Migration bảng delivery_stops (SCRUM-85):
+            ds_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(delivery_stops)")).fetchall()]
+            if ds_cols:
+                if "actual_delivery_time" not in ds_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE delivery_stops ADD COLUMN actual_delivery_time DATETIME;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (delivery_stops.actual_delivery_time): {ex}")
+                if "pod_image_url" not in ds_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE delivery_stops ADD COLUMN pod_image_url TEXT;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (delivery_stops.pod_image_url): {ex}")
+                if "delivery_status" not in ds_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE delivery_stops ADD COLUMN delivery_status VARCHAR(30);"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (delivery_stops.delivery_status): {ex}")
+                if "failure_reason" not in ds_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE delivery_stops ADD COLUMN failure_reason TEXT;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (delivery_stops.failure_reason): {ex}")
+                if "return_status" not in ds_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE delivery_stops ADD COLUMN return_status VARCHAR(50);"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (delivery_stops.return_status): {ex}")
+                if "items_detail" not in ds_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE delivery_stops ADD COLUMN items_detail TEXT;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (delivery_stops.items_detail): {ex}")
+
+                # Đồng bộ dữ liệu cũ nếu có
+                try:
+                    conn.execute(text("UPDATE delivery_stops SET actual_delivery_time = delivered_at WHERE actual_delivery_time IS NULL AND delivered_at IS NOT NULL;"))
+                    conn.execute(text("UPDATE delivery_stops SET failure_reason = failed_reason WHERE failure_reason IS NULL AND failed_reason IS NOT NULL;"))
+                    conn.execute(text("UPDATE delivery_stops SET delivery_status = status WHERE delivery_status IS NULL AND status IS NOT NULL;"))
+                    conn.commit()
+                except Exception:
+                    pass
         else:
             for sql_statement in [
                 "IF COL_LENGTH('users', 'avatar_url') IS NULL ALTER TABLE users ADD avatar_url NVARCHAR(500);",
@@ -348,6 +475,22 @@ def init_db():
                 "IF COL_LENGTH('discount_tiers', 'discount_type') IS NULL ALTER TABLE discount_tiers ADD discount_type NVARCHAR(20) DEFAULT 'percent';",
                 "UPDATE warehouse_stocks SET quantity_on_hand = actual_stock WHERE quantity_on_hand IS NULL OR quantity_on_hand = 0;",
                 "UPDATE warehouse_stocks SET reserved_quantity = reserved_stock WHERE reserved_quantity IS NULL;",
+                "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL AND COL_LENGTH('delivery_trips', 'vehicle_plate') IS NOT NULL UPDATE delivery_trips SET vehicle_plate = license_plate WHERE (vehicle_plate IS NULL OR vehicle_plate = '') AND license_plate IS NOT NULL;",
+                "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'dispatched_at') IS NOT NULL UPDATE delivery_trips SET dispatched_at = departure_time WHERE dispatched_at IS NULL AND departure_time IS NOT NULL;",
+                "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'estimated_delivery_time') IS NOT NULL UPDATE delivery_trips SET estimated_delivery_time = expected_completion_time WHERE estimated_delivery_time IS NULL AND expected_completion_time IS NOT NULL;",
+                "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN license_plate;",
+                "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN departure_time;",
+                "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN expected_completion_time;",
+                "IF COL_LENGTH('delivery_trips', 'actual_completion_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN actual_completion_time;",
+                "IF COL_LENGTH('delivery_stops', 'actual_delivery_time') IS NULL ALTER TABLE delivery_stops ADD actual_delivery_time DATETIME;",
+                "IF COL_LENGTH('delivery_stops', 'pod_image_url') IS NULL ALTER TABLE delivery_stops ADD pod_image_url NVARCHAR(500);",
+                "IF COL_LENGTH('delivery_stops', 'delivery_status') IS NULL ALTER TABLE delivery_stops ADD delivery_status VARCHAR(30);",
+                "IF COL_LENGTH('delivery_stops', 'failure_reason') IS NULL ALTER TABLE delivery_stops ADD failure_reason NVARCHAR(MAX);",
+                "IF COL_LENGTH('delivery_stops', 'return_status') IS NULL ALTER TABLE delivery_stops ADD return_status NVARCHAR(50);",
+                "IF COL_LENGTH('delivery_stops', 'items_detail') IS NULL ALTER TABLE delivery_stops ADD items_detail NVARCHAR(MAX);",
+                "UPDATE delivery_stops SET actual_delivery_time = delivered_at WHERE actual_delivery_time IS NULL AND delivered_at IS NOT NULL;",
+                "UPDATE delivery_stops SET failure_reason = failed_reason WHERE failure_reason IS NULL AND failed_reason IS NOT NULL;",
+                "UPDATE delivery_stops SET delivery_status = status WHERE delivery_status IS NULL AND status IS NOT NULL;",
             ]:
                 try:
                     conn.execute(text(sql_statement))

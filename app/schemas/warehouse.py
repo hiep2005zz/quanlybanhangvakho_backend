@@ -138,16 +138,33 @@ class ProductPickingLocation(BaseModel):
     available_quantity: int
 
 
+class ProductBatchInfo(BaseModel):
+    id: int
+    batch_number: str
+    manufacturing_date: Optional[str] = None
+    expiry_date: Optional[str] = None
+    quantity: float
+    reserved_quantity: float = 0.0
+    available_quantity: float
+
 class OrderPickingItemResponse(BaseModel):
     product_id: int
     product_code: str
     product_name: str
     ordered_quantity: int
     unit_name: str
+    conversion_rate: float = 1.0
+    base_quantity: float = 0.0
+    is_batch_managed: bool = False
     warehouse_id: Optional[int] = None
     warehouse_code: Optional[str] = None
     warehouse_name: Optional[str] = None
     locations: List[ProductPickingLocation] = []
+    # SCRUM-81: Gợi ý lô theo FEFO và danh sách lô hợp lệ
+    suggested_batch: Optional[ProductBatchInfo] = None
+    available_batches: List[ProductBatchInfo] = []
+    selected_batch_id: Optional[int] = None
+    batch_change_reason: Optional[str] = None
 
 
 # --- MASTER DATA: KHU VỰC (ZONE) & KỆ / DÃY (RACK / AISLE) ---
@@ -256,6 +273,9 @@ class BatchPickingRouteItem(BaseModel):
     bin: Optional[str] = None               # Ô chứa (Ô 01, Ô 02,...)
     pick_path_code: str                     # Chuỗi định tuyến tổng hợp để sắp xếp
     order_breakdown: List[OrderBreakdownItem] = []
+    is_batch_managed: bool = False
+    suggested_batch: Optional[ProductBatchInfo] = None
+    available_batches: List[ProductBatchInfo] = []
 
 
 class BatchPickingPreviewResponse(BaseModel):
