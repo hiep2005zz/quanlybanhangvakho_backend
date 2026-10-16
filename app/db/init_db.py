@@ -139,6 +139,18 @@ def _ensure_legacy_columns(bind=engine):
             "selected_batch_id": ("INTEGER NULL", "INT NULL"),
             "batch_change_reason": ("NVARCHAR(500) NULL", "NVARCHAR(500) NULL"),
         },
+        "delivery_trips": {
+            "vehicle_plate": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
+            "driver_phone": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
+            "route_name": ("VARCHAR(255) NULL", "NVARCHAR(255) NULL"),
+            "warehouse_id": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
+            "warehouse_name": ("VARCHAR(255) NULL", "NVARCHAR(255) NULL"),
+            "estimated_delivery_time": ("DATETIME NULL", "DATETIME NULL"),
+            "dispatched_at": ("DATETIME NULL", "DATETIME NULL"),
+            "completed_at": ("DATETIME NULL", "DATETIME NULL"),
+            "note": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
+            "created_by": ("VARCHAR(100) DEFAULT ''", "NVARCHAR(100) DEFAULT ''"),
+        },
     }
     inspector = inspect(bind)
     dialect_name = bind.dialect.name
