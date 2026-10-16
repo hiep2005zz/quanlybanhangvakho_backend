@@ -344,6 +344,46 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (products.floor_price): {ex}")
+
+            # Migration bảng delivery_trips (SCRUM-84):
+            dt_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(delivery_trips)")).fetchall()]
+            if dt_cols:
+                if "license_plate" in dt_cols and "vehicle_plate" in dt_cols:
+                    conn.execute(text("UPDATE delivery_trips SET vehicle_plate = license_plate WHERE (vehicle_plate IS NULL OR vehicle_plate = '') AND license_plate IS NOT NULL;"))
+                if "departure_time" in dt_cols and "dispatched_at" in dt_cols:
+                    conn.execute(text("UPDATE delivery_trips SET dispatched_at = departure_time WHERE dispatched_at IS NULL AND departure_time IS NOT NULL;"))
+                if "expected_completion_time" in dt_cols and "estimated_delivery_time" in dt_cols:
+                    conn.execute(text("UPDATE delivery_trips SET estimated_delivery_time = expected_completion_time WHERE estimated_delivery_time IS NULL AND expected_completion_time IS NOT NULL;"))
+                if "actual_completion_time" in dt_cols and "completed_at" in dt_cols:
+                    conn.execute(text("UPDATE delivery_trips SET completed_at = actual_completion_time WHERE completed_at IS NULL AND actual_completion_time IS NOT NULL;"))
+                conn.commit()
+
+                # Xóa index của cột cũ trước khi drop column
+                for idx_name in [
+                    "ix_delivery_trips_expected_completion_time",
+                    "ix_delivery_trips_departure_time",
+                    "ix_delivery_trips_license_plate",
+                    "ix_delivery_trips_actual_completion_time",
+                ]:
+                    try:
+                        conn.execute(text(f"DROP INDEX IF EXISTS {idx_name};"))
+                        conn.commit()
+                    except Exception:
+                        pass
+
+                for old_c in ["license_plate", "departure_time", "expected_completion_time", "actual_completion_time"]:
+                    if old_c in dt_cols:
+                        try:
+                            conn.execute(text(f"ALTER TABLE delivery_trips DROP COLUMN {old_c};"))
+                            conn.commit()
+                        except Exception as ex:
+                            print(f"SQLite migration notice (delivery_trips DROP COLUMN {old_c}): {ex}")
+
+                try:
+                    conn.execute(text("DELETE FROM delivery_trips WHERE trip_code LIKE 'TRIP-DEMO-%' AND NOT EXISTS (SELECT 1 FROM delivery_stops WHERE delivery_stops.trip_id = delivery_trips.id);"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite cleanup notice (dummy delivery_trips): {ex}")
         else:
             for sql_statement in [
                 "IF COL_LENGTH('users', 'avatar_url') IS NULL ALTER TABLE users ADD avatar_url NVARCHAR(500);",
@@ -375,6 +415,13 @@ def init_db():
                 "IF COL_LENGTH('discount_tiers', 'discount_type') IS NULL ALTER TABLE discount_tiers ADD discount_type NVARCHAR(20) DEFAULT 'percent';",
                 "UPDATE warehouse_stocks SET quantity_on_hand = actual_stock WHERE quantity_on_hand IS NULL OR quantity_on_hand = 0;",
                 "UPDATE warehouse_stocks SET reserved_quantity = reserved_stock WHERE reserved_quantity IS NULL;",
+                "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL AND COL_LENGTH('delivery_trips', 'vehicle_plate') IS NOT NULL UPDATE delivery_trips SET vehicle_plate = license_plate WHERE (vehicle_plate IS NULL OR vehicle_plate = '') AND license_plate IS NOT NULL;",
+                "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'dispatched_at') IS NOT NULL UPDATE delivery_trips SET dispatched_at = departure_time WHERE dispatched_at IS NULL AND departure_time IS NOT NULL;",
+                "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'estimated_delivery_time') IS NOT NULL UPDATE delivery_trips SET estimated_delivery_time = expected_completion_time WHERE estimated_delivery_time IS NULL AND expected_completion_time IS NOT NULL;",
+                "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN license_plate;",
+                "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN departure_time;",
+                "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN expected_completion_time;",
+                "IF COL_LENGTH('delivery_trips', 'actual_completion_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN actual_completion_time;",
             ]:
                 try:
                     conn.execute(text(sql_statement))

@@ -44,8 +44,8 @@ class DeliveryTripResponse(BaseModel):
     warehouse_id: Optional[str] = None
     warehouse_name: Optional[str] = None
     status: str  # IN_TRANSIT | DELIVERING | COMPLETED | CANCELLED
-    dispatched_at: datetime
-    estimated_delivery_time: datetime
+    dispatched_at: Optional[datetime] = None
+    estimated_delivery_time: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     note: Optional[str] = None
     is_overdue: bool = False
@@ -92,7 +92,7 @@ class DeliveryTripCreate(BaseModel):
     route_name: Optional[str] = None
     warehouse_id: Optional[str] = "1"
     warehouse_name: Optional[str] = "Kho Tổng Hà Nội"
-    estimated_delivery_time: datetime
+    estimated_delivery_time: Optional[datetime] = None
     note: Optional[str] = None
     stops: List[DeliveryStopCreate] = []
 

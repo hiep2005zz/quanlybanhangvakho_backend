@@ -30,6 +30,12 @@ def get_utc_now():
 
 def _seed_sample_trips_if_empty(db: Session):
     """Khởi tạo một số chuyến giao hàng mẫu nếu bảng delivery_trips đang trống."""
+    trips_without_time = db.query(DeliveryTripEntity).filter(DeliveryTripEntity.estimated_delivery_time.is_(None)).all()
+    if trips_without_time:
+        for t in trips_without_time:
+            t.estimated_delivery_time = (t.dispatched_at or get_utc_now()) + timedelta(hours=3)
+        db.commit()
+
     count = db.query(func.count(DeliveryTripEntity.id)).scalar()
     if count and count > 0:
         return
@@ -251,24 +257,31 @@ def _format_trip_response(trip: DeliveryTripEntity, now: datetime) -> DeliveryTr
     # Kiểm tra quá hạn: chuyến chưa hoàn thành và thời gian hiện tại > thời gian dự kiến
     is_active = trip.status in ["IN_TRANSIT", "DELIVERING"]
     est_time = trip.estimated_delivery_time
-    if est_time.tzinfo is None:
-        est_time = est_time.replace(tzinfo=timezone.utc)
-    
-    is_overdue = is_active and now > est_time
-    overdue_minutes = max(0, int((now - est_time).total_seconds() / 60)) if is_overdue else 0
+    is_overdue = False
+    overdue_minutes = 0
+    if est_time is not None:
+        if est_time.tzinfo is None:
+            est_time = est_time.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        is_overdue = is_active and now > est_time
+        overdue_minutes = max(0, int((now - est_time).total_seconds() / 60)) if is_overdue else 0
+
+    dispatched_at = trip.dispatched_at or now
+    estimated_delivery_time = trip.estimated_delivery_time or (dispatched_at + timedelta(hours=3))
 
     return DeliveryTripResponse(
         id=trip.id,
         trip_code=trip.trip_code,
         driver_name=trip.driver_name,
         driver_phone=trip.driver_phone,
-        vehicle_plate=trip.vehicle_plate,
+        vehicle_plate=trip.vehicle_plate or "",
         route_name=trip.route_name,
         warehouse_id=trip.warehouse_id,
         warehouse_name=trip.warehouse_name,
         status=trip.status,
-        dispatched_at=trip.dispatched_at,
-        estimated_delivery_time=trip.estimated_delivery_time,
+        dispatched_at=dispatched_at,
+        estimated_delivery_time=estimated_delivery_time,
         completed_at=trip.completed_at,
         note=trip.note,
         is_overdue=is_overdue,
@@ -450,6 +463,8 @@ def create_delivery_trip(
         ).scalar() or 0
         trip_code = f"CGH-{today_str}-{existing_count + 1:02d}"
 
+    est_delivery = data.estimated_delivery_time or (now + timedelta(hours=3))
+
     trip = DeliveryTripEntity(
         trip_code=trip_code,
         driver_name=data.driver_name,
@@ -460,7 +475,7 @@ def create_delivery_trip(
         warehouse_name=data.warehouse_name or "Kho Tổng Hà Nội",
         status="IN_TRANSIT",
         dispatched_at=now,
-        estimated_delivery_time=data.estimated_delivery_time,
+        estimated_delivery_time=est_delivery,
         note=data.note,
         created_by=current_user.username,
     )

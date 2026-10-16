@@ -454,7 +454,7 @@ class DeliveryTripEntity(Base):
     warehouse_name = Column(Unicode(255), nullable=True)
     status = Column(String(30), default="IN_TRANSIT", nullable=False, index=True)  # IN_TRANSIT | DELIVERING | COMPLETED | CANCELLED
     dispatched_at = Column(DateTime, default=get_utc_now, nullable=False)
-    estimated_delivery_time = Column(DateTime, nullable=False)
+    estimated_delivery_time = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     note = Column(UnicodeText, nullable=True)
     created_by = Column(Unicode(100), nullable=True)
