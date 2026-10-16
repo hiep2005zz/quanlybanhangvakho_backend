@@ -36,6 +36,7 @@ from app.models.warehouse import (
 )
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
+from app.models.invoice import InvoiceEntity
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 
