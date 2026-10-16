@@ -265,6 +265,13 @@ def _format_stop_response(stop: DeliveryStopEntity, db: Optional[Session] = None
         except Exception:
             items_list = None
 
+    if isinstance(items_list, dict):
+        items_list = items_list.get("items", [])
+    if not isinstance(items_list, list):
+        items_list = None
+    elif items_list:
+        items_list = [it for it in items_list if isinstance(it, dict)]
+
     actual_time = stop.actual_delivery_time or stop.delivered_at
     fail_rs = stop.failure_reason or stop.failed_reason
     deliv_status = stop.delivery_status or ("Delivered" if stop.status == "DELIVERED" else ("Failed" if stop.status == "FAILED" else stop.status))
