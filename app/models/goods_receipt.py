@@ -11,6 +11,7 @@ from sqlalchemy import (
     Unicode,
     UnicodeText,
     ForeignKey,
+    Index,
     CheckConstraint,
 )
 from sqlalchemy.orm import relationship
@@ -102,11 +103,13 @@ class ProductBatchEntity(Base):
     batch_number = Column(String(100), nullable=False, index=True)
     manufacturing_date = Column(DateTime, nullable=True)  # Ngày sản xuất
     expiry_date = Column(DateTime, nullable=True)  # Hạn sử dụng
-    quantity = Column(Float, default=0.0, nullable=False)  # Tồn kho còn lại theo lô (remaining_quantity)
+    quantity = Column(Float, default=0.0, nullable=False)  # Tồn kho thực tế / còn lại theo lô
+    reserved_quantity = Column(Float, default=0.0, nullable=False)  # Đang giữ chỗ / chờ xuất
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 
     __table_args__ = (
+        Index("ix_product_batches_sku_wh_expiry", "product_id", "warehouse_id", "expiry_date"),
         CheckConstraint("quantity >= 0", name="chk_product_batch_quantity_non_negative"),
         CheckConstraint(
             "expiry_date IS NULL OR manufacturing_date IS NULL OR expiry_date > manufacturing_date",
@@ -121,9 +124,12 @@ class ProductBatchEntity(Base):
     @remaining_quantity.setter
     def remaining_quantity(self, val: float):
         self.quantity = float(val or 0.0)
-
     product = relationship("ProductEntity", foreign_keys=[product_id])
     warehouse = relationship("WarehouseEntity", foreign_keys=[warehouse_id])
+
+    @property
+    def available_quantity(self) -> float:
+        return max(0.0, float(self.quantity or 0.0) - float(self.reserved_quantity or 0.0))
 
 
 class InventoryLedgerEntity(Base):
@@ -139,6 +145,10 @@ class InventoryLedgerEntity(Base):
     previous_stock = Column(Float, default=0.0)
     new_stock = Column(Float, default=0.0)
     batch_number = Column(String(100), nullable=True)
+    # SCRUM-81: Lưu vết lô gợi ý, lô đã chọn và lý do đổi lô trong thẻ kho
+    selected_batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True)
+    suggested_batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True)
+    batch_change_reason = Column(Unicode(500), nullable=True)
     performed_by = Column(Unicode(100), nullable=True)
     note = Column(UnicodeText, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)

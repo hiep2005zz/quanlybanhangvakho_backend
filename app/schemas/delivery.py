@@ -26,9 +26,15 @@ class DeliveryStopResponse(BaseModel):
     receiver_phone: Optional[str] = None
     amount: float = 0.0
     status: str  # PENDING | IN_TRANSIT | DELIVERED | FAILED
+    delivery_status: Optional[str] = None  # 'Pending' | 'Delivered' | 'Failed'
     estimated_arrival: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
+    actual_delivery_time: Optional[datetime] = None
     failed_reason: Optional[str] = None
+    failure_reason: Optional[str] = None
+    pod_image_url: Optional[str] = None
+    return_status: Optional[str] = None
+    items_detail: Optional[List[dict]] = None
     note: Optional[str] = None
 
     model_config = {"from_attributes": True}
@@ -44,8 +50,8 @@ class DeliveryTripResponse(BaseModel):
     warehouse_id: Optional[str] = None
     warehouse_name: Optional[str] = None
     status: str  # IN_TRANSIT | DELIVERING | COMPLETED | CANCELLED
-    dispatched_at: datetime
-    estimated_delivery_time: datetime
+    dispatched_at: Optional[datetime] = None
+    estimated_delivery_time: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     note: Optional[str] = None
     is_overdue: bool = False
@@ -60,9 +66,27 @@ class DeliveryTripResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DeliveryStopConfirmRequest(BaseModel):
+    receiver_name: str = Field(..., min_length=1, description="Họ tên người nhận hàng (bắt buộc)")
+    actual_delivery_time: Optional[datetime] = Field(None, description="Thời điểm giao thực tế (mặc định hiện tại)")
+    pod_image_url: str = Field(..., min_length=1, description="Đường dẫn ảnh biên bản giao nhận có chữ ký (POD)")
+    items_detail: Optional[List[dict]] = Field(None, description="Chi tiết số lượng thực giao từng dòng hàng")
+    note: Optional[str] = None
+
+
+class DeliveryStopFailureRequest(BaseModel):
+    failure_reason: str = Field(..., min_length=1, description="Lý do giao không thành công")
+    note: Optional[str] = None
+
+
 class DeliveryStopStatusUpdate(BaseModel):
     status: str = Field(..., description="Trạng thái mới: DELIVERED | FAILED | IN_TRANSIT | PENDING")
+    receiver_name: Optional[str] = None
+    actual_delivery_time: Optional[datetime] = None
+    pod_image_url: Optional[str] = None
+    failure_reason: Optional[str] = None
     failed_reason: Optional[str] = None
+    items_detail: Optional[List[dict]] = None
     note: Optional[str] = None
 
 
@@ -92,7 +116,7 @@ class DeliveryTripCreate(BaseModel):
     route_name: Optional[str] = None
     warehouse_id: Optional[str] = "1"
     warehouse_name: Optional[str] = "Kho Tổng Hà Nội"
-    estimated_delivery_time: datetime
+    estimated_delivery_time: Optional[datetime] = None
     note: Optional[str] = None
     stops: List[DeliveryStopCreate] = []
 

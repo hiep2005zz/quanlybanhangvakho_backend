@@ -220,6 +220,11 @@ class InventoryTransactionEntity(Base):
     unit_name = Column(Unicode(50), default="Cái")
     conversion_rate = Column(Float, default=1.0)
     base_quantity = Column(Float, default=0.0)
+    # SCRUM-81: Lưu vết lô gợi ý, lô đã chọn và lý do đổi lô (FEFO)
+    batch_number = Column(String(100), nullable=True)
+    selected_batch_id = Column(Integer, nullable=True)
+    suggested_batch_id = Column(Integer, nullable=True)
+    batch_change_reason = Column(Unicode(500), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
 
@@ -281,10 +286,16 @@ class OrderItemEntity(Base):
     unit_name = Column(Unicode(50), nullable=True)
     conversion_rate = Column(Float, default=1.0)
     is_reserved = Column(Boolean, default=False, nullable=False)
+    # SCRUM-81: Gợi ý và chọn lô xuất kho (FEFO)
+    suggested_batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True, index=True)
+    selected_batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True, index=True)
+    batch_change_reason = Column(Unicode(500), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
     order_rel = relationship("OrderEntity", backref="items_rel")
     product_rel = relationship("ProductEntity", backref="order_items")
+    suggested_batch_rel = relationship("ProductBatchEntity", foreign_keys=[suggested_batch_id])
+    selected_batch_rel = relationship("ProductBatchEntity", foreign_keys=[selected_batch_id])
 
 
 # Alias for OrderEntity
@@ -443,7 +454,7 @@ class DeliveryTripEntity(Base):
     warehouse_name = Column(Unicode(255), nullable=True)
     status = Column(String(30), default="IN_TRANSIT", nullable=False, index=True)  # IN_TRANSIT | DELIVERING | COMPLETED | CANCELLED
     dispatched_at = Column(DateTime, default=get_utc_now, nullable=False)
-    estimated_delivery_time = Column(DateTime, nullable=False)
+    estimated_delivery_time = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     note = Column(UnicodeText, nullable=True)
     created_by = Column(Unicode(100), nullable=True)
@@ -470,7 +481,13 @@ class DeliveryStopEntity(Base):
     status = Column(String(30), default="PENDING", nullable=False, index=True)  # PENDING | IN_TRANSIT | DELIVERED | FAILED
     estimated_arrival = Column(DateTime, nullable=True)
     delivered_at = Column(DateTime, nullable=True)
+    actual_delivery_time = Column(DateTime, nullable=True)
     failed_reason = Column(Unicode(255), nullable=True)
+    failure_reason = Column(Unicode(500), nullable=True)
+    pod_image_url = Column(Unicode(500), nullable=True)
+    delivery_status = Column(String(30), nullable=True)
+    return_status = Column(String(50), nullable=True)
+    items_detail = Column(UnicodeText, nullable=True)
     note = Column(UnicodeText, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
