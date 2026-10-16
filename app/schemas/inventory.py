@@ -156,6 +156,9 @@ class StockBookItem(BaseModel):
     min_stock: int
     is_low_stock: bool
     status: str
+    is_batch_managed: Optional[bool] = False
+    cost_price: Optional[float] = None
+    sell_price: Optional[float] = None
 
 
 class StockBookSummary(BaseModel):
@@ -173,5 +176,28 @@ class StockBookResponse(BaseModel):
     total: Optional[int] = None
     page: Optional[int] = None
     page_size: Optional[int] = None
+
+
+class StockCardItem(BaseModel):
+    id: int
+    product_id: int
+    product_code: str
+    product_name: str
+    warehouse_id: int
+    warehouse_name: str
+    reference_code: Optional[str] = None
+    transaction_type: str  # RECEIPT, ISSUE, ADJUST
+    quantity: float
+    previous_stock: float
+    new_stock: float
+    batch_number: Optional[str] = None
+    performed_by: Optional[str] = None
+    note: Optional[str] = None
+    created_at: datetime
+
+
+class StockCardResponse(BaseModel):
+    items: List[StockCardItem]
+    total: int
 
 

@@ -429,3 +429,31 @@ class StockTransferEntity(Base):
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 
+
+class StockAdjustmentEntity(Base):
+    __tablename__ = "stock_adjustments"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    warehouse_id = Column(String(50), nullable=False, index=True)
+    warehouse_name = Column(Unicode(255), nullable=False)
+    reason_type = Column(String(50), nullable=False)  # damaged, lost, expired, other
+    reason_note = Column(UnicodeText, nullable=False)
+    total_loss_value = Column(Float, default=0.0, nullable=False)
+    total_items = Column(Integer, default=0)
+    total_quantity = Column(Integer, default=0)
+    status = Column(String(20), default="PENDING", nullable=False)  # PENDING | APPROVED | REJECTED
+    items_json = Column(UnicodeText, nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by = Column(Unicode(100), nullable=False)
+    created_by_role = Column(String(50), nullable=True)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_by = Column(Unicode(100), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    rejected_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    rejected_by = Column(Unicode(100), nullable=True)
+    rejected_at = Column(DateTime, nullable=True)
+    rejection_reason = Column(UnicodeText, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+

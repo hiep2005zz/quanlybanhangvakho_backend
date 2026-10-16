@@ -172,14 +172,44 @@ def _format_audit_response(audit: StockAuditEntity, db: Session = None) -> Stock
     )
 
 
+def _get_valid_audit_warehouses(db: Optional[Session] = None) -> Dict[str, str]:
+    whs = dict(DEFAULT_WAREHOUSES)
+    if db:
+        try:
+            from app.models.goods_receipt import WarehouseEntity
+            db_whs = db.query(WarehouseEntity).filter(WarehouseEntity.is_active == True).all()
+            alias_map = {"KHO_HN": "WH01", "KHO_HCM": "WH02", "KHO_DN": "WH03"}
+            for wh in db_whs:
+                if wh.code:
+                    c_id = alias_map.get(wh.code, wh.code)
+                    whs[c_id] = wh.name
+                    whs[wh.code] = wh.name
+        except Exception:
+            pass
+    return whs
+
+
 @router.get("/warehouses")
 def get_audit_warehouses(
+    db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_warehouse_read),
 ):
     """Lấy danh sách các kho hỗ trợ kiểm kê."""
+    whs = dict(DEFAULT_WAREHOUSES)
+    if db:
+        try:
+            from app.models.goods_receipt import WarehouseEntity
+            db_whs = db.query(WarehouseEntity).filter(WarehouseEntity.is_active == True).all()
+            alias_map = {"KHO_HN": "WH01", "KHO_HCM": "WH02", "KHO_DN": "WH03"}
+            for wh in db_whs:
+                if wh.code:
+                    c_id = alias_map.get(wh.code, wh.code)
+                    whs[c_id] = wh.name
+        except Exception:
+            pass
     return [
         {"id": w_id, "name": w_name}
-        for w_id, w_name in DEFAULT_WAREHOUSES.items()
+        for w_id, w_name in whs.items()
     ]
 
 
@@ -198,13 +228,14 @@ def preview_audit_products(
     Xem trước danh sách sản phẩm và số lượng tồn chốt dự kiến theo phạm vi kiểm kê.
     Hỗ trợ phân trang 20 sản phẩm/trang để tải nhanh từng trang theo yêu cầu.
     """
-    if warehouse_id not in DEFAULT_WAREHOUSES:
+    valid_whs = _get_valid_audit_warehouses(db)
+    if warehouse_id not in valid_whs:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Kho '{warehouse_id}' không hợp lệ trong hệ thống."
         )
 
-    warehouse_name = DEFAULT_WAREHOUSES[warehouse_id]
+    warehouse_name = valid_whs[warehouse_id]
 
     query = db.query(ProductEntity).filter(
         (ProductEntity.status == "active") | (ProductEntity.status.is_(None)) | (ProductEntity.status != "inactive")
@@ -371,13 +402,14 @@ def create_stock_audit(
     Cho phép Thủ kho (warehouse), Quản lý kho (warehouse_manager) và Admin tạo phiếu.
     Chốt số lượng tồn kho ban đầu của từng sản phẩm tại kho được chọn làm căn cứ.
     """
-    if data.warehouse_id not in DEFAULT_WAREHOUSES:
+    valid_whs = _get_valid_audit_warehouses(db)
+    if data.warehouse_id not in valid_whs:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Mã kho '{data.warehouse_id}' không hợp lệ. Vui lòng chọn kho có thật trong hệ thống."
         )
 
-    warehouse_name = DEFAULT_WAREHOUSES[data.warehouse_id]
+    warehouse_name = valid_whs[data.warehouse_id]
 
     category_name = None
     if data.scope_type == "CATEGORY":

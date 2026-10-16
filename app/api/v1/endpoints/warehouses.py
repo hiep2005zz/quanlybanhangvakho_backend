@@ -12,7 +12,7 @@ from app.core.rbac import Permission
 from app.schemas.auth import UserResponse
 from app.models.goods_receipt import WarehouseEntity
 from app.models.warehouse import WarehouseLocationEntity, LocationStockEntity, WarehouseZoneEntity, WarehouseRackEntity
-from app.models.entities import ProductEntity, DealerEntity, OrderEntity
+from app.models.entities import ProductEntity, DealerEntity, OrderEntity, WarehouseStockEntity
 from app.schemas.warehouse import (
     WarehouseCreate,
     WarehouseUpdate,
@@ -50,6 +50,15 @@ router = APIRouter()
 WAREHOUSE_MANAGE_ROLES = ["admin", "warehouse", "warehouse_manager"]
 # Quyền xem kho & tra cứu soạn đơn: Toàn bộ nhân sự nghiệp vụ
 WAREHOUSE_VIEW_ROLES = ["admin", "warehouse", "warehouse_manager", "sales", "sales_manager", "accountant"]
+
+WAREHOUSE_CODE_ALIASES: Dict[str, List[str]] = {
+    "KHO_HN": ["WH01", "KHO_HN"],
+    "WH01": ["WH01", "KHO_HN"],
+    "KHO_HCM": ["WH02", "KHO_HCM"],
+    "WH02": ["WH02", "KHO_HCM"],
+    "KHO_DN": ["WH03", "KHO_DN"],
+    "WH03": ["WH03", "KHO_DN"],
+}
 
 
 # ==========================================================
@@ -647,6 +656,23 @@ def get_warehouse_location_products(
     products_map = {p.id: p for p in db.query(ProductEntity).filter(ProductEntity.id.in_(pids)).all()} if pids else {}
     locs_map = {l.id: l for l in db.query(WarehouseLocationEntity).filter(WarehouseLocationEntity.warehouse_id == warehouse_id).all()}
 
+    # Xác định các alias của kho trong WarehouseStockEntity
+    wh_aliases = [str(warehouse_id)]
+    if wh:
+        if wh.code:
+            wh_aliases.append(wh.code)
+            wh_aliases.extend(WAREHOUSE_CODE_ALIASES.get(wh.code, []))
+        wh_aliases.append(f"WH{wh.id:02d}")
+
+    ws_map: Dict[int, int] = {}
+    if pids:
+        ws_records = db.query(WarehouseStockEntity).filter(
+            WarehouseStockEntity.warehouse_id.in_(wh_aliases),
+            WarehouseStockEntity.product_id.in_(pids)
+        ).all()
+        for r in ws_records:
+            ws_map[r.product_id] = r.actual_stock or 0
+
     results: List[LocationProductStockItem] = []
     for s in stocks:
         prod = products_map.get(s.product_id)
@@ -654,11 +680,15 @@ def get_warehouse_location_products(
         if not prod or not loc:
             continue
 
-        # Tìm tổng tồn của sản phẩm tại kho này
-        wh_total = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
-            LocationStockEntity.warehouse_id == warehouse_id,
-            LocationStockEntity.product_id == s.product_id
-        ).scalar() or 0
+        # Tìm tổng tồn thực tế của sản phẩm tại kho này (WarehouseStockEntity)
+        if s.product_id in ws_map:
+            wh_total = ws_map[s.product_id]
+        else:
+            # Fallback nếu kho chưa tạo bản ghi WarehouseStockEntity: dùng tổng trên các kệ
+            wh_total = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
+                LocationStockEntity.warehouse_id == warehouse_id,
+                LocationStockEntity.product_id == s.product_id
+            ).scalar() or 0
 
         # Nếu có từ khóa tìm kiếm
         if search and search.strip():
@@ -695,6 +725,78 @@ def get_warehouse_location_products(
     return results
 
 
+@router.get("/{warehouse_id}/products/{product_id}/allocation-status", response_model=Dict[str, Any])
+def get_product_location_allocation_status(
+    warehouse_id: int,
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_VIEW_ROLES)),
+):
+    """
+    Tra cứu trạng thái phân bổ vị trí kệ của một sản phẩm trong kho:
+    - Tổng tồn tại kho (tồn thực tế)
+    - Đã phân bổ lên các kệ
+    - Số lượng chưa phân bổ (còn có thể xếp lên kệ)
+    - Chi tiết các kệ đang chứa sản phẩm
+    """
+    wh = db.query(WarehouseEntity).filter(WarehouseEntity.id == warehouse_id).first()
+    if not wh:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kho không tồn tại.")
+
+    prod = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
+    if not prod:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sản phẩm không tồn tại.")
+
+    wh_aliases = [str(warehouse_id)]
+    if wh.code:
+        wh_aliases.append(wh.code)
+        wh_aliases.extend(WAREHOUSE_CODE_ALIASES.get(wh.code, []))
+    wh_aliases.append(f"WH{wh.id:02d}")
+
+    ws = db.query(WarehouseStockEntity).filter(
+        WarehouseStockEntity.warehouse_id.in_(wh_aliases),
+        WarehouseStockEntity.product_id == prod.id
+    ).first()
+
+    wh_total = ws.actual_stock if ws is not None else (prod.stock or 0)
+
+    # Lấy các kệ đang chứa sản phẩm này trong kho
+    records = db.query(LocationStockEntity, WarehouseLocationEntity).join(
+        WarehouseLocationEntity, LocationStockEntity.location_id == WarehouseLocationEntity.id
+    ).filter(
+        LocationStockEntity.warehouse_id == warehouse_id,
+        LocationStockEntity.product_id == product_id,
+        LocationStockEntity.quantity > 0
+    ).all()
+
+    shelves = []
+    total_allocated = 0
+    for st, loc in records:
+        total_allocated += st.quantity
+        shelves.append({
+            "location_id": loc.id,
+            "location_code": loc.location_code,
+            "location_name": loc.location_name,
+            "zone": loc.zone,
+            "quantity": st.quantity
+        })
+
+    unallocated = max(0, int(wh_total - total_allocated))
+
+    return {
+        "product_id": prod.id,
+        "product_code": prod.code,
+        "product_name": prod.name,
+        "base_unit": prod.base_unit or "Cái",
+        "warehouse_id": warehouse_id,
+        "warehouse_name": wh.name,
+        "warehouse_total_stock": int(wh_total),
+        "total_allocated": int(total_allocated),
+        "unallocated_stock": int(unallocated),
+        "shelves": shelves,
+    }
+
+
 @router.post("/locations/assign-product", response_model=Dict[str, Any])
 def assign_product_to_location(
     payload: AssignProductToLocationRequest,
@@ -704,6 +806,9 @@ def assign_product_to_location(
     """
     Gán hoặc điều chỉnh số lượng sản phẩm vào một vị trí lưu kho.
     Nếu quantity == 0: Xóa sản phẩm khỏi vị trí đó.
+    Tuân thủ nghiêm ngặt:
+    - Không gán vượt quá tồn chưa phân bổ của sản phẩm trong kho.
+    - Không tự ý tăng/giảm tổng tồn ProductEntity.stock khi gán kệ.
     """
     loc = db.query(WarehouseLocationEntity).filter(WarehouseLocationEntity.id == payload.location_id).first()
     if not loc:
@@ -724,18 +829,7 @@ def assign_product_to_location(
 
     if payload.quantity <= 0:
         if stock_record:
-            old_qty = stock_record.quantity
             db.delete(stock_record)
-            if old_qty > 0:
-                prod.stock = max(0, (prod.stock or 0) - old_qty)
-                try:
-                    from app.api.v1.endpoints.products import RAW_PRODUCTS
-                    for raw_p in RAW_PRODUCTS:
-                        if raw_p.get("id") == prod.id:
-                            raw_p["stock"] = prod.stock
-                            break
-                except Exception:
-                    pass
             db.commit()
         return {
             "message": f"Đã giải phóng sản phẩm '{prod.name}' khỏi vị trí '{loc.location_code}'.",
@@ -745,8 +839,52 @@ def assign_product_to_location(
     old_qty = stock_record.quantity if stock_record else 0
     net_increase = payload.quantity - old_qty
 
+    # 1. KIỂM TRA TỒN CHƯA PHÂN BỔ (Không gán vượt quá số tồn kho chưa xếp lên kệ)
+    wh_aliases = [str(wh.id)]
+    if wh.code:
+        wh_aliases.append(wh.code)
+        wh_aliases.extend(WAREHOUSE_CODE_ALIASES.get(wh.code, []))
+    wh_aliases.append(f"WH{wh.id:02d}")
+
+    ws = db.query(WarehouseStockEntity).filter(
+        WarehouseStockEntity.warehouse_id.in_(wh_aliases),
+        WarehouseStockEntity.product_id == prod.id
+    ).first()
+
+    wh_actual_stock = ws.actual_stock if ws is not None else (prod.stock or 0)
+
+    # Tổng số lượng sản phẩm này đã được xếp lên các vị trí kệ KHÁC trong cùng kho
+    other_shelves_qty = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
+        LocationStockEntity.warehouse_id == loc.warehouse_id,
+        LocationStockEntity.product_id == prod.id,
+        LocationStockEntity.location_id != payload.location_id
+    ).scalar() or 0
+
+    max_assignable = max(0, int(wh_actual_stock - other_shelves_qty))
+
+    if payload.quantity > max_assignable:
+        if max_assignable == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Toàn bộ tồn kho của '{prod.name}' trong kho '{wh.name}' ({wh_actual_stock} {prod.base_unit or 'Cái'}) "
+                    f"đã được xếp hết lên các kệ khác! Không còn tồn chưa phân bổ để gán tiếp. "
+                    f"Vui lòng sử dụng tính năng 'Chuyển kệ' nếu muốn sắp xếp lại vị trí lưu trữ."
+                )
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Vượt quá số lượng tồn chưa phân bổ của sản phẩm '{prod.name}' trong kho '{wh.name}'! "
+                    f"Tổng tồn tại kho: {wh_actual_stock} {prod.base_unit or 'Cái'}, "
+                    f"đã xếp lên các kệ khác: {other_shelves_qty} {prod.base_unit or 'Cái'}. "
+                    f"Vị trí này chỉ được gán tối đa: {max_assignable} {prod.base_unit or 'Cái'}."
+                )
+            )
+
     if net_increase > 0:
-        # 1. Kiểm tra sức chứa & tải trọng tối đa của vị trí kệ (Location Capacity & Payload)
+        # 2. Kiểm tra sức chứa & tải trọng tối đa của vị trí kệ (Location Capacity & Payload)
         current_loc_stock = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
             LocationStockEntity.location_id == loc.id
         ).scalar() or 0
@@ -759,7 +897,7 @@ def assign_product_to_location(
                 detail=f"Vượt quá sức chứa và tải trọng của kệ! Vị trí {loc.location_code} chỉ có sức chứa tối đa là {int(loc_max_cap)} SP (hiện đang chứa {int(current_loc_stock)} SP, chỉ còn chỗ cho {avail} SP). Không thể nhập thêm {net_increase} SP."
             )
 
-        # 2. Kiểm tra ràng buộc sức chứa của toàn bộ Khu vực (Zone Capacity)
+        # 3. Kiểm tra ràng buộc sức chứa của toàn bộ Khu vực (Zone Capacity)
         if loc.zone:
             zone_locs = db.query(WarehouseLocationEntity).filter(
                 WarehouseLocationEntity.warehouse_id == loc.warehouse_id,
@@ -790,18 +928,8 @@ def assign_product_to_location(
         )
         db.add(stock_record)
 
-    # Đồng bộ tổng tồn kho của sản phẩm (dữ liệu giả lập & DB) khi cập nhật tồn kệ
-    if net_increase != 0:
-        prod.stock = max(0, (prod.stock or 0) + net_increase)
-        try:
-            from app.api.v1.endpoints.products import RAW_PRODUCTS
-            for raw_p in RAW_PRODUCTS:
-                if raw_p.get("id") == prod.id:
-                    raw_p["stock"] = prod.stock
-                    break
-        except Exception:
-            pass
-
+    # KHÓA CHẶT TỔNG TỒN: Gán kệ chỉ là phân bổ vị trí vật lý trong kho,
+    # TUYỆT ĐỐI KHÔNG tự động tăng/giảm prod.stock hay làm sai lệch tổng tồn!
     db.commit()
 
     return {
