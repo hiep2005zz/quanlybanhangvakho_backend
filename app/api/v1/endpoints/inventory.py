@@ -529,11 +529,32 @@ def create_stock_issue(
                 note=reason_str,
             )
 
-        target_wh_code = wh_entity.code if wh_entity else (str(data.warehouse_id) if data.warehouse_id else "WH01")
+        target_wh_code = str(data.warehouse_id) if data.warehouse_id in ["WH01", "WH02", "WH03"] else None
+        if not target_wh_code and wh_entity:
+            w_code = (wh_entity.code or "").upper()
+            if "HN" in w_code or wh_entity.id == 1:
+                target_wh_code = "WH01"
+            elif "HCM" in w_code or wh_entity.id == 3:
+                target_wh_code = "WH02"
+            elif "DN" in w_code or wh_entity.id == 2:
+                target_wh_code = "WH03"
+            else:
+                target_wh_code = wh_entity.code
+        if not target_wh_code:
+            target_wh_code = str(data.warehouse_id or "WH01")
+
         ws = db.query(WarehouseStockEntity).filter(
             WarehouseStockEntity.warehouse_id == target_wh_code,
             WarehouseStockEntity.product_id == data.product_id
         ).first()
+        if not ws:
+            alt_ids = [str(data.warehouse_id or "WH01"), "WH01"]
+            if wh_entity and wh_entity.code:
+                alt_ids.append(wh_entity.code)
+            ws = db.query(WarehouseStockEntity).filter(
+                WarehouseStockEntity.warehouse_id.in_(alt_ids),
+                WarehouseStockEntity.product_id == data.product_id
+            ).first()
         if ws:
             ws.actual_stock = max(0, (ws.actual_stock or 0) - int(base_qty))
             if ws.quantity_on_hand is not None:
