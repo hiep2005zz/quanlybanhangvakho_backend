@@ -1,12 +1,12 @@
 import json
-from datetime import datetime, timezone
-from typing import List, Optional
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from app.api.deps import require_permission, get_current_user, require_roles
 from app.core.database import get_db
 from app.core.rbac import Permission, Role
-from app.models.entities import CategoryEntity, ProductEntity, OrderEntity
+from app.models.entities import CategoryEntity, ProductEntity, OrderEntity, OrderItemEntity
 from app.schemas.auth import UserResponse
 from app.schemas.category import CategoryCreate, CategoryUpdate, CategoryResponse, CategoryTreeResponse
 
@@ -132,17 +132,16 @@ def get_category_sales_report(
     current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value, Role.SALES_MANAGER.value]))
 ):
     """
-    Báo cáo doanh số theo ngành hàng.
+    Báo cáo doanh số theo ngành hàng kết nối trực tiếp từ CSDL.
     Hỗ trợ lọc theo thời gian: 'today', 'month', 'quarter', 'all'.
     Tổng hợp doanh số lũy kế từ các nhóm con lên nhóm cha (hierarchical rollup).
-    Dữ liệu được trích xuất từ các đơn hàng thực tế (OrderEntity trong CSDL và cache bộ nhớ ORDERS_DB).
+    Dữ liệu được truy vấn thực tế từ OrderEntity và OrderItemEntity trong CSDL, loại trừ đơn hủy/từ chối/chờ duyệt.
     """
     categories = db.query(CategoryEntity).all()
     cat_by_id = {cat.id: cat for cat in categories}
     cat_by_name = {cat.name.strip().lower(): cat.id for cat in categories}
 
-    # 1. Xây dựng bản đồ ánh xạ sản phẩm -> ngành hàng (prod_to_cat)
-    # Ưu tiên lấy từ ProductEntity trong CSDL, sau đó kiểm tra RAW_PRODUCTS
+    # 1. Xây dựng bản đồ ánh xạ sản phẩm -> ngành hàng (prod_to_cat) từ CSDL
     prod_to_cat: dict[int, Optional[int]] = {}
     db_products = db.query(ProductEntity).all()
     for pe in db_products:
@@ -162,36 +161,64 @@ def get_category_sales_report(
             elif p.get("category") and p.get("category").strip().lower() in cat_by_name:
                 prod_to_cat[pid] = cat_by_name[p.get("category").strip().lower()]
 
-    # 2. Thu thập và khử trùng lặp đơn hàng từ DB và ORDERS_DB
-    from app.api.v1.endpoints.orders import ORDERS_DB
+    # 2. Truy vấn đơn hàng từ CSDL
+    INVALID_STATUSES = {"CANCELLED", "REJECTED", "EXPIRED", "DRAFT", "PENDING_APPROVAL"}
     seen_codes = set()
     orders_to_process = []
 
     db_orders = db.query(OrderEntity).all()
-    for o in db_orders:
-        if o.status != "CANCELLED":
-            code = (o.order_code or f"DB_{o.id}").strip().upper()
-            if code not in seen_codes:
-                seen_codes.add(code)
-                items = []
-                if o.items_json:
-                    try:
-                        parsed = json.loads(o.items_json)
-                        if isinstance(parsed, dict) and "items" in parsed:
-                            items = parsed["items"]
-                        elif isinstance(parsed, list):
-                            items = parsed
-                    except Exception:
-                        items = []
-                orders_to_process.append({
-                    "id": o.id,
-                    "order_code": o.order_code,
-                    "created_at": o.created_at,
-                    "items": items
-                })
+    all_order_ids = [o.id for o in db_orders]
+    
+    # Lấy các chi tiết đơn hàng từ bảng order_items
+    db_items = db.query(OrderItemEntity).filter(OrderItemEntity.order_id.in_(all_order_ids)).all() if all_order_ids else []
+    items_by_order: dict[int, list[dict]] = {}
+    for oi in db_items:
+        items_by_order.setdefault(oi.order_id, []).append({
+            "product_id": oi.product_id,
+            "quantity": oi.base_quantity if (oi.base_quantity and oi.base_quantity > 0) else (oi.quantity or 1),
+            "price": oi.unit_price or 0.0
+        })
 
-    for oid, o in ORDERS_DB.items():
-        if o.get("status") != "CANCELLED":
+    for o in db_orders:
+        st = (o.status or "").upper()
+        if st in INVALID_STATUSES:
+            continue
+        code = (o.order_code or f"DB_{o.id}").strip().upper()
+        if code not in seen_codes:
+            seen_codes.add(code)
+            items = items_by_order.get(o.id, [])
+            if not items and o.items_json:
+                try:
+                    parsed = json.loads(o.items_json)
+                    if isinstance(parsed, dict) and "items" in parsed:
+                        items = parsed["items"]
+                    elif isinstance(parsed, list):
+                        items = parsed
+                except Exception:
+                    items = []
+
+            # Tính tỷ lệ chiết khấu nếu có
+            discount_pct = float(o.discount_rate or 0.0)
+            if discount_pct <= 0 and o.discount_amount and o.total_amount:
+                sub = float(o.total_amount) + float(o.discount_amount)
+                if sub > 0:
+                    discount_pct = (float(o.discount_amount) / sub) * 100.0
+
+            orders_to_process.append({
+                "id": o.id,
+                "order_code": o.order_code,
+                "created_at": o.created_at,
+                "discount_rate": discount_pct,
+                "items": items
+            })
+
+    # Hỗ trợ cache bộ nhớ ORDERS_DB nếu có đơn chưa sync vào DB (bảo đảm tương thích ngược)
+    try:
+        from app.api.v1.endpoints.orders import ORDERS_DB
+        for oid, o in ORDERS_DB.items():
+            st = (o.get("status") or "").upper()
+            if st in INVALID_STATUSES:
+                continue
             code = (o.get("order_code") or f"MEM_{oid}").strip().upper()
             if code not in seen_codes:
                 seen_codes.add(code)
@@ -205,40 +232,57 @@ def get_category_sales_report(
                     "id": o.get("id", oid),
                     "order_code": o.get("order_code"),
                     "created_at": created_at_val,
+                    "discount_rate": float(o.get("discount_percent") or o.get("discount_rate") or 0.0),
                     "items": o.get("items", [])
                 })
+    except Exception:
+        pass
 
-    # 3. Lọc theo khoảng thời gian (period)
-    now = datetime.now(timezone.utc)
-    filtered_orders = []
-    for ord_obj in orders_to_process:
-        dt = ord_obj["created_at"]
-        if period and period != "all" and dt:
-            ord_dt = dt if (isinstance(dt, datetime) and dt.tzinfo) else (dt.replace(tzinfo=timezone.utc) if isinstance(dt, datetime) else None)
-            if ord_dt:
-                if period == "today":
-                    if ord_dt.date() != now.date():
-                        continue
-                elif period == "month":
-                    if (ord_dt.year, ord_dt.month) != (now.year, now.month):
-                        continue
-                elif period == "quarter":
-                    current_q = (now.month - 1) // 3 + 1
-                    ord_q = (ord_dt.month - 1) // 3 + 1
-                    if ord_dt.year != now.year or ord_q != current_q:
-                        continue
-        filtered_orders.append(ord_obj)
+    # 3. Lọc theo khoảng thời gian (period) với chuẩn múi giờ GMT+7
+    vn_tz = timezone(timedelta(hours=7))
+    now_vn = datetime.now(vn_tz)
+
+    def match_period(dt_val: Optional[Union[datetime, str]]) -> bool:
+        if not period or period == "all" or not dt_val:
+            return True
+        if isinstance(dt_val, str):
+            try:
+                dt_val = datetime.fromisoformat(dt_val.replace("Z", "+00:00"))
+            except Exception:
+                return True
+        if not isinstance(dt_val, datetime):
+            return True
+
+        if dt_val.tzinfo:
+            local_dt = dt_val.astimezone(vn_tz)
+        else:
+            local_dt = dt_val
+
+        if period == "today":
+            return local_dt.date() == now_vn.date()
+        elif period == "month":
+            return (local_dt.year, local_dt.month) == (now_vn.year, now_vn.month)
+        elif period == "quarter":
+            current_q = (now_vn.month - 1) // 3 + 1
+            ord_q = (local_dt.month - 1) // 3 + 1
+            return local_dt.year == now_vn.year and ord_q == current_q
+        return True
+
+    filtered_orders = [ord_obj for ord_obj in orders_to_process if match_period(ord_obj.get("created_at"))]
 
     # 4. Tính toán doanh số trực tiếp cho từng ngành hàng
     direct_sales = {cat.id: 0.0 for cat in categories}
     direct_sales[None] = 0.0
 
     for ord_obj in filtered_orders:
+        discount_rate = float(ord_obj.get("discount_rate", 0.0) or 0.0)
+        multiplier = max(0.0, 1.0 - (discount_rate / 100.0))
+
         for item in ord_obj.get("items", []):
             pid = item.get("product_id")
             qty = float(item.get("quantity", 0) or 0)
-            price = float(item.get("price", 0.0) or 0.0)
-            amount = qty * price
+            price = float(item.get("price", item.get("unit_price", 0.0)) or 0.0)
+            amount = qty * price * multiplier
 
             cid = prod_to_cat.get(pid)
             if cid in direct_sales:
@@ -260,8 +304,8 @@ def get_category_sales_report(
             "id": cat.id,
             "name": cat.name,
             "parent_id": cat.parent_id,
-            "direct_sales": direct_sales.get(cat.id, 0.0),
-            "total_sales": get_descendants_sales(cat.id)
+            "direct_sales": round(direct_sales.get(cat.id, 0.0), 2),
+            "total_sales": round(get_descendants_sales(cat.id), 2)
         })
 
     return report

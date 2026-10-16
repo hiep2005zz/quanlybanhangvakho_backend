@@ -1,8 +1,11 @@
 # backend/app/api/v1/endpoints/deliveries.py
 from __future__ import annotations
+import os
+import uuid
+import json
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 
@@ -17,6 +20,8 @@ from app.schemas.delivery import (
     DeliveryStopStatusUpdate,
     DeliveryTripStatusUpdate,
     DeliveryTripCreate,
+    DeliveryStopConfirmRequest,
+    DeliveryStopFailureRequest,
 )
 
 router = APIRouter()
@@ -30,6 +35,12 @@ def get_utc_now():
 
 def _seed_sample_trips_if_empty(db: Session):
     """Khởi tạo một số chuyến giao hàng mẫu nếu bảng delivery_trips đang trống."""
+    trips_without_time = db.query(DeliveryTripEntity).filter(DeliveryTripEntity.estimated_delivery_time.is_(None)).all()
+    if trips_without_time:
+        for t in trips_without_time:
+            t.estimated_delivery_time = (t.dispatched_at or get_utc_now()) + timedelta(hours=3)
+        db.commit()
+
     count = db.query(func.count(DeliveryTripEntity.id)).scalar()
     if count and count > 0:
         return
@@ -238,7 +249,53 @@ def _seed_sample_trips_if_empty(db: Session):
     db.commit()
 
 
-def _format_trip_response(trip: DeliveryTripEntity, now: datetime) -> DeliveryTripResponse:
+def _format_stop_response(stop: DeliveryStopEntity, db: Optional[Session] = None) -> DeliveryStopResponse:
+    items_list = None
+    if stop.items_detail:
+        try:
+            items_list = json.loads(stop.items_detail)
+        except Exception:
+            items_list = None
+
+    if items_list is None and db and stop.order_code:
+        try:
+            order = db.query(OrderEntity).filter(OrderEntity.order_code == stop.order_code).first()
+            if order and order.items_json:
+                items_list = json.loads(order.items_json)
+        except Exception:
+            items_list = None
+
+    actual_time = stop.actual_delivery_time or stop.delivered_at
+    fail_rs = stop.failure_reason or stop.failed_reason
+    deliv_status = stop.delivery_status or ("Delivered" if stop.status == "DELIVERED" else ("Failed" if stop.status == "FAILED" else stop.status))
+
+    return DeliveryStopResponse(
+        id=stop.id,
+        trip_id=stop.trip_id,
+        stop_order=stop.stop_order,
+        order_id=stop.order_id,
+        order_code=stop.order_code,
+        dealer_id=stop.dealer_id,
+        dealer_name=stop.dealer_name,
+        delivery_point=stop.delivery_point,
+        receiver_name=stop.receiver_name,
+        receiver_phone=stop.receiver_phone,
+        amount=stop.amount,
+        status=stop.status,
+        delivery_status=deliv_status,
+        estimated_arrival=stop.estimated_arrival,
+        delivered_at=actual_time,
+        actual_delivery_time=actual_time,
+        failed_reason=fail_rs,
+        failure_reason=fail_rs,
+        pod_image_url=stop.pod_image_url,
+        return_status=stop.return_status,
+        items_detail=items_list,
+        note=stop.note,
+    )
+
+
+def _format_trip_response(trip: DeliveryTripEntity, now: datetime, db: Optional[Session] = None) -> DeliveryTripResponse:
     stops = trip.stops or []
     total_stops = len(stops)
     delivered_stops = sum(1 for s in stops if s.status == "DELIVERED")
@@ -251,24 +308,31 @@ def _format_trip_response(trip: DeliveryTripEntity, now: datetime) -> DeliveryTr
     # Kiểm tra quá hạn: chuyến chưa hoàn thành và thời gian hiện tại > thời gian dự kiến
     is_active = trip.status in ["IN_TRANSIT", "DELIVERING"]
     est_time = trip.estimated_delivery_time
-    if est_time.tzinfo is None:
-        est_time = est_time.replace(tzinfo=timezone.utc)
-    
-    is_overdue = is_active and now > est_time
-    overdue_minutes = max(0, int((now - est_time).total_seconds() / 60)) if is_overdue else 0
+    is_overdue = False
+    overdue_minutes = 0
+    if est_time is not None:
+        if est_time.tzinfo is None:
+            est_time = est_time.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        is_overdue = is_active and now > est_time
+        overdue_minutes = max(0, int((now - est_time).total_seconds() / 60)) if is_overdue else 0
+
+    dispatched_at = trip.dispatched_at or now
+    estimated_delivery_time = trip.estimated_delivery_time or (dispatched_at + timedelta(hours=3))
 
     return DeliveryTripResponse(
         id=trip.id,
         trip_code=trip.trip_code,
         driver_name=trip.driver_name,
         driver_phone=trip.driver_phone,
-        vehicle_plate=trip.vehicle_plate,
+        vehicle_plate=trip.vehicle_plate or "",
         route_name=trip.route_name,
         warehouse_id=trip.warehouse_id,
         warehouse_name=trip.warehouse_name,
         status=trip.status,
-        dispatched_at=trip.dispatched_at,
-        estimated_delivery_time=trip.estimated_delivery_time,
+        dispatched_at=dispatched_at,
+        estimated_delivery_time=estimated_delivery_time,
         completed_at=trip.completed_at,
         note=trip.note,
         is_overdue=is_overdue,
@@ -278,7 +342,7 @@ def _format_trip_response(trip: DeliveryTripEntity, now: datetime) -> DeliveryTr
         remaining_stops=remaining_stops,
         total_trip_value=total_trip_value,
         remaining_value=remaining_value,
-        stops=[DeliveryStopResponse.model_validate(s) for s in stops],
+        stops=[_format_stop_response(s, db) for s in stops],
     )
 
 
@@ -389,7 +453,7 @@ def get_in_transit_trips(
 
     trips = query.order_by(DeliveryTripEntity.dispatched_at.desc()).all()
 
-    return [_format_trip_response(t, now) for t in trips]
+    return [_format_trip_response(t, now, db) for t in trips]
 
 
 @router.get("/orders-ready")
@@ -431,7 +495,7 @@ def get_trip_detail(
         trip = db.query(DeliveryTripEntity).filter(DeliveryTripEntity.trip_code == trip_id).first()
     if not trip:
         raise HTTPException(status_code=404, detail="Không tìm thấy chuyến giao hàng này.")
-    return _format_trip_response(trip, now)
+    return _format_trip_response(trip, now, db)
 
 
 @router.post("/trips", response_model=DeliveryTripResponse, status_code=status.HTTP_201_CREATED)
@@ -450,6 +514,8 @@ def create_delivery_trip(
         ).scalar() or 0
         trip_code = f"CGH-{today_str}-{existing_count + 1:02d}"
 
+    est_delivery = data.estimated_delivery_time or (now + timedelta(hours=3))
+
     trip = DeliveryTripEntity(
         trip_code=trip_code,
         driver_name=data.driver_name,
@@ -460,7 +526,7 @@ def create_delivery_trip(
         warehouse_name=data.warehouse_name or "Kho Tổng Hà Nội",
         status="IN_TRANSIT",
         dispatched_at=now,
-        estimated_delivery_time=data.estimated_delivery_time,
+        estimated_delivery_time=est_delivery,
         note=data.note,
         created_by=current_user.username,
     )
@@ -480,6 +546,7 @@ def create_delivery_trip(
             receiver_phone=stop_data.receiver_phone,
             amount=stop_data.amount,
             status="IN_TRANSIT",
+            delivery_status="Pending",
             estimated_arrival=stop_data.estimated_arrival,
             note=stop_data.note,
         )
@@ -493,7 +560,7 @@ def create_delivery_trip(
 
     db.commit()
     db.refresh(trip)
-    return _format_trip_response(trip, now)
+    return _format_trip_response(trip, now, db)
 
 
 @router.patch("/trips/{trip_id}/status", response_model=DeliveryTripResponse)
@@ -522,51 +589,152 @@ def update_trip_status(
         for stop in trip.stops:
             if stop.status != "DELIVERED":
                 stop.status = "DELIVERED"
+                stop.delivery_status = "Delivered"
                 if not stop.delivered_at:
                     stop.delivered_at = now
+                if not stop.actual_delivery_time:
+                    stop.actual_delivery_time = now
     elif new_status != "COMPLETED":
         trip.completed_at = None
 
     db.commit()
     db.refresh(trip)
-    return _format_trip_response(trip, now)
+    return _format_trip_response(trip, now, db)
 
 
-@router.patch("/stops/{stop_id}/status", response_model=DeliveryStopResponse)
-def update_stop_status(
+@router.post("/upload-pod")
+async def upload_pod_image(
+    file: UploadFile = File(...),
+    current_user: UserResponse = Depends(require_roles(DELIVERY_STOP_UPDATE_ROLES)),
+):
+    """
+    SCRUM-85: Upload tệp ảnh chứng từ / biên bản giao nhận có chữ ký (Proof of Delivery - POD).
+    Chấp nhận các định dạng ảnh: .jpg, .jpeg, .png, .webp.
+    Lưu trữ vào thư mục tĩnh /uploads/pod/ và trả về URL hợp lệ để lưu vào CSDL.
+    """
+    allowed_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in allowed_exts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Định dạng tệp không hợp lệ. Hệ thống chỉ chấp nhận ảnh định dạng JPG, JPEG, PNG, WEBP."
+        )
+
+    # Thư mục uploads/pod (trong backend/uploads/pod khớp với app.mount("/uploads", ...))
+    backend_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+    pod_dir = os.path.join(backend_root, "uploads", "pod")
+    os.makedirs(pod_dir, exist_ok=True)
+
+    filename = f"pod_{uuid.uuid4().hex[:12]}_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
+    filepath = os.path.join(pod_dir, filename)
+
+    contents = await file.read()
+    if len(contents) > 10 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Dung lượng tệp vượt quá giới hạn tối đa 10MB."
+        )
+
+    with open(filepath, "wb") as f:
+        f.write(contents)
+
+    return {
+        "url": f"/uploads/pod/{filename}",
+        "filename": filename,
+        "status": "success",
+        "message": "Tải lên ảnh chứng từ giao hàng thành công."
+    }
+
+
+@router.post("/stops/{stop_id}/confirm-delivery", response_model=DeliveryStopResponse)
+def confirm_delivery_success(
     stop_id: int,
-    data: DeliveryStopStatusUpdate,
+    data: DeliveryStopConfirmRequest,
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_roles(DELIVERY_STOP_UPDATE_ROLES)),
 ):
     """
-    Cập nhật trạng thái điểm giao hàng (DELIVERED hoặc FAILED).
-    Quy tắc nghiệp vụ 1:
-    - Hàng hóa khi đã xuất kho thuộc trách nhiệm của chuyến/tài xế.
-    - Điểm giao FAILED tuyệt đối KHÔNG tự động cộng lại tồn kho khả dụng.
+    SCRUM-85: Xác nhận giao hàng thành công kèm ảnh chứng từ (POD).
+    - Cập nhật điểm giao: status = DELIVERED, delivery_status = Delivered.
+    - Lưu họ tên người nhận, thời gian thực tế, đường dẫn ảnh chứng từ pod_image_url.
+    - Cập nhật Order liên quan sang DELIVERED để chính thức kích hoạt điều kiện mở khóa cho Kế toán phát hành hóa đơn ở Sprint 7.
+    - Tự động hoàn tất chuyến giao nếu tất cả điểm giao đã kết thúc.
     """
     now = get_utc_now()
     stop = db.query(DeliveryStopEntity).filter(DeliveryStopEntity.id == stop_id).first()
     if not stop:
-        raise HTTPException(status_code=404, detail="Không tìm thấy điểm giao này.")
+        raise HTTPException(status_code=404, detail="Không tìm thấy điểm giao hàng này.")
 
-    new_status = data.status.upper().strip()
-    if new_status not in ["DELIVERED", "FAILED", "IN_TRANSIT", "PENDING"]:
-        raise HTTPException(status_code=400, detail="Trạng thái không hợp lệ. Cho phép: DELIVERED, FAILED, IN_TRANSIT, PENDING.")
+    actual_time = data.actual_delivery_time or now
+    if actual_time.tzinfo is None:
+        actual_time = actual_time.replace(tzinfo=timezone.utc)
 
-    stop.status = new_status
+    # 1. Cập nhật thông tin điểm giao
+    stop.status = "DELIVERED"
+    stop.delivery_status = "Delivered"
+    stop.receiver_name = data.receiver_name.strip()
+    stop.delivered_at = actual_time
+    stop.actual_delivery_time = actual_time
+    stop.pod_image_url = data.pod_image_url.strip() if data.pod_image_url else None
+    stop.failed_reason = None
+    stop.failure_reason = None
+    stop.return_status = None
     if data.note:
-        stop.note = data.note
-    if new_status == "DELIVERED":
-        stop.delivered_at = now
-        stop.failed_reason = None
-        # Cập nhật order tương ứng thành DELIVERED
-        if stop.order_code:
-            order = db.query(OrderEntity).filter(OrderEntity.order_code == stop.order_code).first()
-            if order and order.status != "DELIVERED":
-                order.status = "DELIVERED"
-    elif new_status == "FAILED":
-        stop.failed_reason = data.failed_reason or "Khách hẹn lại / Không nhận hàng"
+        stop.note = data.note.strip()
+    if data.items_detail is not None:
+        stop.items_detail = json.dumps(data.items_detail, ensure_ascii=False)
+
+    # 2. Cập nhật OrderEntity liên quan sang DELIVERED (Sprint 7 invoice trigger)
+    if stop.order_code:
+        order = db.query(OrderEntity).filter(OrderEntity.order_code == stop.order_code).first()
+        if order:
+            order.status = "DELIVERED"
+
+    db.flush()
+
+    # 3. Kiểm tra xem toàn bộ các điểm giao trong chuyến đã hoàn thành chưa
+    trip = db.query(DeliveryTripEntity).filter(DeliveryTripEntity.id == stop.trip_id).first()
+    if trip and trip.status in ["IN_TRANSIT", "DELIVERING"]:
+        remaining = db.query(func.count(DeliveryStopEntity.id)).filter(
+            DeliveryStopEntity.trip_id == trip.id,
+            DeliveryStopEntity.status.in_(["PENDING", "IN_TRANSIT"])
+        ).scalar() or 0
+        if remaining == 0:
+            trip.status = "COMPLETED"
+            trip.completed_at = now
+
+    db.commit()
+    db.refresh(stop)
+    return _format_stop_response(stop, db)
+
+
+@router.post("/stops/{stop_id}/record-failure", response_model=DeliveryStopResponse)
+def record_delivery_failure(
+    stop_id: int,
+    data: DeliveryStopFailureRequest,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(DELIVERY_STOP_UPDATE_ROLES)),
+):
+    """
+    SCRUM-85: Ghi nhận giao hàng không thành công (giao thất bại).
+    - Cập nhật điểm giao sang FAILED (delivery_status = Failed).
+    - Lưu lý do giao thất bại (failure_reason).
+    - Ghi nhận hàng chuyển sang trạng thái chờ hoàn kho / quay về kho (return_status = 'CHỜ_HOÀN_KHO').
+    - Tuyệt đối không làm giảm hoặc âm tồn kho (hàng thuộc trách nhiệm tài xế trên chuyến quay về kho, chuẩn bị cho quy trình xử lý đổi trả ở Sprint 8).
+    """
+    now = get_utc_now()
+    stop = db.query(DeliveryStopEntity).filter(DeliveryStopEntity.id == stop_id).first()
+    if not stop:
+        raise HTTPException(status_code=404, detail="Không tìm thấy điểm giao hàng này.")
+
+    reason = data.failure_reason.strip()
+    stop.status = "FAILED"
+    stop.delivery_status = "Failed"
+    stop.failed_reason = reason
+    stop.failure_reason = reason
+    stop.return_status = "CHỜ_HOÀN_KHO"
+    if data.note:
+        stop.note = data.note.strip()
 
     db.flush()
 
@@ -583,5 +751,74 @@ def update_stop_status(
 
     db.commit()
     db.refresh(stop)
-    return DeliveryStopResponse.model_validate(stop)
+    return _format_stop_response(stop, db)
+
+
+@router.patch("/stops/{stop_id}/status", response_model=DeliveryStopResponse)
+def update_stop_status(
+    stop_id: int,
+    data: DeliveryStopStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(DELIVERY_STOP_UPDATE_ROLES)),
+):
+    """
+    Cập nhật trạng thái điểm giao hàng (DELIVERED hoặc FAILED) - Tương thích ngược toàn diện.
+    Quy tắc nghiệp vụ 1:
+    - Hàng hóa khi đã xuất kho thuộc trách nhiệm của chuyến/tài xế.
+    - Điểm giao FAILED tuyệt đối KHÔNG tự động cộng lại tồn kho khả dụng.
+    """
+    now = get_utc_now()
+    stop = db.query(DeliveryStopEntity).filter(DeliveryStopEntity.id == stop_id).first()
+    if not stop:
+        raise HTTPException(status_code=404, detail="Không tìm thấy điểm giao này.")
+
+    new_status = data.status.upper().strip()
+    if new_status not in ["DELIVERED", "FAILED", "IN_TRANSIT", "PENDING"]:
+        raise HTTPException(status_code=400, detail="Trạng thái không hợp lệ. Cho phép: DELIVERED, FAILED, IN_TRANSIT, PENDING.")
+
+    stop.status = new_status
+    stop.delivery_status = "Delivered" if new_status == "DELIVERED" else ("Failed" if new_status == "FAILED" else new_status)
+    if data.note:
+        stop.note = data.note
+    if data.receiver_name:
+        stop.receiver_name = data.receiver_name.strip()
+    if data.pod_image_url:
+        stop.pod_image_url = data.pod_image_url.strip()
+    if data.items_detail is not None:
+        stop.items_detail = json.dumps(data.items_detail, ensure_ascii=False)
+
+    if new_status == "DELIVERED":
+        actual_time = data.actual_delivery_time or now
+        stop.delivered_at = actual_time
+        stop.actual_delivery_time = actual_time
+        stop.failed_reason = None
+        stop.failure_reason = None
+        stop.return_status = None
+        # Cập nhật order tương ứng thành DELIVERED
+        if stop.order_code:
+            order = db.query(OrderEntity).filter(OrderEntity.order_code == stop.order_code).first()
+            if order and order.status != "DELIVERED":
+                order.status = "DELIVERED"
+    elif new_status == "FAILED":
+        fail_rs = data.failure_reason or data.failed_reason or "Khách hẹn lại / Không nhận hàng"
+        stop.failed_reason = fail_rs
+        stop.failure_reason = fail_rs
+        stop.return_status = "CHỜ_HOÀN_KHO"
+
+    db.flush()
+
+    # Kiểm tra xem toàn bộ các điểm giao trong chuyến đã hoàn thành chưa
+    trip = db.query(DeliveryTripEntity).filter(DeliveryTripEntity.id == stop.trip_id).first()
+    if trip and trip.status in ["IN_TRANSIT", "DELIVERING"]:
+        remaining = db.query(func.count(DeliveryStopEntity.id)).filter(
+            DeliveryStopEntity.trip_id == trip.id,
+            DeliveryStopEntity.status.in_(["PENDING", "IN_TRANSIT"])
+        ).scalar() or 0
+        if remaining == 0:
+            trip.status = "COMPLETED"
+            trip.completed_at = now
+
+    db.commit()
+    db.refresh(stop)
+    return _format_stop_response(stop, db)
 
