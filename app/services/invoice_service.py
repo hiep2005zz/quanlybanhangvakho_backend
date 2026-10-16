@@ -359,7 +359,16 @@ def get_invoice_detail(dealer_id: int, invoice_code: str, db: Session) -> Dict[s
 def generate_invoice_xml(detail: Dict[str, Any]) -> str:
     """
     Sinh nội dung file XML Hóa đơn điện tử chuẩn theo quy định Tổng cục Thuế.
+    Tất cả các trường chuỗi được escape (mã hóa ký tự đặc biệt như &, <, >)
+    để trình duyệt và phần mềm thuế parse hợp lệ 100%.
     """
+    from xml.sax.saxutils import escape as xml_escape
+
+    def esc(val: Any) -> str:
+        if val is None:
+            return ""
+        return xml_escape(str(val))
+
     items_xml = ""
     for idx, it in enumerate(detail.get("items", []), 1):
         price = float(it.get("price", 0.0) or 0.0)
@@ -368,42 +377,45 @@ def generate_invoice_xml(detail: Dict[str, Any]) -> str:
         items_xml += f"""
         <HHDVu>
             <STT>{idx}</STT>
-            <THHDon>{it.get('product_name', 'Hàng hóa')}</THHDon>
-            <DVTinh>{it.get('unit_name', 'Cái')}</DVTinh>
+            <THHDon>{esc(it.get('product_name', 'Hàng hóa'))}</THHDon>
+            <DVTinh>{esc(it.get('unit_name', 'Cái'))}</DVTinh>
             <SLuong>{qty}</SLuong>
             <DGia>{price}</DGia>
             <ThTien>{amount}</ThTien>
             <TSuat>10%</TSuat>
         </HHDVu>"""
 
+    issue_date_str = (detail.get('issue_date') or '')[:10]
+    due_date_str = (detail.get('due_date') or '')[:10]
+
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <HDon>
-    <DLHDon Id="HD_{detail.get('invoice_code')}">
+    <DLHDon Id="HD_{esc(detail.get('invoice_code'))}">
         <TTChung>
             <PBan>2.0.0</PBan>
             <THDon>HÓA ĐƠN GIÁ TRỊ GIA TĂNG</THDon>
             <KHMSHDon>1</KHMSHDon>
             <KHHDon>C26TAA</KHHDon>
-            <SHDon>{detail.get('invoice_code')}</SHDon>
-            <NLap>{detail.get('issue_date')[:10]}</NLap>
+            <SHDon>{esc(detail.get('invoice_code'))}</SHDon>
+            <NLap>{esc(issue_date_str)}</NLap>
             <DVTTe>VND</DVTTe>
             <TGia>1</TGia>
             <HTTToan>Chuyển khoản / Công nợ</HTTToan>
-            <MDHDon>{detail.get('order_code')}</MDHDon>
+            <MDHDon>{esc(detail.get('order_code'))}</MDHDon>
         </TTChung>
         <NDHDon>
             <NBan>
-                <Ten>{detail['seller']['name']}</Ten>
-                <MST>{detail['seller']['tax_code']}</MST>
-                <DChi>{detail['seller']['address']}</DChi>
-                <SDThoai>{detail['seller']['phone']}</SDThoai>
-                <STKNgHang>{detail['seller']['bank_account']}</STKNgHang>
+                <Ten>{esc(detail['seller']['name'])}</Ten>
+                <MST>{esc(detail['seller']['tax_code'])}</MST>
+                <DChi>{esc(detail['seller']['address'])}</DChi>
+                <SDThoai>{esc(detail['seller']['phone'])}</SDThoai>
+                <STKNgHang>{esc(detail['seller']['bank_account'])}</STKNgHang>
             </NBan>
             <NMua>
-                <Ten>{detail['dealer']['name']}</Ten>
-                <MST>{detail['dealer'].get('tax_code', '')}</MST>
-                <DChi>{detail['dealer'].get('address', '')}</DChi>
-                <SDThoai>{detail['dealer'].get('phone', '')}</SDThoai>
+                <Ten>{esc(detail['dealer']['name'])}</Ten>
+                <MST>{esc(detail['dealer'].get('tax_code', ''))}</MST>
+                <DChi>{esc(detail['dealer'].get('address', ''))}</DChi>
+                <SDThoai>{esc(detail['dealer'].get('phone', ''))}</SDThoai>
             </NMua>
             <DSHHDVu>
                 {items_xml}
@@ -414,7 +426,7 @@ def generate_invoice_xml(detail: Dict[str, Any]) -> str:
                 <TgTTTBSo>{detail.get('total_amount', 0.0)}</TgTTTBSo>
                 <DaTToan>{detail.get('paid_amount', 0.0)}</DaTToan>
                 <ConNo>{detail.get('remaining_debt', 0.0)}</ConNo>
-                <HanTToan>{detail.get('due_date')[:10]}</HanTToan>
+                <HanTToan>{esc(due_date_str)}</HanTToan>
             </TToan>
         </NDHDon>
     </DLHDon>
