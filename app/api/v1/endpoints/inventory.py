@@ -400,10 +400,31 @@ def create_stock_issue(
     chosen_unit, chosen_rate, base_unit = _resolve_unit_and_rate(product, prod_entity, data.unit_name, data.conversion_rate)
     base_qty = int(round(data.quantity * chosen_rate))
 
+    if data.quantity <= 0 or base_qty <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Số lượng xuất kho phải lớn hơn 0."
+        )
+
     if abs(data.quantity) > 10_000_000 or abs(base_qty) > 100_000_000:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Số lượng xuất kho quá lớn (tối đa 10.000.000 đơn vị). Vui lòng nhập số lượng hợp lý."
+        )
+
+    # Tiêu chí 1, 2, 4: Quản lý lô và chặn xuất lô quá hạn (kèm cơ chế ghi đè của Warehouse Manager)
+    deducted_batch = None
+    if db and prod_entity:
+        from app.services.batch_service import validate_and_deduct_batch_for_issue
+        deducted_batch = validate_and_deduct_batch_for_issue(
+            db=db,
+            product=prod_entity,
+            batch_number=data.batch_number,
+            quantity_to_deduct=float(base_qty),
+            warehouse_id=data.warehouse_id or 1,
+            override_expired=bool(data.override_expired),
+            override_reason=data.override_reason,
+            current_user=current_user,
         )
 
     previous_stock = product["stock"] if product else prod_entity.stock
@@ -422,8 +443,9 @@ def create_stock_issue(
     prod_name = product["name"] if product else prod_entity.name
     prod_code = product["code"] if product else prod_entity.code
 
+    batch_info_str = f" [Lô: {deducted_batch.batch_number}]" if deducted_batch else ""
     unit_info_str = f" ({data.quantity} {chosen_unit} = {base_qty} {base_unit})" if chosen_unit != base_unit else ""
-    reason_str = f"Xuất kho tới: {data.destination}. {data.note or ''}{unit_info_str}".strip()
+    reason_str = f"Xuất kho tới: {data.destination}. {data.note or ''}{unit_info_str}{batch_info_str}".strip()
 
     tx = InventoryTransaction(
         id=len(INVENTORY_TRANSACTIONS) + 1,
@@ -471,9 +493,39 @@ def create_stock_issue(
             reason=reason_str,
         )
         db.add(db_tx)
+
+        if deducted_batch:
+            from app.models.goods_receipt import InventoryLedgerEntity
+            db.add(
+                InventoryLedgerEntity(
+                    product_id=prod_entity.id,
+                    warehouse_id=deducted_batch.warehouse_id,
+                    reference_code=f"ISSUE-{deducted_batch.batch_number}",
+                    transaction_type="ISSUE",
+                    quantity=-float(base_qty),
+                    previous_stock=float(previous_stock),
+                    new_stock=float(new_stock),
+                    batch_number=deducted_batch.batch_number,
+                    performed_by=current_user.full_name or current_user.username,
+                    note=reason_str,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+
         db.commit()
 
-    # Ghi nhật ký xuất kho (đầy đủ các trường quy đổi trước và sau)
+    # Ghi nhật ký xuất kho (đầy đủ các trường quy đổi trước và sau, kèm số lô)
+    new_val_payload = {
+        "stock": new_stock,
+        "unit_name": chosen_unit,
+        "conversion_rate": chosen_rate,
+        "base_quantity": -base_qty,
+        "destination": data.destination,
+    }
+    if deducted_batch:
+        new_val_payload["batch_number"] = deducted_batch.batch_number
+        new_val_payload["expiry_date"] = str(deducted_batch.expiry_date) if deducted_batch.expiry_date else None
+
     log_audit_event(
         db=db,
         user=current_user,
@@ -481,7 +533,7 @@ def create_stock_issue(
         entity_type="Product",
         entity_id=prod_code,
         old_val={"stock": previous_stock, "unit_name": base_unit, "conversion_rate": 1.0, "base_quantity": 0},
-        new_val={"stock": new_stock, "unit_name": chosen_unit, "conversion_rate": chosen_rate, "base_quantity": -base_qty},
+        new_val=new_val_payload,
         reason=reason_str,
         request=request,
     )
