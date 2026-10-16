@@ -16,6 +16,8 @@ from app.models.entities import (
     WarehouseStockEntity,
     StockAuditEntity,
     StockTransferEntity,
+    DeliveryTripEntity,
+    DeliveryStopEntity,
 )
 from app.models.supplier import SupplierEntity
 from app.models.goods_receipt import (
