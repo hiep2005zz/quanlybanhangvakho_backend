@@ -233,3 +233,39 @@ def test_requirement_3_filter_warehouse_and_date_range(stock_card_seed_data):
     assert entries_date[1]["reference_code"] == "CK-20261010-001"
     assert entries_date[1]["previous_stock"] == 130.0
     assert entries_date[1]["balance_stock"] == 115.0
+
+
+def test_stock_card_rbac_permissions(stock_card_seed_data):
+    """
+    Kiểm tra phân quyền Thẻ kho (S5-04):
+    - Thủ kho (warehouse), Quản lý kho (warehouse_manager), Admin, Kế toán (accountant): Được phép xem (200 OK).
+    - Nhân viên kinh doanh (sales), Mua hàng (purchasing): Bị chặn (403 Forbidden).
+    """
+    from app.core.security import create_access_token
+
+    prod_id = stock_card_seed_data
+
+    # 1. Các user được phép: admin, kho, warehouse_mgr, ketoan
+    allowed_users = [
+        ("admin", "admin"),
+        ("kho", "warehouse"),
+        ("warehouse_mgr", "warehouse_manager"),
+        ("ketoan", "accountant"),
+    ]
+    for uname, role in allowed_users:
+        token = create_access_token(subject=uname, role=role, token_version=1)
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = client.get(f"/api/v1/inventory/stock-card?product_id={prod_id}", headers=headers)
+        assert resp.status_code == 200, f"User {uname} ({role}) should be allowed, got {resp.status_code}: {resp.text}"
+
+    # 2. Các user bị chặn: sales, muahang
+    forbidden_users = [
+        ("sales", "sales"),
+        ("muahang", "purchasing"),
+    ]
+    for uname, role in forbidden_users:
+        token = create_access_token(subject=uname, role=role, token_version=1)
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = client.get(f"/api/v1/inventory/stock-card?product_id={prod_id}", headers=headers)
+        assert resp.status_code == 403, f"User {uname} ({role}) should be forbidden (403), got {resp.status_code}"
+

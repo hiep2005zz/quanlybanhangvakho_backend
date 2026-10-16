@@ -167,6 +167,13 @@ def reset_test_state():
             ws.reserved_stock = 0
             if ws.actual_stock is None or ws.actual_stock < 150:
                 ws.actual_stock = 150
+
+        from app.models.entities import CreditPolicyConfigEntity
+        cfg = db.query(CreditPolicyConfigEntity).first()
+        if cfg:
+            cfg.over_limit_action = "REQUIRE_APPROVAL"
+            cfg.overdue_action = "REQUIRE_APPROVAL"
+            cfg.auto_eval_enabled = True
         db.commit()
     finally:
         db.close()

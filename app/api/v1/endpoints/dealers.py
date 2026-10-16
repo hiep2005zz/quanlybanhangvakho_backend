@@ -1,6 +1,6 @@
 import math
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query, HTTPException, status, Request
 from pydantic import BaseModel
@@ -77,6 +77,11 @@ class DealerCreditInfoResponse(BaseModel):
     max_debt_age: int
     is_overdue: bool
     is_over_limit: bool
+    credit_warning_flag: Optional[bool] = False
+    credit_flag_reason: Optional[str] = None
+    last_credit_evaluated_at: Optional[Union[str, datetime]] = None
+    over_limit_action: Optional[str] = "REQUIRE_APPROVAL"
+    overdue_action: Optional[str] = "BLOCK"
 
 
 def get_sale_name(assigned_sale_id: Optional[int]) -> Optional[str]:
@@ -294,6 +299,10 @@ def search_dealers(
     has_transactions: Optional[bool] = Query(
         default=None,
         description="Lọc theo đại lý đã phát sinh giao dịch hay chưa"
+    ),
+    credit_status: Optional[str] = Query(
+        default=None,
+        description="Lọc theo tình trạng công nợ (flagged, over_limit, overdue, safe)"
     ),
     page: int = Query(
         default=1,
@@ -519,11 +528,37 @@ def search_dealers(
         # ==========================================
         # 6. LỌC THEO PHÁT SINH GIAO DỊCH
         # ==========================================
+        # 6. LỌC THEO PHÁT SINH GIAO DỊCH
+        # ==========================================
         if has_transactions is not None:
             if has_transactions and transaction_count <= 0:
                 continue
             if not has_transactions and transaction_count > 0:
                 continue
+
+        # ==========================================
+        # 7. LỌC THEO CỜ CẢNH BÁO TÍN DỤNG (S7-04)
+        # ==========================================
+        is_over_l = getattr(dealer, "is_over_credit_limit", current_debt > c_limit)
+        is_over_d = getattr(dealer, "is_overdue", max_debt_age > c_days)
+        has_flag = getattr(dealer, "credit_warning_flag", (is_over_l or is_over_d))
+        flag_reason = getattr(dealer, "credit_flag_reason", (debt_status if debt_status != "Trong hạn mức" else None))
+        last_eval = getattr(dealer, "last_credit_evaluated_at", None)
+
+        if credit_status:
+            cs = credit_status.lower().strip()
+            if cs in ("flagged", "warning", "canh_bao"):
+                if not has_flag:
+                    continue
+            elif cs in ("over_limit", "vuot_han_muc"):
+                if not is_over_l:
+                    continue
+            elif cs in ("overdue", "qua_han"):
+                if not is_over_d:
+                    continue
+            elif cs in ("safe", "an_toan", "trong_han_muc"):
+                if has_flag:
+                    continue
 
         results.append({
             "id": dealer.id,
@@ -538,6 +573,11 @@ def search_dealers(
             "max_debt_days": c_days,
             "current_debt": current_debt,
             "debt_status": debt_status,
+            "is_over_credit_limit": is_over_l,
+            "is_overdue": is_over_d,
+            "credit_warning_flag": has_flag,
+            "credit_flag_reason": flag_reason,
+            "last_credit_evaluated_at": last_eval.isoformat() if hasattr(last_eval, "isoformat") else last_eval,
             "assigned_sale_id": dealer.assigned_sale_id,
             "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
             "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
@@ -1584,3 +1624,79 @@ def get_dealer_purchase_history_alias(
 ):
     from app.api.v1.endpoints.orders import get_dealer_purchase_history
     return get_dealer_purchase_history(dealer_id=dealer_id, db=db, current_user=current_user)
+
+
+# Credit Policy & Payment aliases under /api/v1/dealers
+from app.schemas.credit_policy import (
+    CreditPolicyConfigResponse,
+    CreditPolicyConfigUpdate,
+    DealerPaymentCreate,
+    DealerPaymentResponse,
+)
+from app.services.credit_policy_service import (
+    get_credit_policy_config,
+    update_credit_policy_config,
+    evaluate_dealer_credit_flags,
+    evaluate_all_dealers_credit_flags,
+    record_dealer_payment,
+)
+
+@router.get("/credit-policy/config", response_model=CreditPolicyConfigResponse)
+def get_dealer_credit_policy_config(
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["accountant", "admin", "sales_manager"]))
+):
+    return get_credit_policy_config(db)
+
+@router.put("/credit-policy/config", response_model=CreditPolicyConfigResponse)
+def update_dealer_credit_policy_config(
+    payload: CreditPolicyConfigUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["accountant", "sales_manager", "admin"]))
+):
+    return update_credit_policy_config(db=db, data=payload, user=current_user, request=request)
+
+@router.post("/credit-policy/evaluate")
+def evaluate_dealers_credit_policy(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["accountant", "sales_manager", "admin"]))
+):
+    results = evaluate_all_dealers_credit_flags(db=db, user=current_user, request=request)
+    return {
+        "status": "success",
+        "message": f"Đã hoàn tất đánh giá công nợ cho {len(results)} đại lý.",
+        "dealers_evaluated": results,
+    }
+
+@router.post("/{dealer_id}/credit-policy/evaluate")
+def evaluate_single_dealer_credit_policy(
+    dealer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["accountant", "sales_manager", "admin"]))
+):
+    res = evaluate_dealer_credit_flags(dealer_id=dealer_id, db=db, user=current_user, reason_prefix="Đánh giá theo yêu cầu", request=request)
+    return {
+        "status": "success",
+        "message": f"Đã đánh giá công nợ cho đại lý {res.get('dealer_name')}.",
+        "result": res,
+    }
+
+@router.post("/{dealer_id}/payments", response_model=DealerPaymentResponse)
+def record_dealer_payment_endpoint(
+    dealer_id: int,
+    payload: DealerPaymentCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["accountant", "admin"]))
+):
+    return record_dealer_payment(
+        dealer_id=dealer_id,
+        data=payload,
+        db=db,
+        user=current_user,
+        request=request
+    )
+

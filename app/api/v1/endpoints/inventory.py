@@ -1366,7 +1366,14 @@ def get_stock_card_endpoint(
     from_date: Optional[str] = Query(None, description="Từ ngày (YYYY-MM-DD hoặc ISO)"),
     to_date: Optional[str] = Query(None, description="Đến ngày (YYYY-MM-DD hoặc ISO)"),
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.INVENTORY_READ.value)),
+    current_user: UserResponse = Depends(
+        require_roles([
+            Role.SYSTEM_ADMIN.value,
+            Role.WAREHOUSE_STAFF.value,
+            Role.WAREHOUSE_MANAGER.value,
+            Role.ACCOUNTANT.value,
+        ])
+    ),
 ):
     """
     Xem Thẻ kho (Stock Card) chi tiết của một sản phẩm.
