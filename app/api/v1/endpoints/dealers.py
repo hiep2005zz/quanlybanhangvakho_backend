@@ -84,6 +84,99 @@ class DealerCreditInfoResponse(BaseModel):
     overdue_action: Optional[str] = "BLOCK"
 
 
+class CreateReceiptVoucherRequest(BaseModel):
+    amount: float
+    payment_method: Optional[str] = "Tiền mặt"
+    reason: Optional[str] = "Thu tiền công nợ đại lý"
+    order_code: Optional[str] = None
+    payer_name: Optional[str] = None
+    note: Optional[str] = None
+
+
+class ReceiptVoucherResponse(BaseModel):
+    id: int
+    receipt_code: str
+    dealer_id: int
+    dealer_code: str
+    dealer_name: str
+    dealer_address: Optional[str] = None
+    dealer_phone: Optional[str] = None
+    dealer_tax_code: Optional[str] = None
+    order_code: Optional[str] = None
+    amount: float
+    amount_in_words: str
+    payment_method: str
+    reason: str
+    payer_name: str
+    collector_name: str
+    collector_role: str
+    created_at: str
+    note: Optional[str] = None
+
+
+RECEIPT_VOUCHERS_DB: Dict[str, Dict[str, Any]] = {}
+
+
+def number_to_vietnamese_words(n: float) -> str:
+    n_int = int(round(n))
+    if n_int == 0:
+        return "Không đồng chẵn."
+    if n_int < 0:
+        return "Âm " + number_to_vietnamese_words(abs(n_int))
+
+    digits = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
+    units = ["", "nghìn", "triệu", "tỷ", "nghìn tỷ", "triệu tỷ"]
+
+    def read_three(val: int, is_first: bool) -> str:
+        h = val // 100
+        t = (val % 100) // 10
+        o = val % 10
+        res = []
+        if h > 0 or not is_first:
+            res.append(digits[h] + " trăm")
+            if t == 0 and o > 0:
+                res.append("lẻ")
+        if t > 1:
+            res.append(digits[t] + " mươi")
+            if o == 1:
+                res.append("mốt")
+            elif o == 5:
+                res.append("lăm")
+            elif o > 0:
+                res.append(digits[o])
+        elif t == 1:
+            res.append("mười")
+            if o == 5:
+                res.append("lăm")
+            elif o > 0:
+                res.append(digits[o])
+        elif o > 0:
+            res.append(digits[o])
+        return " ".join(res)
+
+    groups = []
+    temp = n_int
+    while temp > 0:
+        groups.append(temp % 1000)
+        temp //= 1000
+
+    words = []
+    for i in range(len(groups) - 1, -1, -1):
+        grp = groups[i]
+        if grp > 0:
+            grp_words = read_three(grp, i == len(groups) - 1)
+            u = units[i]
+            if u:
+                words.append(f"{grp_words} {u}")
+            else:
+                words.append(grp_words)
+
+    result_str = " ".join(words).strip()
+    if not result_str:
+        return "Không đồng chẵn."
+    return result_str[0].upper() + result_str[1:] + " đồng chẵn."
+
+
 def get_sale_name(assigned_sale_id: Optional[int]) -> Optional[str]:
     """Lấy tên nhân viên kinh doanh phụ trách đại lý."""
     if not assigned_sale_id:
@@ -689,6 +782,139 @@ def get_dealer_transactions(
         "transactions": tx_items,
         "items": tx_items,
     }
+
+
+@router.post("/{dealer_id}/receipt-vouchers", response_model=ReceiptVoucherResponse, status_code=status.HTTP_201_CREATED)
+def create_dealer_receipt_voucher(
+    dealer_id: int,
+    payload: CreateReceiptVoucherRequest,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(
+        require_roles([
+            "admin",
+            "sales_manager",
+            "accountant",
+        ])
+    ),
+):
+    """
+    Kế toán công nợ: Lập và ghi nhận phiếu thu tiền từ đại lý.
+    Tự động sinh mã phiếu thu duy nhất, tính số tiền bằng chữ và ghi vết Audit Log.
+    """
+    load_dealers_db()
+    dealer = DEALERS_DB.get(dealer_id)
+    if not dealer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đại lý ID {dealer_id}."
+        )
+
+    if payload.amount <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Số tiền thu phải lớn hơn 0."
+        )
+
+    now = datetime.now(timezone.utc)
+    ts_code = now.strftime("%Y%m%d%H%M%S")
+    rand_seq = len(RECEIPT_VOUCHERS_DB) + 1
+    receipt_code = f"PT-{dealer.code}-{ts_code}-{rand_seq:02d}"
+
+    words = number_to_vietnamese_words(payload.amount)
+    payer = payload.payer_name.strip() if payload.payer_name and payload.payer_name.strip() else f"Đại diện {dealer.name}"
+    collector = current_user.full_name or current_user.username
+    collector_role_name = (
+        "Kế toán công nợ"
+        if current_user.role == "accountant"
+        else ("Quản trị viên" if current_user.role == "admin" else "Quản lý kinh doanh")
+    )
+
+    voucher_data = {
+        "id": rand_seq,
+        "receipt_code": receipt_code,
+        "dealer_id": dealer.id,
+        "dealer_code": dealer.code,
+        "dealer_name": dealer.name,
+        "dealer_address": dealer.address or "—",
+        "dealer_phone": dealer.phone or "—",
+        "dealer_tax_code": dealer.tax_code or "—",
+        "order_code": payload.order_code.strip() if payload.order_code else None,
+        "amount": float(payload.amount),
+        "amount_in_words": words,
+        "payment_method": payload.payment_method or "Tiền mặt",
+        "reason": payload.reason.strip() if payload.reason else "Thu tiền thanh toán công nợ",
+        "payer_name": payer,
+        "collector_name": collector,
+        "collector_role": collector_role_name,
+        "created_at": now.isoformat(),
+        "note": payload.note.strip() if payload.note else None,
+    }
+
+    RECEIPT_VOUCHERS_DB[receipt_code] = voucher_data
+
+    # Ghi Audit Log vết thao tác
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action_type="DEBT_PAYMENT",
+        entity_type="ReceiptVoucher",
+        entity_id=receipt_code,
+        old_val={},
+        new_val={
+            "receipt_code": receipt_code,
+            "dealer_id": dealer.id,
+            "dealer_code": dealer.code,
+            "amount": payload.amount,
+            "payment_method": payload.payment_method,
+            "reason": voucher_data["reason"],
+            "collector": collector,
+        },
+        reason=f"Kế toán lập phiếu thu {receipt_code} cho đại lý {dealer.name} ({payload.amount:,.0f} đ)",
+    )
+
+    return voucher_data
+
+
+@router.get("/{dealer_id}/receipt-vouchers", response_model=List[ReceiptVoucherResponse])
+def get_dealer_receipt_vouchers(
+    dealer_id: int,
+    current_user: UserResponse = Depends(
+        require_roles([
+            "admin",
+            "sales_manager",
+            "sales",
+            "accountant",
+            "customer",
+        ])
+    ),
+):
+    """Lấy danh sách các phiếu thu đã ghi nhận của đại lý."""
+    res = [v for v in RECEIPT_VOUCHERS_DB.values() if v.get("dealer_id") == dealer_id]
+    res.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
+    return res
+
+
+@router.get("/receipt-vouchers/{receipt_code}", response_model=ReceiptVoucherResponse)
+def get_receipt_voucher_by_code(
+    receipt_code: str,
+    current_user: UserResponse = Depends(
+        require_roles([
+            "admin",
+            "sales_manager",
+            "sales",
+            "accountant",
+            "customer",
+        ])
+    ),
+):
+    """Xem chi tiết phiếu thu theo mã phiếu."""
+    v = RECEIPT_VOUCHERS_DB.get(receipt_code)
+    if not v:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy phiếu thu có mã {receipt_code}."
+        )
+    return v
 
 
 @router.get("/filters")

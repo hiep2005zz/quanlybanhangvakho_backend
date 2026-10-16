@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import math
 from fastapi import APIRouter, Depends, Query, HTTPException, status, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func, or_
 
 from app.api.deps import require_roles, require_permission, get_current_user
 from app.core.database import get_db
@@ -258,16 +258,20 @@ def get_entity_audit_logs(
     """
     try:
         matched_entity_types = [entity_type]
+        clean_entity_id = str(entity_id).strip()
+        id_filter = (func.upper(AuditLogEntity.entity_id) == clean_entity_id.upper())
+
         if entity_type.lower() in ("dealer", "customerdebt", "dealerdebtlimit"):
             matched_entity_types = ["Dealer", "CustomerDebt", "DealerDebtLimit"]
-        elif entity_type.lower() in ("product", "productprice", "pricebook"):
-            matched_entity_types = ["Product", "ProductPrice", "PriceBook"]
+        elif entity_type.lower() in ("product", "productprice", "pricebook", "inventory"):
+            matched_entity_types = ["Product", "ProductPrice", "PriceBook", "Inventory", "ProductBatch"]
+            id_filter = or_(id_filter, AuditLogEntity.entity_id.ilike(f"{clean_entity_id}-%"))
 
         records = (
             db.query(AuditLogEntity)
             .filter(
                 AuditLogEntity.entity_type.in_(matched_entity_types),
-                AuditLogEntity.entity_id == str(entity_id),
+                id_filter,
                 AuditLogEntity.action_type.in_(ALLOWED_ACTION_TYPES),
             )
             .order_by(desc(AuditLogEntity.id), desc(AuditLogEntity.created_at))
