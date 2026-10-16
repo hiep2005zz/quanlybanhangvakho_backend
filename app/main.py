@@ -63,6 +63,8 @@ app.include_router(goods_receipts.router, prefix="/api/v1/goods-receipts", tags=
 app.include_router(goods_receipts.router, prefix="/goods-receipts", tags=["Goods Receipts"])
 app.include_router(warehouses.router, prefix="/api/v1/warehouses", tags=["Warehouses"])
 app.include_router(stock_audits.router, prefix="/api/v1/stock-audits", tags=["Stock Audits"])
+from app.api.v1.endpoints import agency_debts
+app.include_router(agency_debts.router, prefix="/api/v1/agency-debts", tags=["Agency Debts"])
 app.include_router(batches.router, prefix="/api/v1/batches", tags=["Batches"])
 app.include_router(inventory_reports.router, prefix="/api/v1/inventory", tags=["Inventory Reports"])
 
@@ -70,8 +72,10 @@ app.include_router(inventory_reports.router, prefix="/api/v1/inventory", tags=["
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
 AVATARS_DIR = os.path.join(UPLOAD_DIR, "avatars")
 PRODUCTS_DIR = os.path.join(UPLOAD_DIR, "products")
+PODS_DIR = os.path.join(UPLOAD_DIR, "pod")
 os.makedirs(AVATARS_DIR, exist_ok=True)
 os.makedirs(PRODUCTS_DIR, exist_ok=True)
+os.makedirs(PODS_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 @app.get("/")

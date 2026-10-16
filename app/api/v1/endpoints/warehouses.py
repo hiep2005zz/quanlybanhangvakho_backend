@@ -1105,16 +1105,41 @@ def get_order_picking_locations(
                     available_quantity=0,
                 ))
 
+        # SCRUM-81: Gợi ý lô theo nguyên tắc FEFO nếu sản phẩm quản lý theo lô
+        from app.models.entities import ProductEntity
+        from app.services.batch_suggestion_service import get_fefo_batch_suggestions
+        prod_entity = db.query(ProductEntity).filter(ProductEntity.id == pid).first()
+        is_batch_managed = bool(prod_entity.is_batch_managed) if prod_entity else False
+        
+        conversion_rate = float(it.get("conversion_rate") or 1.0)
+        base_qty = float(qty) * conversion_rate
+        suggested_batch = None
+        available_batches = []
+
+        if is_batch_managed:
+            suggested_batch, available_batches = get_fefo_batch_suggestions(
+                db=db,
+                product_id=pid,
+                warehouse_id=wh_id,
+                required_base_qty=base_qty,
+            )
+
         results.append(OrderPickingItemResponse(
             product_id=pid,
             product_code=pcode,
             product_name=pname,
             ordered_quantity=qty,
             unit_name=unit,
+            conversion_rate=conversion_rate,
+            base_quantity=base_qty,
+            is_batch_managed=is_batch_managed,
             warehouse_id=wh_id,
             warehouse_code=wh_code,
             warehouse_name=wh_name,
             locations=picking_locs,
+            suggested_batch=suggested_batch,
+            available_batches=available_batches,
+            selected_batch_id=suggested_batch.id if suggested_batch else None,
         ))
 
     return results
