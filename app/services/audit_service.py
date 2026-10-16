@@ -37,11 +37,12 @@ def _to_json_str(val: Any) -> Optional[str]:
 # 3. Hạn mức công nợ: DEBT_LIMIT_CHANGE
 # 4. Hoá đơn / Đơn hàng: INVOICE_CREATE, INVOICE_EDIT, INVOICE_CANCEL, ORDER_CREATE, ORDER_APPROVE, ORDER_REJECT
 SYSTEM_AUDIT_ACTION_TYPES = {
-    # 1. Tồn kho
+    # 1. Tồn kho & Lô hàng
     "INVENTORY_ADJUST",
     "STOCK_RECEIPT",
     "STOCK_ISSUE",
     "GOODS_RECEIPT_CONFIRM",
+    "OVERRIDE_EXPIRED_BATCH_ISSUE",
     # 2. Giá bán & Sản phẩm
     "PRICE_CHANGE",
     "PRODUCT_UPDATE",
