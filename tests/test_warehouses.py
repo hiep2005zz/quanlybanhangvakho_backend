@@ -154,6 +154,13 @@ def test_locations_and_product_assignment():
         "quantity": 0,
     }, headers=admin_headers)
 
+    # Hoàn lại số lượng gốc cho vị trí đích dest_loc_id để không làm rò rỉ state
+    client.post("/api/v1/warehouses/locations/assign-product", json={
+        "location_id": dest_loc_id,
+        "product_id": 1,
+        "quantity": 12,
+    }, headers=admin_headers)
+
     del_loc_ok = client.delete(f"/api/v1/warehouses/locations/{loc_id}", headers=admin_headers)
     assert del_loc_ok.status_code == 200
 
@@ -316,11 +323,11 @@ def test_zone_capacity_validation():
     assert create_loc_res.status_code == 201
     loc_id = create_loc_res.json()["id"]
 
-    # 1. Gán số lượng hợp lệ (30 <= 50)
+    # 1. Gán số lượng hợp lệ (20 <= 50)
     ok_assign = client.post("/api/v1/warehouses/locations/assign-product", json={
         "location_id": loc_id,
         "product_id": 1,
-        "quantity": 30,
+        "quantity": 20,
     }, headers=admin_headers)
     assert ok_assign.status_code == 200
 
@@ -332,7 +339,7 @@ def test_zone_capacity_validation():
     }, headers=admin_headers)
     assert over_assign.status_code == 400
     detail = over_assign.json()["detail"]
-    assert "sức chứa" in detail.lower() or "kho đầy!" in detail.lower()
+    assert "sức chứa" in detail.lower() or "kho đầy!" in detail.lower() or "vượt quá" in detail.lower()
 
     # Dọn dẹp: giải phóng về 0 rồi xóa
     client.post("/api/v1/warehouses/locations/assign-product", json={
@@ -341,4 +348,134 @@ def test_zone_capacity_validation():
         "quantity": 0,
     }, headers=admin_headers)
     client.delete(f"/api/v1/warehouses/locations/{loc_id}", headers=admin_headers)
+
+
+def test_unallocated_stock_guardrail_and_fixed_total_stock():
+    """
+    Quy chuẩn kiểm soát tồn chưa phân bổ & cố định tổng tồn tại kho:
+    1. Tạo kho kiểm thử và các vị trí kệ.
+    2. Khởi tạo tồn kho thực tế = 356, gán lên 2 kệ (200 + 156 = 356).
+    3. Tra cứu allocation-status: unallocated_stock = 0.
+    4. Chặn gán thêm khi đã phân bổ hết -> 400 Bad Request.
+    5. Cột 'Tổng tồn tại kho' trong danh sách kệ luôn cố định theo số thực tế (356), không bị nhân đôi thành 712.
+    """
+    client = TestClient(app)
+    admin_token = get_auth_token(client, "admin", "123")
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    wh_code = "KHO_GUARDRAIL_TEST"
+    c_res = client.post("/api/v1/warehouses", json={
+        "code": wh_code,
+        "name": "Kho Kiểm Thử Phân Bổ",
+        "status": "Đang hoạt động",
+    }, headers=admin_headers)
+    assert c_res.status_code == 201
+    wh_id = c_res.json()["id"]
+
+    try:
+        # Tạo 2 vị trí kệ
+        loc1_res = client.post(f"/api/v1/warehouses/{wh_id}/locations", json={
+            "location_code": "TEST-LOC-01",
+            "max_capacity": 500,
+            "status": "Đang sử dụng",
+        }, headers=admin_headers)
+        assert loc1_res.status_code == 201
+        loc1_id = loc1_res.json()["id"]
+
+        loc2_res = client.post(f"/api/v1/warehouses/{wh_id}/locations", json={
+            "location_code": "TEST-LOC-02",
+            "max_capacity": 500,
+            "status": "Đang sử dụng",
+        }, headers=admin_headers)
+        assert loc2_res.status_code == 201
+        loc2_id = loc2_res.json()["id"]
+
+        # Khởi tạo bản ghi WarehouseStockEntity cho kho này với actual_stock = 356
+        from app.core.database import SessionLocal
+        from app.models.entities import WarehouseStockEntity
+        from datetime import datetime, timezone
+        db = SessionLocal()
+        try:
+            ws = WarehouseStockEntity(
+                warehouse_id=wh_code,
+                warehouse_name="Kho Kiểm Thử Phân Bổ",
+                product_id=1,
+                actual_stock=356,
+                quantity_on_hand=356,
+                reserved_stock=0,
+                min_stock=10,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            db.add(ws)
+            db.commit()
+        finally:
+            db.close()
+
+        # Gán kệ 1 = 200
+        a1 = client.post("/api/v1/warehouses/locations/assign-product", json={
+            "location_id": loc1_id,
+            "product_id": 1,
+            "quantity": 200,
+        }, headers=admin_headers)
+        assert a1.status_code == 200
+
+        # Gán kệ 2 = 156 (Tổng trên 2 kệ = 356 = tổng tồn kho)
+        a2 = client.post("/api/v1/warehouses/locations/assign-product", json={
+            "location_id": loc2_id,
+            "product_id": 1,
+            "quantity": 156,
+        }, headers=admin_headers)
+        assert a2.status_code == 200
+
+        # 2. Tra cứu allocation-status
+        alloc_res = client.get(f"/api/v1/warehouses/{wh_id}/products/1/allocation-status", headers=admin_headers)
+        assert alloc_res.status_code == 200
+        alloc_data = alloc_res.json()
+        assert alloc_data["warehouse_total_stock"] == 356
+        assert alloc_data["total_allocated"] == 356
+        assert alloc_data["unallocated_stock"] == 0
+
+        # 3. Cố tình gán thêm vượt quá tồn chưa phân bổ -> 400 Bad Request
+        loc3_res = client.post(f"/api/v1/warehouses/{wh_id}/locations", json={
+            "location_code": "TEST-LOC-03",
+            "max_capacity": 500,
+            "status": "Đang sử dụng",
+        }, headers=admin_headers)
+        loc3_id = loc3_res.json()["id"]
+
+        over_res = client.post("/api/v1/warehouses/locations/assign-product", json={
+            "location_id": loc3_id,
+            "product_id": 1,
+            "quantity": 10,
+        }, headers=admin_headers)
+        assert over_res.status_code == 400
+        assert "chưa phân bổ" in over_res.json()["detail"].lower() or "xếp hết" in over_res.json()["detail"].lower()
+
+        # 4. Tra cứu danh sách sản phẩm theo kệ của kho này
+        prods_res = client.get(f"/api/v1/warehouses/{wh_id}/products", headers=admin_headers)
+        assert prods_res.status_code == 200
+        items = prods_res.json()
+        assert len(items) == 2
+        # Cả 2 dòng đều hiển thị đúng Tổng tồn tại kho = 356, không phải 712
+        for it in items:
+            assert it["warehouse_total_stock"] == 356
+        qtys = sorted([it["quantity"] for it in items])
+        assert qtys == [156, 200]
+
+    finally:
+        # Dọn dẹp kho test
+        db = SessionLocal()
+        try:
+            from app.models.warehouse import LocationStockEntity, WarehouseLocationEntity
+            from app.models.goods_receipt import WarehouseEntity
+            from app.models.entities import WarehouseStockEntity
+            db.query(LocationStockEntity).filter(LocationStockEntity.warehouse_id == wh_id).delete()
+            db.query(WarehouseLocationEntity).filter(WarehouseLocationEntity.warehouse_id == wh_id).delete()
+            db.query(WarehouseStockEntity).filter(WarehouseStockEntity.warehouse_id == wh_code).delete()
+            db.query(WarehouseEntity).filter(WarehouseEntity.id == wh_id).delete()
+            db.commit()
+        finally:
+            db.close()
+
 

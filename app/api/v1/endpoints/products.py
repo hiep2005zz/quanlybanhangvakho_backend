@@ -344,122 +344,210 @@ def get_products(
             category=category,
         )
 
-    from app.models.entities import ProductEntity
+    from app.models.entities import ProductEntity, WarehouseStockEntity
+    from app.models.price_book import PriceBookEntity, PriceBookItemEntity
+    from sqlalchemy import func, or_
+    import math
 
     can_view_cost = current_user.can_view_cost or (Permission.COST_READ.value in current_user.permissions)
-    
-    # Đồng bộ từ DB nếu có
-    db_products = db.query(ProductEntity).all()
-    db_prod_map = {p.id: p for p in db_products}
-    if db_products:
-        # Tự động loại bỏ các sản phẩm đã xóa khỏi CSDL ra khỏi in-memory RAW_PRODUCTS
-        RAW_PRODUCTS[:] = [p for p in RAW_PRODUCTS if p.get("id") in db_prod_map]
 
-    # Tự động lấy bảng giá mới nhất map theo product_id để fallback nếu sản phẩm chưa có giá
-    pb_price_map = {}
-    try:
-        from app.models.price_book import PriceBookItemEntity, PriceBookEntity
-        latest_pb_items = (
-            db.query(PriceBookItemEntity)
-            .join(PriceBookEntity, PriceBookItemEntity.price_book_id == PriceBookEntity.id)
-            .order_by(PriceBookItemEntity.id.desc())
-            .all()
-        )
-        for pb_item in latest_pb_items:
-            if pb_item.product_id not in pb_price_map:
-                s_val = pb_item.sale_price if pb_item.sale_price is not None else pb_item.price
-                f_val = pb_item.floor_price if pb_item.floor_price is not None else pb_item.min_price
-                pb_price_map[pb_item.product_id] = {
-                    "sell_price": float(s_val or 0.0),
-                    "floor_price": float(f_val or 0.0),
-                }
-    except Exception:
-        pass
-
-    # Tự động đồng bộ và tính tổng tồn kho thực tế từ tất cả các kho (WH01, WH02, WH03...)
-    wh_stock_map = {}
-    try:
-        from app.services.inventory_availability_service import sync_missing_warehouse_stocks
-        sync_missing_warehouse_stocks(db)
-        from app.models.entities import WarehouseStockEntity
-        from sqlalchemy import func
-        wh_rows = (
-            db.query(
-                WarehouseStockEntity.product_id,
-                func.sum(WarehouseStockEntity.actual_stock - func.coalesce(WarehouseStockEntity.reserved_stock, 0))
+    # 1. Khởi tạo dữ liệu mẫu nếu CSDL hoàn toàn trống (chỉ chạy 1 lần khi DB rỗng)
+    if not db.query(ProductEntity.id).first() and RAW_PRODUCTS:
+        for p in RAW_PRODUCTS:
+            db_p = ProductEntity(
+                id=p.get("id"),
+                code=p.get("code"),
+                name=p.get("name"),
+                category=p.get("category", "Thời trang"),
+                category_id=p.get("category_id"),
+                stock=p.get("stock", 0),
+                sell_price=p.get("sell_price", 0.0),
+                floor_price=p.get("floor_price", 0.0),
+                cost_price=p.get("cost_price", 0.0),
+                base_unit=p.get("base_unit", "Cái"),
+                packaging_specification=p.get("packaging_specification") or "",
+                images_json=json.dumps(p.get("images") or [], ensure_ascii=False),
+                units_json=json.dumps(p.get("units") or [], ensure_ascii=False),
+                status=p.get("status", "active"),
+                is_batch_managed=bool(p.get("is_batch_managed", False)),
             )
-            .group_by(WarehouseStockEntity.product_id)
+            db.add(db_p)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+    # 2. Xây dựng câu truy vấn SQL Server trực tiếp với các điều kiện lọc
+    query = db.query(ProductEntity)
+
+    if search and search.strip():
+        term = f"%{search.strip().lower()}%"
+        query = query.filter(
+            or_(
+                func.lower(ProductEntity.name).like(term),
+                func.lower(ProductEntity.code).like(term),
+                func.lower(ProductEntity.category).like(term),
+            )
+        )
+
+    if category and category.strip() and category.strip().lower() != "all":
+        cat_term = category.strip().lower()
+        query = query.filter(func.lower(ProductEntity.category) == cat_term)
+
+    if only_low_stock:
+        from app.api.v1.endpoints.inventory import get_inventory_thresholds
+        try:
+            threshold_items = get_inventory_thresholds(
+                warehouse_id=None,
+                only_low_stock=True,
+                db=db,
+                current_user=current_user
+            )
+            low_stock_pids = set(it.product_id for it in threshold_items if it.is_low_stock)
+            if low_stock_pids:
+                query = query.filter(ProductEntity.id.in_(low_stock_pids))
+            else:
+                query = query.filter(ProductEntity.id == -1)
+        except Exception:
+            query = query.filter(func.coalesce(ProductEntity.stock, 0) <= 10)
+
+    # 3. Tổng hợp số liệu thống kê (Total count & Financial Summary) trực tiếp bằng câu lệnh SQL Aggregate của SQL Server
+    agg_res = query.with_entities(
+        func.count(ProductEntity.id),
+        func.sum(func.coalesce(ProductEntity.stock, 0)),
+        func.sum(func.coalesce(ProductEntity.sell_price, 0.0) * func.coalesce(ProductEntity.stock, 0)),
+        func.sum(func.coalesce(ProductEntity.cost_price, 0.0) * func.coalesce(ProductEntity.stock, 0)),
+    ).first()
+
+    total_filtered = agg_res[0] or 0
+    total_stock = int(agg_res[1] or 0)
+    total_sell_val = float(agg_res[2] or 0.0)
+    total_cost_val = float(agg_res[3] or 0.0) if can_view_cost else 0.0
+
+    if can_view_cost:
+        gross_profit = total_sell_val - total_cost_val
+        avg_margin = round((gross_profit / total_sell_val) * 100, 2) if total_sell_val > 0 else 0.0
+        summary = ProductFinancialSummary(
+            total_products=total_filtered,
+            total_stock=total_stock,
+            total_sell_value=total_sell_val,
+            total_cost_value=total_cost_val,
+            total_gross_profit=gross_profit,
+            average_margin_percent=avg_margin,
+        )
+    else:
+        summary = ProductFinancialSummary(
+            total_products=total_filtered,
+            total_stock=total_stock,
+            total_sell_value=total_sell_val,
+            total_cost_value=None,
+            total_gross_profit=None,
+            average_margin_percent=None,
+        )
+
+    # 4. Phân trang Server-Side trực tiếp bằng SQL Server (ORDER BY + OFFSET + FETCH NEXT)
+    effective_limit = page_size if page_size is not None else limit
+    is_paginated = page is not None or skip is not None or effective_limit is not None
+
+    if is_paginated:
+        if effective_limit is None:
+            effective_limit = 10
+        total_pages = max(1, math.ceil(total_filtered / effective_limit))
+        if skip is not None and page is None:
+            cur_page = (skip // effective_limit) + 1
+            offset_val = max(0, skip)
+        else:
+            cur_page = min(max(1, page or 1), total_pages)
+            offset_val = (cur_page - 1) * effective_limit
+
+        page_products = (
+            query.order_by(ProductEntity.id.asc())
+            .offset(offset_val)
+            .limit(effective_limit)
             .all()
         )
-        wh_stock_map = {pid: max(0, int(val)) for pid, val in wh_rows if val is not None}
-    except Exception:
-        pass
+        has_more = (offset_val + len(page_products)) < total_filtered
+    else:
+        cur_page = 1
+        effective_limit = total_filtered if total_filtered > 0 else 20
+        total_pages = 1
+        page_products = query.order_by(ProductEntity.id.asc()).all()
+        has_more = False
 
-    sanitized_items: list[ProductItem] = []
-    total_stock = 0
-    total_sell_val = 0.0
-    total_cost_val = 0.0
+    page_pids = [p.id for p in page_products]
 
-    # Tối ưu hóa hiệu năng O(1) theo lô: Tính trước map số giao dịch cho tất cả sản phẩm
+    # 5. Tối ưu hóa: Chỉ truy vấn tồn kho và bảng giá cho riêng các sản phẩm thuộc trang hiện tại
+    wh_stock_map = {}
+    if page_pids:
+        try:
+            wh_rows = (
+                db.query(
+                    WarehouseStockEntity.product_id,
+                    func.sum(WarehouseStockEntity.actual_stock - func.coalesce(WarehouseStockEntity.reserved_stock, 0))
+                )
+                .filter(WarehouseStockEntity.product_id.in_(page_pids))
+                .group_by(WarehouseStockEntity.product_id)
+                .all()
+            )
+            wh_stock_map = {pid: max(0, int(val)) for pid, val in wh_rows if val is not None}
+        except Exception:
+            pass
+
+    pb_price_map = {}
+    if page_pids:
+        try:
+            latest_pb_items = (
+                db.query(PriceBookItemEntity)
+                .join(PriceBookEntity, PriceBookItemEntity.price_book_id == PriceBookEntity.id)
+                .filter(PriceBookItemEntity.product_id.in_(page_pids))
+                .order_by(PriceBookItemEntity.id.desc())
+                .all()
+            )
+            for pb_item in latest_pb_items:
+                if pb_item.product_id not in pb_price_map:
+                    s_val = pb_item.sale_price if pb_item.sale_price is not None else pb_item.price
+                    f_val = pb_item.floor_price if pb_item.floor_price is not None else pb_item.min_price
+                    pb_price_map[pb_item.product_id] = {
+                        "sell_price": float(s_val or 0.0),
+                        "floor_price": float(f_val or 0.0),
+                    }
+        except Exception:
+            pass
+
     tx_counts_map = _get_all_product_transaction_counts(db)
+    raw_map = {p["id"]: p for p in RAW_PRODUCTS if isinstance(p, dict) and "id" in p}
 
-    for p in RAW_PRODUCTS:
-        db_p = db_prod_map.get(p["id"])
-        base_unit = getattr(db_p, "base_unit", None) if db_p else None
-        if not base_unit:
-            base_unit = p.get("base_unit", "Cái")
-        units_raw = getattr(db_p, "units", None) if db_p else None
-        if not units_raw:
-            units_raw = p.get("units", [])
-        units_converted = [UnitConversionItem(unit_name=u["unit_name"], conversion_rate=float(u["conversion_rate"])) for u in units_raw]
+    # 6. Chuẩn hóa danh sách sản phẩm trả về tầng Schema/DTO & bảo vệ dữ liệu nhạy cảm RBAC
+    sanitized_items: list[ProductItem] = []
+    for db_p in page_products:
+        raw_p = raw_map.get(db_p.id)
+        base_unit = getattr(db_p, "base_unit", None) or (raw_p.get("base_unit") if raw_p else "Cái") or "Cái"
+        units_raw = getattr(db_p, "units", None) or (raw_p.get("units") if raw_p else []) or []
+        units_converted = [
+            UnitConversionItem(unit_name=u["unit_name"], conversion_rate=float(u["conversion_rate"]))
+            for u in units_raw
+            if isinstance(u, dict) and "unit_name" in u and "conversion_rate" in u
+        ]
 
-        stock = p["stock"]
-        sell_price = p.get("sell_price", 0.0)
-        floor_price = p.get("floor_price", 0.0)
-        cost_price = p.get("cost_price", 0.0)
+        stock = wh_stock_map.get(db_p.id, int(db_p.stock or 0))
+        sell_price = float(db_p.sell_price or 0.0)
+        floor_price = float(db_p.floor_price or 0.0)
+        cost_price = float(db_p.cost_price or 0.0)
 
-        if db_p:
-            if db_p.sell_price is not None and db_p.sell_price > 0:
-                sell_price = float(db_p.sell_price)
-                p["sell_price"] = sell_price
-            if db_p.floor_price is not None and db_p.floor_price > 0:
-                floor_price = float(db_p.floor_price)
-                p["floor_price"] = floor_price
-            if db_p.cost_price is not None and db_p.cost_price > 0:
-                cost_price = float(db_p.cost_price)
-                p["cost_price"] = cost_price
-            if db_p.code:
-                p["code"] = db_p.code
-            if db_p.name:
-                p["name"] = db_p.name
-
-        # Ưu tiên tính tồn kho từ tổng thực tế tất cả các kho
-        if p["id"] in wh_stock_map:
-            stock = wh_stock_map[p["id"]]
-            p["stock"] = stock
-            if db_p and db_p.stock != stock:
-                db_p.stock = stock
-        elif db_p and db_p.stock is not None:
-            stock = int(db_p.stock)
-            p["stock"] = stock
-
-        # Tự động đồng bộ từ bảng giá mới nhất nếu sản phẩm chưa có giá niêm yết hoặc giá sàn
-        pid = p["id"]
-        if pid in pb_price_map:
-            pb_vals = pb_price_map[pid]
-            if (sell_price == 0 or sell_price is None) and pb_vals["sell_price"] > 0:
+        if db_p.id in pb_price_map:
+            pb_vals = pb_price_map[db_p.id]
+            if sell_price == 0 and pb_vals["sell_price"] > 0:
                 sell_price = pb_vals["sell_price"]
-                p["sell_price"] = sell_price
-                if db_p:
-                    db_p.sell_price = sell_price
-            if (floor_price == 0 or floor_price is None) and pb_vals["floor_price"] > 0:
+            if floor_price == 0 and pb_vals["floor_price"] > 0:
                 floor_price = pb_vals["floor_price"]
-                p["floor_price"] = floor_price
-                if db_p:
-                    db_p.floor_price = floor_price
 
-        total_stock += stock
-        total_sell_val += sell_price * stock
+        db_images = getattr(db_p, "images", None) or (raw_p.get("images") if raw_p else []) or []
+        packaging_spec = getattr(db_p, "packaging_specification", None) or (raw_p.get("packaging_specification") if raw_p else "") or ""
+        status_val = getattr(db_p, "status", None) or (raw_p.get("status") if raw_p else "active") or "active"
+        cat_name = db_p.category or (raw_p.get("category") if raw_p else "Chưa phân loại") or "Chưa phân loại"
+        cat_id = db_p.category_id or (raw_p.get("category_id") if raw_p else None)
+        is_batch_val = bool(getattr(db_p, "is_batch_managed", False))
+        tx_cnt = tx_counts_map.get(db_p.id, 0)
 
         db_images = getattr(db_p, "images", None) if db_p else None
         images = db_images if (db_images and len(db_images) > 0) else (p.get("images") or [])
@@ -475,14 +563,20 @@ def get_products(
         p["category_id"] = cat_id
         is_batch_val = bool(db_p.is_batch_managed) if (db_p and getattr(db_p, "is_batch_managed", None) is not None) else bool(p.get("is_batch_managed", False))
 
+        # Cập nhật ngược lại RAW_PRODUCTS nếu có sản phẩm tương ứng để đồng bộ in-memory
+        if raw_p:
+            raw_p["stock"] = stock
+            raw_p["sell_price"] = sell_price
+            raw_p["floor_price"] = floor_price
+            raw_p["cost_price"] = cost_price
+
         if can_view_cost:
             profit_unit = sell_price - cost_price
             margin = round((profit_unit / sell_price) * 100, 2) if sell_price > 0 else 0.0
-            total_cost_val += cost_price * stock
             sanitized_items.append(ProductItem(
-                id=p["id"],
-                code=p["code"],
-                name=p["name"],
+                id=db_p.id,
+                code=db_p.code,
+                name=db_p.name,
                 category=cat_name,
                 category_id=cat_id,
                 stock=stock,
@@ -493,18 +587,18 @@ def get_products(
                 cost_price=cost_price,
                 profit_margin=margin,
                 profit_per_unit=profit_unit,
-                images=images,
+                images=db_images,
                 packaging_specification=packaging_spec,
                 status=status_val,
                 is_batch_managed=is_batch_val,
-                transaction_count=tx_counts_map.get(p["id"], 0),
+                transaction_count=tx_cnt,
             ))
         else:
             # AC 3: Filter/strip bỏ hoàn toàn trường nhạy cảm trước khi gửi JSON về client
             sanitized_items.append(ProductItem(
-                id=p["id"],
-                code=p["code"],
-                name=p["name"],
+                id=db_p.id,
+                code=db_p.code,
+                name=db_p.name,
                 category=cat_name,
                 category_id=cat_id,
                 stock=stock,
@@ -515,11 +609,11 @@ def get_products(
                 cost_price=None,
                 profit_margin=None,
                 profit_per_unit=None,
-                images=images,
+                images=db_images,
                 packaging_specification=packaging_spec,
                 status=status_val,
                 is_batch_managed=is_batch_val,
-                transaction_count=tx_counts_map.get(p["id"], 0),
+                transaction_count=tx_cnt,
             ))
 
     # Xử lý các sản phẩm có trong Database nhưng chưa có trong in-memory RAW_PRODUCTS
@@ -681,22 +775,9 @@ def get_products(
     is_paginated = page is not None or skip is not None or effective_limit is not None
 
     if is_paginated:
-        if effective_limit is None:
-            effective_limit = 10
-        import math
-        total_pages = max(1, math.ceil(total_filtered / effective_limit))
-        if skip is not None and page is None:
-            cur_page = (skip // effective_limit) + 1
-            start_idx = skip
-        else:
-            cur_page = min(max(1, page or 1), total_pages)
-            start_idx = (cur_page - 1) * effective_limit
-        end_idx = start_idx + effective_limit
-        paged_items = filtered_items[start_idx:end_idx]
-
         return ProductListResponse(
-            items=paged_items,
-            data=paged_items,
+            items=sanitized_items,
+            data=sanitized_items,
             total=total_filtered,
             user_role=current_user.role,
             is_cost_price_visible=can_view_cost,
@@ -705,12 +786,12 @@ def get_products(
             limit=effective_limit,
             page_size=effective_limit,
             total_pages=total_pages,
-            has_more=(start_idx + len(paged_items) < total_filtered),
+            has_more=has_more,
         )
 
     return ProductListResponse(
-        items=filtered_items,
-        data=filtered_items,
+        items=sanitized_items,
+        data=sanitized_items,
         total=total_filtered,
         user_role=current_user.role,
         is_cost_price_visible=can_view_cost,
