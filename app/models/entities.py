@@ -220,6 +220,11 @@ class InventoryTransactionEntity(Base):
     unit_name = Column(Unicode(50), default="Cái")
     conversion_rate = Column(Float, default=1.0)
     base_quantity = Column(Float, default=0.0)
+    # SCRUM-81: Lưu vết lô gợi ý, lô đã chọn và lý do đổi lô (FEFO)
+    batch_number = Column(String(100), nullable=True)
+    selected_batch_id = Column(Integer, nullable=True)
+    suggested_batch_id = Column(Integer, nullable=True)
+    batch_change_reason = Column(Unicode(500), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
 

@@ -145,6 +145,10 @@ class InventoryLedgerEntity(Base):
     previous_stock = Column(Float, default=0.0)
     new_stock = Column(Float, default=0.0)
     batch_number = Column(String(100), nullable=True)
+    # SCRUM-81: Lưu vết lô gợi ý, lô đã chọn và lý do đổi lô trong thẻ kho
+    selected_batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True)
+    suggested_batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True)
+    batch_change_reason = Column(Unicode(500), nullable=True)
     performed_by = Column(Unicode(100), nullable=True)
     note = Column(UnicodeText, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)

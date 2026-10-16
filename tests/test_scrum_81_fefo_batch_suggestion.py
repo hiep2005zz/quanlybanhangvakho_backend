@@ -346,3 +346,56 @@ def test_criteria_3_cannot_overdraw_batch_stock(fefo_test_setup):
     )
     assert resp.status_code == 400
     assert "không đủ" in resp.json()["detail"].lower()
+
+
+def test_criteria_2_db_persistence_of_batch_choice_and_reason(fefo_test_setup):
+    """
+    Tiêu chí 2: Kiểm tra lưu lại lô đã chọn và lý do đổi lô vào CSDL
+    (cả trong InventoryTransactionEntity và InventoryLedgerEntity).
+    """
+    wh_token = get_token("kho")
+    prod = fefo_test_setup["product"]
+    b1 = fefo_test_setup["batches"][0]
+    b2 = fefo_test_setup["batches"][1]
+
+    custom_reason = "Khách hàng yêu cầu date xa trên 2 tháng phục vụ xuất khẩu"
+    payload = {
+        "product_id": prod.id,
+        "quantity": 5,
+        "destination": "Đại lý VIP Miền Trung",
+        "warehouse_id": "WH01",
+        "suggested_batch_id": b1.id,
+        "selected_batch_id": b2.id,
+        "batch_change_reason": custom_reason,
+    }
+    resp = client.post(
+        "/api/v1/inventory/issue",
+        json=payload,
+        headers={"Authorization": f"Bearer {wh_token}"}
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Kiểm tra trực tiếp CSDL
+    db = SessionLocal()
+    try:
+        # 1. Kiểm tra InventoryLedgerEntity (thẻ kho)
+        ledger = db.query(InventoryLedgerEntity).filter(
+            InventoryLedgerEntity.product_id == prod.id,
+            InventoryLedgerEntity.batch_number == b2.batch_number,
+        ).order_by(InventoryLedgerEntity.id.desc()).first()
+        assert ledger is not None, "Phải có bản ghi thẻ kho"
+        assert ledger.selected_batch_id == b2.id, "Thẻ kho phải lưu đúng selected_batch_id"
+        assert ledger.suggested_batch_id == b1.id, "Thẻ kho phải lưu đúng suggested_batch_id"
+        assert ledger.batch_change_reason == custom_reason, "Thẻ kho phải lưu đúng batch_change_reason"
+
+        # 2. Kiểm tra InventoryTransactionEntity (nhật ký giao dịch kho)
+        tx = db.query(InventoryTransactionEntity).filter(
+            InventoryTransactionEntity.product_id == prod.id,
+            InventoryTransactionEntity.batch_number == b2.batch_number,
+        ).order_by(InventoryTransactionEntity.id.desc()).first()
+        assert tx is not None, "Phải có bản ghi giao dịch kho"
+        assert tx.selected_batch_id == b2.id, "Giao dịch kho phải lưu đúng selected_batch_id"
+        assert tx.suggested_batch_id == b1.id, "Giao dịch kho phải lưu đúng suggested_batch_id"
+        assert tx.batch_change_reason == custom_reason, "Giao dịch kho phải lưu đúng batch_change_reason"
+    finally:
+        db.close()

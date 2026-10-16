@@ -555,10 +555,14 @@ def create_stock_issue(
             performed_by=current_user.username,
             user_role=current_user.role,
             reason=reason_str,
+            selected_batch_id=data.selected_batch_id or (deducted_batch.id if deducted_batch else None),
+            suggested_batch_id=data.suggested_batch_id,
+            batch_change_reason=clean_reason,
+            batch_number=deducted_batch.batch_number if deducted_batch else data.batch_number,
         )
         db.add(db_tx)
 
-        if deducted_batch:
+        if deducted_batch and not data.selected_batch_id:
             from app.models.goods_receipt import InventoryLedgerEntity
             db.add(
                 InventoryLedgerEntity(

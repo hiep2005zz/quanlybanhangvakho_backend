@@ -322,10 +322,12 @@ def get_products(
     - Đối với Thủ kho, Nhân viên kinh doanh, Kế toán...: Server BÓC TÁCH & GỠ BỎ HOÀN TOÀN các trường này (None).
     """
     # 1. Phân lập luồng: Role Customer áp dụng Dynamic Pricing Engine (LEFT OUTER JOIN với bảng giá có hiệu lực)
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    user_roles = current_user.roles if (hasattr(current_user, "roles") and current_user.roles) else (current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role])
+    roles_lower = [str(r).lower() for r in user_roles if r]
     is_customer = (
-        (current_user.role and current_user.role.lower() == "customer")
-        or ("customer" in [r.lower() for r in user_roles] and not any(r.lower() in ["admin", "sales_manager", "sales", "accountant"] for r in user_roles))
+        (current_user.role and str(current_user.role).lower() in ["customer", "agent"])
+        or any(r in ["customer", "agent"] for r in roles_lower)
+        or (current_user.username and current_user.username.lower() == "muahang")
     )
 
     if is_customer:
@@ -464,6 +466,8 @@ def get_products(
         base_unit = p.get("base_unit") or "Cái"
         packaging_spec = p.get("packaging_specification")
         status_val = p.get("status") or "active"
+        if stock <= 0 and status_val == "active":
+            status_val = "out_of_stock"
         cat_name = db_p.category if (db_p and db_p.category) else p.get("category", "Chưa phân loại")
         cat_id = db_p.category_id if (db_p and db_p.category_id is not None) else p.get("category_id")
         p["category"] = cat_name
@@ -545,6 +549,8 @@ def get_products(
             images_list = getattr(db_p, "images", None) or []
             packaging_spec = getattr(db_p, "packaging_specification", None) or ""
             status_val = getattr(db_p, "status", None) or "active"
+        if stock <= 0 and status_val == "active":
+            status_val = "out_of_stock"
             is_batch_val = bool(getattr(db_p, "is_batch_managed", False))
 
             RAW_PRODUCTS.append({

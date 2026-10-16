@@ -84,6 +84,15 @@ def _ensure_legacy_columns(bind=engine):
             "unit_name": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
             "conversion_rate": ("FLOAT DEFAULT 1.0", "FLOAT DEFAULT 1.0"),
             "base_quantity": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "batch_number": ("VARCHAR(100) NULL", "NVARCHAR(100) NULL"),
+            "selected_batch_id": ("INTEGER NULL", "INT NULL"),
+            "suggested_batch_id": ("INTEGER NULL", "INT NULL"),
+            "batch_change_reason": ("NVARCHAR(500) NULL", "NVARCHAR(500) NULL"),
+        },
+        "inventory_ledgers": {
+            "selected_batch_id": ("INTEGER NULL", "INT NULL"),
+            "suggested_batch_id": ("INTEGER NULL", "INT NULL"),
+            "batch_change_reason": ("NVARCHAR(500) NULL", "NVARCHAR(500) NULL"),
         },
         "orders": {
             "delivery_point_id": ("INTEGER", "INT NULL"),

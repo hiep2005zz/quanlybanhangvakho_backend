@@ -273,6 +273,9 @@ class BatchPickingRouteItem(BaseModel):
     bin: Optional[str] = None               # Ô chứa (Ô 01, Ô 02,...)
     pick_path_code: str                     # Chuỗi định tuyến tổng hợp để sắp xếp
     order_breakdown: List[OrderBreakdownItem] = []
+    is_batch_managed: bool = False
+    suggested_batch: Optional[ProductBatchInfo] = None
+    available_batches: List[ProductBatchInfo] = []
 
 
 class BatchPickingPreviewResponse(BaseModel):
