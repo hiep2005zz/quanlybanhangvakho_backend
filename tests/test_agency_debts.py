@@ -112,3 +112,12 @@ def test_customer_invoice_detail_and_download(customer_token):
         )
         assert json_res.status_code == 200
         assert "application/json" in json_res.headers.get("content-type", "")
+
+        # Download PDF
+        pdf_res = client.get(
+            f"/api/v1/agency-debts/invoices/{code}/download?format=pdf",
+            headers={"Authorization": f"Bearer {customer_token}"},
+        )
+        assert pdf_res.status_code == 200
+        assert "application/pdf" in pdf_res.headers.get("content-type", "")
+        assert pdf_res.content[:4] == b"%PDF"

@@ -432,3 +432,146 @@ def generate_invoice_xml(detail: Dict[str, Any]) -> str:
     </DLHDon>
 </HDon>"""
     return xml.strip()
+
+
+def generate_invoice_pdf(detail: Dict[str, Any]) -> bytes:
+    """
+    Sinh file PDF Hóa đơn điện tử/Bán hàng chất lượng cao (A4 chuẩn),
+    đầy đủ thông tin Bên A, Bên B, Bảng sản phẩm, Tổng nợ và Ký tên.
+    """
+    import io
+    from PIL import Image, ImageDraw, ImageFont
+
+    W, H = 1240, 1754
+    img = Image.new("RGB", (W, H), "white")
+    draw = ImageDraw.Draw(img)
+
+    font_bold_path = "C:/Windows/Fonts/arialbd.ttf"
+    font_reg_path = "C:/Windows/Fonts/arial.ttf"
+
+    try:
+        f_title = ImageFont.truetype(font_bold_path, 30)
+        f_sub = ImageFont.truetype(font_bold_path, 15)
+        f_head = ImageFont.truetype(font_bold_path, 16)
+        f_bold = ImageFont.truetype(font_bold_path, 14)
+        f_reg = ImageFont.truetype(font_reg_path, 14)
+        f_sm = ImageFont.truetype(font_reg_path, 12)
+    except Exception:
+        f_title = ImageFont.load_default()
+        f_sub = f_head = f_bold = f_reg = f_sm = f_title
+
+    # 1. Header
+    draw.text((60, 60), "HÓA ĐƠN BÁN HÀNG", fill=(15, 23, 42), font=f_title)
+    draw.text((60, 102), "KIÊM BIÊN BẢN GIAO NHẬN & XÁC NHẬN CÔNG NỢ", fill=(4, 120, 87), font=f_sub)
+    draw.text((60, 130), f"Mã hóa đơn: {detail.get('invoice_code')} | Mã đơn hàng: {detail.get('order_code')}", fill=(100, 116, 139), font=f_sm)
+
+    # Right info
+    issue_date = (detail.get("issue_date") or "")[:10]
+    due_date = (detail.get("due_date") or "")[:10]
+    draw.text((800, 65), f"Ngày phát hành: {issue_date}", fill=(71, 85, 105), font=f_reg)
+    draw.text((800, 95), f"Hạn thanh toán: {due_date}", fill=(71, 85, 105), font=f_reg)
+
+    status_label = detail.get("status_label", "Chưa thanh toán")
+    status_bg = (254, 243, 199)
+    status_border = (252, 211, 77)
+    status_fg = (180, 83, 9)
+    if detail.get("status") == "PAID":
+        status_bg = (236, 253, 245)
+        status_border = (167, 243, 208)
+        status_fg = (4, 120, 87)
+    elif detail.get("status") == "OVERDUE":
+        status_bg = (254, 242, 242)
+        status_border = (254, 202, 202)
+        status_fg = (185, 28, 28)
+
+    draw.rounded_rectangle([(800, 125), (980, 155)], radius=15, fill=status_bg, outline=status_border)
+    draw.text((815, 131), status_label, fill=status_fg, font=f_bold)
+
+    # Divider line
+    draw.line([(60, 175), (1180, 175)], fill=(226, 232, 240), width=2)
+
+    # 2. Party A & Party B Boxes
+    box_y = 195
+    box_w = 545
+    box_h = 170
+
+    # Box A (Seller)
+    seller = detail.get("seller", {})
+    draw.rounded_rectangle([(60, box_y), (60 + box_w, box_y + box_h)], radius=10, fill=(248, 250, 252), outline=(203, 213, 225), width=1)
+    draw.text((80, box_y + 15), "ĐƠN VỊ BÁN HÀNG (BÊN A)", fill=(30, 41, 59), font=f_head)
+    draw.text((80, box_y + 45), str(seller.get("name", "")), fill=(15, 23, 42), font=f_bold)
+    draw.text((80, box_y + 70), f"Mã số thuế: {seller.get('tax_code', '')}", fill=(71, 85, 105), font=f_reg)
+    draw.text((80, box_y + 95), f"Địa chỉ: {seller.get('address', '')}", fill=(71, 85, 105), font=f_reg)
+    draw.text((80, box_y + 120), f"Điện thoại: {seller.get('phone', '')} | STK: {seller.get('bank_account', '')}", fill=(71, 85, 105), font=f_sm)
+
+    # Box B (Dealer)
+    dealer = detail.get("dealer", {})
+    draw.rounded_rectangle([(635, box_y), (635 + box_w, box_y + box_h)], radius=10, fill=(240, 253, 244), outline=(187, 247, 208), width=1)
+    draw.text((655, box_y + 15), "ĐẠI LÝ MUA HÀNG (BÊN B)", fill=(6, 95, 70), font=f_head)
+    draw.text((655, box_y + 45), str(dealer.get("name", "")), fill=(15, 23, 42), font=f_bold)
+    draw.text((655, box_y + 70), f"Mã đại lý: {dealer.get('code', '')}", fill=(71, 85, 105), font=f_reg)
+    if dealer.get("tax_code"):
+        draw.text((655, box_y + 95), f"Mã số thuế: {dealer.get('tax_code')}", fill=(71, 85, 105), font=f_reg)
+    if dealer.get("phone"):
+        draw.text((655, box_y + 120), f"Điện thoại: {dealer.get('phone')}", fill=(71, 85, 105), font=f_reg)
+
+    # 3. Items Table
+    tbl_y = 390
+    draw.text((60, tbl_y), "DANH MỤC HÀNG HÓA & DỊCH VỤ", fill=(51, 65, 85), font=f_head)
+    tbl_y += 30
+
+    # Table Header Row
+    draw.rectangle([(60, tbl_y), (1180, tbl_y + 36)], fill=(241, 245, 249), outline=(203, 213, 225))
+    draw.text((75, tbl_y + 10), "STT", fill=(71, 85, 105), font=f_bold)
+    draw.text((150, tbl_y + 10), "Tên Hàng Hóa / Dịch Vụ", fill=(71, 85, 105), font=f_bold)
+    draw.text((650, tbl_y + 10), "Đơn vị tính", fill=(71, 85, 105), font=f_bold)
+    draw.text((790, tbl_y + 10), "Số Lượng", fill=(71, 85, 105), font=f_bold)
+    draw.text((910, tbl_y + 10), "Đơn Giá", fill=(71, 85, 105), font=f_bold)
+    draw.text((1050, tbl_y + 10), "Thành Tiền", fill=(71, 85, 105), font=f_bold)
+    tbl_y += 36
+
+    # Table Rows
+    def fmt_vnd(v: float) -> str:
+        s = f"{int(round(float(v or 0))):,}"
+        return s.replace(",", ".") + " đ"
+
+    for idx, it in enumerate(detail.get("items", []), 1):
+        row_h = 36
+        draw.rectangle([(60, tbl_y), (1180, tbl_y + row_h)], fill="white", outline=(226, 232, 240))
+        draw.text((80, tbl_y + 10), str(idx), fill=(100, 116, 139), font=f_reg)
+        draw.text((150, tbl_y + 10), str(it.get("product_name", "")), fill=(15, 23, 42), font=f_bold)
+        draw.text((660, tbl_y + 10), str(it.get("unit_name", "Chiếc")), fill=(71, 85, 105), font=f_reg)
+        draw.text((810, tbl_y + 10), str(it.get("quantity", 1)), fill=(15, 23, 42), font=f_reg)
+        draw.text((910, tbl_y + 10), fmt_vnd(it.get("price", 0)), fill=(71, 85, 105), font=f_reg)
+        draw.text((1050, tbl_y + 10), fmt_vnd(it.get("total", 0)), fill=(15, 23, 42), font=f_bold)
+        tbl_y += row_h
+
+    # 4. Summary Totals
+    tbl_y += 20
+    draw.line([(700, tbl_y), (1180, tbl_y)], fill=(203, 213, 225), width=1)
+
+    draw.text((750, tbl_y + 10), "Tổng tiền hàng:", fill=(71, 85, 105), font=f_reg)
+    draw.text((1050, tbl_y + 10), fmt_vnd(detail.get("total_amount", 0)), fill=(15, 23, 42), font=f_bold)
+
+    draw.text((750, tbl_y + 35), "Đã thanh toán:", fill=(71, 85, 105), font=f_reg)
+    draw.text((1050, tbl_y + 35), fmt_vnd(detail.get("paid_amount", 0)), fill=(4, 120, 87), font=f_bold)
+
+    draw.line([(700, tbl_y + 60), (1180, tbl_y + 60)], fill=(203, 213, 225), width=2)
+    draw.text((750, tbl_y + 70), "Còn nợ:", fill=(185, 28, 28), font=f_bold)
+    draw.text((1050, tbl_y + 70), fmt_vnd(detail.get("remaining_debt", 0)), fill=(185, 28, 28), font=f_bold)
+
+    # 5. Signatures
+    sig_y = tbl_y + 130
+    note = detail.get("note") or "Thanh toán theo điều khoản tín dụng hợp đồng đại lý."
+    draw.text((60, sig_y), f"* Ghi chú: {note}", fill=(100, 116, 139), font=f_sm)
+
+    sig_y += 50
+    draw.text((220, sig_y), "ĐẠI DIỆN BÊN MUA", fill=(30, 41, 59), font=f_bold)
+    draw.text((215, sig_y + 25), "(Ký, ghi rõ họ tên)", fill=(148, 163, 184), font=f_sm)
+
+    draw.text((820, sig_y), "ĐẠI DIỆN BÊN BÁN", fill=(30, 41, 59), font=f_bold)
+    draw.text((825, sig_y + 25), "(Ký, đóng dấu)", fill=(148, 163, 184), font=f_sm)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PDF", resolution=150.0)
+    return buf.getvalue()

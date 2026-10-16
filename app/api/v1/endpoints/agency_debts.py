@@ -14,6 +14,7 @@ from app.services.invoice_service import (
     get_agency_invoices_list,
     get_invoice_detail,
     generate_invoice_xml,
+    generate_invoice_pdf,
 )
 
 router = APIRouter()
@@ -150,21 +151,27 @@ def download_agency_invoice_endpoint(
             detail=f"Không tìm thấy hóa đơn #{invoice_code}.",
         )
 
-    if format.lower() == "json":
+    fmt = (format or "pdf").lower()
+    if fmt == "json":
         import json
-        content = json.dumps(detail, ensure_ascii=False, indent=2)
+        content = json.dumps(detail, ensure_ascii=False, indent=2).encode("utf-8")
         media_type = "application/json"
         filename = f"{invoice_code}.json"
-    else:
-        content = generate_invoice_xml(detail)
+    elif fmt == "xml":
+        content = generate_invoice_xml(detail).encode("utf-8")
         media_type = "application/xml"
         filename = f"{invoice_code}.xml"
+    else:
+        # Mặc định xuất file PDF chuẩn A4 chất lượng cao
+        content = generate_invoice_pdf(detail)
+        media_type = "application/pdf"
+        filename = f"{invoice_code}.pdf"
 
     return Response(
-        content=content.encode("utf-8"),
+        content=content,
         media_type=media_type,
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Type": f"{media_type}; charset=utf-8",
+            "Content-Type": media_type,
         },
     )
