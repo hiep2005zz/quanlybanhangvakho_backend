@@ -4,7 +4,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_, and_
 
 from app.core.database import get_db
 from app.api.deps import require_roles, require_permission
@@ -12,7 +12,7 @@ from app.core.rbac import Permission
 from app.schemas.auth import UserResponse
 from app.models.goods_receipt import WarehouseEntity
 from app.models.warehouse import WarehouseLocationEntity, LocationStockEntity, WarehouseZoneEntity, WarehouseRackEntity
-from app.models.entities import ProductEntity, DealerEntity, OrderEntity
+from app.models.entities import ProductEntity, DealerEntity, OrderEntity, WarehouseStockEntity
 from app.schemas.warehouse import (
     WarehouseCreate,
     WarehouseUpdate,
@@ -801,6 +801,42 @@ def assign_product_to_location(
                     break
         except Exception:
             pass
+
+    # Đồng bộ tồn kho theo kho trong bảng warehouse_stocks (phục vụ báo cáo tồn kho & vòng quay)
+    db.flush()
+    wh_master = db.query(WarehouseEntity).filter(WarehouseEntity.id == loc.warehouse_id).first()
+    if wh_master:
+        wh_loc_total = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
+            LocationStockEntity.warehouse_id == loc.warehouse_id,
+            LocationStockEntity.product_id == prod.id,
+        ).scalar() or 0
+
+        ws = db.query(WarehouseStockEntity).filter(
+            WarehouseStockEntity.product_id == prod.id,
+            or_(
+                WarehouseStockEntity.warehouse_id == wh_master.code,
+                WarehouseStockEntity.warehouse_name == wh_master.name,
+                and_(wh_master.code == "KHO_HN", WarehouseStockEntity.warehouse_id == "WH01"),
+                and_(wh_master.code == "KHO_HCM", WarehouseStockEntity.warehouse_id == "WH02"),
+                and_(wh_master.code == "KHO_DN", WarehouseStockEntity.warehouse_id == "WH03"),
+            )
+        ).first()
+        if ws:
+            ws.actual_stock = wh_loc_total
+            ws.quantity_on_hand = wh_loc_total
+            ws.warehouse_id = wh_master.code
+            ws.warehouse_name = wh_master.name
+        else:
+            db.add(WarehouseStockEntity(
+                warehouse_id=wh_master.code,
+                warehouse_name=wh_master.name,
+                product_id=prod.id,
+                actual_stock=wh_loc_total,
+                quantity_on_hand=wh_loc_total,
+                reserved_stock=0,
+                reserved_quantity=0,
+                min_stock=10,
+            ))
 
     db.commit()
 

@@ -131,7 +131,7 @@ class ProductEntity(Base):
     code = Column(String(50), unique=True, index=True, nullable=False)
     name = Column(Unicode(255), nullable=False)
     category = Column(Unicode(100), default="Thời trang")
-    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True, index=True)
     stock = Column(Integer, default=0)
     cost_price = Column(Float, default=0.0)
     sell_price = Column(Float, default=0.0)
@@ -141,9 +141,9 @@ class ProductEntity(Base):
     packaging_specification = Column(Unicode(255), nullable=True)
     images_json = Column(UnicodeText, nullable=True)
     is_batch_managed = Column(Boolean, default=False)
-    status = Column(String(50), default="active")
+    status = Column(String(50), default="active", index=True)
     min_stock = Column(Integer, default=10, nullable=True)
-    created_at = Column(DateTime, default=get_utc_now)
+    created_at = Column(DateTime, default=get_utc_now, index=True)
 
     category_rel = relationship("CategoryEntity", backref="products")
 
@@ -252,10 +252,10 @@ class OrderEntity(Base):
     assigned_sale_id = Column(Integer, nullable=True)
     assigned_sale_name = Column(Unicode(255), nullable=True)
     total_amount = Column(Float, default=0.0)
-    status = Column(String(50), default="PENDING")
+    status = Column(String(50), default="PENDING", index=True)
     note = Column(UnicodeText, nullable=True)
     items_json = Column(UnicodeText, nullable=True)  # JSON order items
-    created_at = Column(DateTime, default=get_utc_now)
+    created_at = Column(DateTime, default=get_utc_now, index=True)
     delivery_point_id = Column(Integer, ForeignKey("dealer_delivery_points.id"), nullable=True)
     discount_rate = Column(Float, default=0.0)
     discount_amount = Column(Float, default=0.0)
