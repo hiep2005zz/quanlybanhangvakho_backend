@@ -440,3 +440,49 @@ class StockTransferEntity(Base):
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 
+
+class DeliveryTripEntity(Base):
+    __tablename__ = "delivery_trips"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    trip_code = Column(String(50), unique=True, index=True, nullable=False)
+    driver_name = Column(Unicode(150), nullable=False)
+    driver_phone = Column(String(50), nullable=True)
+    vehicle_plate = Column(Unicode(50), nullable=False)
+    route_name = Column(Unicode(255), nullable=True)
+    warehouse_id = Column(String(50), nullable=True)
+    warehouse_name = Column(Unicode(255), nullable=True)
+    status = Column(String(30), default="IN_TRANSIT", nullable=False, index=True)  # IN_TRANSIT | DELIVERING | COMPLETED | CANCELLED
+    dispatched_at = Column(DateTime, default=get_utc_now, nullable=False)
+    estimated_delivery_time = Column(DateTime, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    note = Column(UnicodeText, nullable=True)
+    created_by = Column(Unicode(100), nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+    stops = relationship("DeliveryStopEntity", backref="trip", cascade="all, delete-orphan", order_by="DeliveryStopEntity.stop_order")
+
+
+class DeliveryStopEntity(Base):
+    __tablename__ = "delivery_stops"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    trip_id = Column(Integer, ForeignKey("delivery_trips.id"), nullable=False, index=True)
+    stop_order = Column(Integer, default=1, nullable=False)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=True, index=True)
+    order_code = Column(String(50), nullable=False, index=True)
+    dealer_id = Column(Integer, ForeignKey("dealers.id"), nullable=True, index=True)
+    dealer_name = Column(Unicode(255), nullable=False)
+    delivery_point = Column(Unicode(500), nullable=False)
+    receiver_name = Column(Unicode(150), nullable=True)
+    receiver_phone = Column(String(50), nullable=True)
+    amount = Column(Float, default=0.0, nullable=False)
+    status = Column(String(30), default="PENDING", nullable=False, index=True)  # PENDING | IN_TRANSIT | DELIVERED | FAILED
+    estimated_arrival = Column(DateTime, nullable=True)
+    delivered_at = Column(DateTime, nullable=True)
+    failed_reason = Column(Unicode(255), nullable=True)
+    note = Column(UnicodeText, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
