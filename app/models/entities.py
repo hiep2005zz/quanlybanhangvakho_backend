@@ -481,7 +481,13 @@ class DeliveryStopEntity(Base):
     status = Column(String(30), default="PENDING", nullable=False, index=True)  # PENDING | IN_TRANSIT | DELIVERED | FAILED
     estimated_arrival = Column(DateTime, nullable=True)
     delivered_at = Column(DateTime, nullable=True)
+    actual_delivery_time = Column(DateTime, nullable=True)
     failed_reason = Column(Unicode(255), nullable=True)
+    failure_reason = Column(Unicode(500), nullable=True)
+    pod_image_url = Column(Unicode(500), nullable=True)
+    delivery_status = Column(String(30), nullable=True)
+    return_status = Column(String(50), nullable=True)
+    items_detail = Column(UnicodeText, nullable=True)
     note = Column(UnicodeText, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)

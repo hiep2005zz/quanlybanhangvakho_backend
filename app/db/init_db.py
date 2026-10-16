@@ -151,6 +151,14 @@ def _ensure_legacy_columns(bind=engine):
             "note": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
             "created_by": ("VARCHAR(100) DEFAULT ''", "NVARCHAR(100) DEFAULT ''"),
         },
+        "delivery_stops": {
+            "actual_delivery_time": ("DATETIME NULL", "DATETIME NULL"),
+            "pod_image_url": ("VARCHAR(500) NULL", "NVARCHAR(500) NULL"),
+            "delivery_status": ("VARCHAR(30) NULL", "NVARCHAR(30) NULL"),
+            "failure_reason": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
+            "return_status": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
+            "items_detail": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
+        },
     }
     inspector = inspect(bind)
     dialect_name = bind.dialect.name
@@ -384,6 +392,55 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite cleanup notice (dummy delivery_trips): {ex}")
+
+            # Migration bảng delivery_stops (SCRUM-85):
+            ds_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(delivery_stops)")).fetchall()]
+            if ds_cols:
+                if "actual_delivery_time" not in ds_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE delivery_stops ADD COLUMN actual_delivery_time DATETIME;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (delivery_stops.actual_delivery_time): {ex}")
+                if "pod_image_url" not in ds_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE delivery_stops ADD COLUMN pod_image_url TEXT;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (delivery_stops.pod_image_url): {ex}")
+                if "delivery_status" not in ds_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE delivery_stops ADD COLUMN delivery_status VARCHAR(30);"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (delivery_stops.delivery_status): {ex}")
+                if "failure_reason" not in ds_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE delivery_stops ADD COLUMN failure_reason TEXT;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (delivery_stops.failure_reason): {ex}")
+                if "return_status" not in ds_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE delivery_stops ADD COLUMN return_status VARCHAR(50);"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (delivery_stops.return_status): {ex}")
+                if "items_detail" not in ds_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE delivery_stops ADD COLUMN items_detail TEXT;"))
+                        conn.commit()
+                    except Exception as ex:
+                        print(f"SQLite migration notice (delivery_stops.items_detail): {ex}")
+
+                # Đồng bộ dữ liệu cũ nếu có
+                try:
+                    conn.execute(text("UPDATE delivery_stops SET actual_delivery_time = delivered_at WHERE actual_delivery_time IS NULL AND delivered_at IS NOT NULL;"))
+                    conn.execute(text("UPDATE delivery_stops SET failure_reason = failed_reason WHERE failure_reason IS NULL AND failed_reason IS NOT NULL;"))
+                    conn.execute(text("UPDATE delivery_stops SET delivery_status = status WHERE delivery_status IS NULL AND status IS NOT NULL;"))
+                    conn.commit()
+                except Exception:
+                    pass
         else:
             for sql_statement in [
                 "IF COL_LENGTH('users', 'avatar_url') IS NULL ALTER TABLE users ADD avatar_url NVARCHAR(500);",
@@ -422,6 +479,15 @@ def init_db():
                 "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN departure_time;",
                 "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN expected_completion_time;",
                 "IF COL_LENGTH('delivery_trips', 'actual_completion_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN actual_completion_time;",
+                "IF COL_LENGTH('delivery_stops', 'actual_delivery_time') IS NULL ALTER TABLE delivery_stops ADD actual_delivery_time DATETIME;",
+                "IF COL_LENGTH('delivery_stops', 'pod_image_url') IS NULL ALTER TABLE delivery_stops ADD pod_image_url NVARCHAR(500);",
+                "IF COL_LENGTH('delivery_stops', 'delivery_status') IS NULL ALTER TABLE delivery_stops ADD delivery_status VARCHAR(30);",
+                "IF COL_LENGTH('delivery_stops', 'failure_reason') IS NULL ALTER TABLE delivery_stops ADD failure_reason NVARCHAR(MAX);",
+                "IF COL_LENGTH('delivery_stops', 'return_status') IS NULL ALTER TABLE delivery_stops ADD return_status NVARCHAR(50);",
+                "IF COL_LENGTH('delivery_stops', 'items_detail') IS NULL ALTER TABLE delivery_stops ADD items_detail NVARCHAR(MAX);",
+                "UPDATE delivery_stops SET actual_delivery_time = delivered_at WHERE actual_delivery_time IS NULL AND delivered_at IS NOT NULL;",
+                "UPDATE delivery_stops SET failure_reason = failed_reason WHERE failure_reason IS NULL AND failed_reason IS NOT NULL;",
+                "UPDATE delivery_stops SET delivery_status = status WHERE delivery_status IS NULL AND status IS NOT NULL;",
             ]:
                 try:
                     conn.execute(text(sql_statement))

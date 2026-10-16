@@ -70,8 +70,10 @@ app.include_router(deliveries.router, prefix="/api/v1/deliveries", tags=["Delive
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
 AVATARS_DIR = os.path.join(UPLOAD_DIR, "avatars")
 PRODUCTS_DIR = os.path.join(UPLOAD_DIR, "products")
+PODS_DIR = os.path.join(UPLOAD_DIR, "pod")
 os.makedirs(AVATARS_DIR, exist_ok=True)
 os.makedirs(PRODUCTS_DIR, exist_ok=True)
+os.makedirs(PODS_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 @app.get("/")
