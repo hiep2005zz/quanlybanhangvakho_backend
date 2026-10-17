@@ -39,6 +39,11 @@ from app.models.warehouse import (
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
 from app.models.invoice import InvoiceEntity
+from app.models.debt_payment import (
+    PaymentReceiptEntity,
+    PaymentAllocationEntity,
+    PaymentAdjustmentEntity,
+)
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 
@@ -931,6 +936,14 @@ def init_db():
             print("Product stocks synchronized from warehouses successfully.")
         except Exception as sync_err:
             print(f"Error syncing product stocks from warehouses: {sync_err}")
+
+        # S7-02: Tự động đồng bộ hoá đơn từ đơn hàng và công nợ CSDL hiện có
+        try:
+            from app.services.debt_payment_service import sync_all_dealers_invoices
+            sync_all_dealers_invoices(db)
+            print("Dealer invoices synchronized successfully.")
+        except Exception as inv_err:
+            print(f"Notice on syncing invoices: {inv_err}")
 
         print("Database initialization completed successfully.")
     except Exception as e:

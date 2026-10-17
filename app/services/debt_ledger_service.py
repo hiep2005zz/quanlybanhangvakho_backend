@@ -7,6 +7,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from app.models.entities import DealerEntity, OrderEntity, UserEntity
+from app.models.invoice import InvoiceEntity
 from app.schemas.debt_ledger import (
     AgeingBuckets,
     DealerDebtAgeingItem,
@@ -45,8 +46,7 @@ def compute_debt_ledger_data(
     # Cache users for sale staff names
     sales_users = {u.id: (u.full_name or u.username) for u in db.query(UserEntity).all()}
 
-    # 2. Fetch all relevant orders
-    # Active orders that count towards receivable: exclude CANCELLED, DRAFT, REJECTED
+    # 2. Fetch all relevant orders and invoices
     orders = db.query(OrderEntity).filter(
         ~OrderEntity.status.in_(["CANCELLED", "DRAFT", "REJECTED"])
     ).all()
@@ -58,11 +58,21 @@ def compute_debt_ledger_data(
             dealer_orders_map[o.dealer_id] = []
         dealer_orders_map[o.dealer_id].append(o)
 
+    # Map invoices by dealer_id
+    all_invoices = db.query(InvoiceEntity).all()
+    dealer_invoices_map = {}
+    for inv in all_invoices:
+        if inv.dealer_id not in dealer_invoices_map:
+            dealer_invoices_map[inv.dealer_id] = []
+        dealer_invoices_map[inv.dealer_id].append(inv)
+
     now = datetime.now(timezone.utc)
     items: List[DealerDebtAgeingItem] = []
 
     for d in dealers:
+        d_invoices = dealer_invoices_map.get(d.id, [])
         d_orders = dealer_orders_map.get(d.id, [])
+
         total_receivable = 0.0
         total_paid = 0.0
         remaining_debt = 0.0
@@ -73,36 +83,65 @@ def compute_debt_ledger_data(
         b_over_90 = 0.0
         oldest_days = 0
 
-        for o in d_orders:
-            amt = float(o.total_amount or 0.0)
-            total_receivable += amt
+        if d_invoices:
+            # Ưu tiên tính trực tiếp từ dữ liệu hoá đơn đã đồng bộ và đối trừ
+            for inv in d_invoices:
+                tot = float(inv.total_amount or 0.0)
+                paid = float(inv.paid_amount or 0.0)
+                rem = max(0.0, float(inv.remaining_debt or (tot - paid)))
 
-            if o.status == "PAID":
-                total_paid += amt
-            else:
-                # Outstanding debt order
-                remaining_debt += amt
-                # Calculate age in days from order created_at (or due date)
-                created_dt = o.created_at
-                if created_dt:
-                    if created_dt.tzinfo is None:
-                        created_dt = created_dt.replace(tzinfo=timezone.utc)
-                    age_days = max(0, (now - created_dt).days)
+                total_receivable += tot
+                total_paid += paid
+                remaining_debt += rem
+
+                if rem > 0:
+                    created_dt = inv.issue_date or inv.created_at
+                    if created_dt:
+                        if created_dt.tzinfo is None:
+                            created_dt = created_dt.replace(tzinfo=timezone.utc)
+                        age_days = max(0, (now - created_dt).days)
+                    else:
+                        age_days = 0
+
+                    if age_days > oldest_days:
+                        oldest_days = age_days
+
+                    if age_days <= 30:
+                        b_0_30 += rem
+                    elif age_days <= 60:
+                        b_31_60 += rem
+                    elif age_days <= 90:
+                        b_61_90 += rem
+                    else:
+                        b_over_90 += rem
+        else:
+            for o in d_orders:
+                amt = float(o.total_amount or 0.0)
+                total_receivable += amt
+
+                if o.status == "PAID":
+                    total_paid += amt
                 else:
-                    age_days = 0
+                    remaining_debt += amt
+                    created_dt = o.created_at
+                    if created_dt:
+                        if created_dt.tzinfo is None:
+                            created_dt = created_dt.replace(tzinfo=timezone.utc)
+                        age_days = max(0, (now - created_dt).days)
+                    else:
+                        age_days = 0
 
-                if age_days > oldest_days:
-                    oldest_days = age_days
+                    if age_days > oldest_days:
+                        oldest_days = age_days
 
-                # Ageing bucket placement
-                if age_days <= 30:
-                    b_0_30 += amt
-                elif age_days <= 60:
-                    b_31_60 += amt
-                elif age_days <= 90:
-                    b_61_90 += amt
-                else:
-                    b_over_90 += amt
+                    if age_days <= 30:
+                        b_0_30 += amt
+                    elif age_days <= 60:
+                        b_31_60 += amt
+                    elif age_days <= 90:
+                        b_61_90 += amt
+                    else:
+                        b_over_90 += amt
 
         # Overdue condition:
         # If dealer has debt that exceeded allowed credit terms (max_debt_days or overdue_days_allowed)
