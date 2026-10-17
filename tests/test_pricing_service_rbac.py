@@ -68,6 +68,12 @@ def test_price_book_and_dealer():
             )
         )
 
+        # Tạm tắt các chính sách chiết khấu khác để đảm bảo tính độc lập của test
+        other_policies = db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.is_active == True).all()
+        deactivated_ids = [p.id for p in other_policies]
+        for p in other_policies:
+            p.is_active = False
+
         # 3. Tạo chính sách chiết khấu bậc sản lượng:
         # Bậc 1: 10 - 49 -> 5%
         # Bậc 2: 50 - 99 -> 10%
@@ -107,6 +113,9 @@ def test_price_book_and_dealer():
         if policy_id:
             clean_db.query(DiscountTierEntity).filter(DiscountTierEntity.policy_id == policy_id).delete()
             clean_db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.id == policy_id).delete()
+        if deactivated_ids:
+            for p in clean_db.query(DiscountPolicyEntity).filter(DiscountPolicyEntity.id.in_(deactivated_ids)).all():
+                p.is_active = True
         clean_db.commit()
     finally:
         clean_db.close()

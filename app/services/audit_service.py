@@ -43,6 +43,9 @@ SYSTEM_AUDIT_ACTION_TYPES = {
     "STOCK_ISSUE",
     "GOODS_RECEIPT_CONFIRM",
     "OVERRIDE_EXPIRED_BATCH_ISSUE",
+    "STOCK_ADJUSTMENT_CREATED",
+    "STOCK_ADJUSTMENT_APPROVED",
+    "STOCK_ADJUSTMENT_REJECTED",
     # 2. Giá bán & Sản phẩm
     "PRICE_CHANGE",
     "PRODUCT_UPDATE",
@@ -74,6 +77,7 @@ ALLOWED_ENTITY_TYPES = {
     # 1. Tồn kho
     "Inventory",
     "GoodsReceiptNote",
+    "StockAdjustment",
     # 2. Tồn kho & Giá bán
     "Product",
     "ProductPrice",

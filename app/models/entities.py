@@ -131,7 +131,7 @@ class ProductEntity(Base):
     code = Column(String(50), unique=True, index=True, nullable=False)
     name = Column(Unicode(255), nullable=False)
     category = Column(Unicode(100), default="Thời trang")
-    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True, index=True)
     stock = Column(Integer, default=0)
     cost_price = Column(Float, default=0.0)
     sell_price = Column(Float, default=0.0)
@@ -141,9 +141,9 @@ class ProductEntity(Base):
     packaging_specification = Column(Unicode(255), nullable=True)
     images_json = Column(UnicodeText, nullable=True)
     is_batch_managed = Column(Boolean, default=False)
-    status = Column(String(50), default="active")
+    status = Column(String(50), default="active", index=True)
     min_stock = Column(Integer, default=10, nullable=True)
-    created_at = Column(DateTime, default=get_utc_now)
+    created_at = Column(DateTime, default=get_utc_now, index=True)
 
     category_rel = relationship("CategoryEntity", backref="products")
 
@@ -226,6 +226,11 @@ class InventoryTransactionEntity(Base):
     unit_name = Column(Unicode(50), default="Cái")
     conversion_rate = Column(Float, default=1.0)
     base_quantity = Column(Float, default=0.0)
+    # SCRUM-81: Lưu vết lô gợi ý, lô đã chọn và lý do đổi lô (FEFO)
+    batch_number = Column(String(100), nullable=True)
+    selected_batch_id = Column(Integer, nullable=True)
+    suggested_batch_id = Column(Integer, nullable=True)
+    batch_change_reason = Column(Unicode(500), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
 
@@ -253,10 +258,10 @@ class OrderEntity(Base):
     assigned_sale_id = Column(Integer, nullable=True)
     assigned_sale_name = Column(Unicode(255), nullable=True)
     total_amount = Column(Float, default=0.0)
-    status = Column(String(50), default="PENDING")
+    status = Column(String(50), default="PENDING", index=True)
     note = Column(UnicodeText, nullable=True)
     items_json = Column(UnicodeText, nullable=True)  # JSON order items
-    created_at = Column(DateTime, default=get_utc_now)
+    created_at = Column(DateTime, default=get_utc_now, index=True)
     delivery_point_id = Column(Integer, ForeignKey("dealer_delivery_points.id"), nullable=True)
     discount_rate = Column(Float, default=0.0)
     discount_amount = Column(Float, default=0.0)
@@ -287,10 +292,16 @@ class OrderItemEntity(Base):
     unit_name = Column(Unicode(50), nullable=True)
     conversion_rate = Column(Float, default=1.0)
     is_reserved = Column(Boolean, default=False, nullable=False)
+    # SCRUM-81: Gợi ý và chọn lô xuất kho (FEFO)
+    suggested_batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True, index=True)
+    selected_batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True, index=True)
+    batch_change_reason = Column(Unicode(500), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
     order_rel = relationship("OrderEntity", backref="items_rel")
     product_rel = relationship("ProductEntity", backref="order_items")
+    suggested_batch_rel = relationship("ProductBatchEntity", foreign_keys=[suggested_batch_id])
+    selected_batch_rel = relationship("ProductBatchEntity", foreign_keys=[selected_batch_id])
 
 
 # Alias for OrderEntity
@@ -469,4 +480,84 @@ class DealerPaymentEntity(Base):
     note = Column(UnicodeText, nullable=True)
     recorded_by = Column(Unicode(100), nullable=False)
     recorded_at = Column(DateTime, default=get_utc_now)
+
+
+class DeliveryTripEntity(Base):
+    __tablename__ = "delivery_trips"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    trip_code = Column(String(50), unique=True, index=True, nullable=False)
+    driver_name = Column(Unicode(150), nullable=False)
+    driver_phone = Column(String(50), nullable=True)
+    vehicle_plate = Column(Unicode(50), nullable=False)
+    route_name = Column(Unicode(255), nullable=True)
+    warehouse_id = Column(String(50), nullable=True)
+    warehouse_name = Column(Unicode(255), nullable=True)
+    status = Column(String(30), default="IN_TRANSIT", nullable=False, index=True)  # IN_TRANSIT | DELIVERING | COMPLETED | CANCELLED
+    dispatched_at = Column(DateTime, default=get_utc_now, nullable=False)
+    estimated_delivery_time = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    note = Column(UnicodeText, nullable=True)
+    created_by = Column(Unicode(100), nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+    stops = relationship("DeliveryStopEntity", backref="trip", cascade="all, delete-orphan", order_by="DeliveryStopEntity.stop_order")
+
+
+class DeliveryStopEntity(Base):
+    __tablename__ = "delivery_stops"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    trip_id = Column(Integer, ForeignKey("delivery_trips.id"), nullable=False, index=True)
+    stop_order = Column(Integer, default=1, nullable=False)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=True, index=True)
+    order_code = Column(String(50), nullable=False, index=True)
+    dealer_id = Column(Integer, ForeignKey("dealers.id"), nullable=True, index=True)
+    dealer_name = Column(Unicode(255), nullable=False)
+    delivery_point = Column(Unicode(500), nullable=False)
+    receiver_name = Column(Unicode(150), nullable=True)
+    receiver_phone = Column(String(50), nullable=True)
+    amount = Column(Float, default=0.0, nullable=False)
+    status = Column(String(30), default="PENDING", nullable=False, index=True)  # PENDING | IN_TRANSIT | DELIVERED | FAILED
+    estimated_arrival = Column(DateTime, nullable=True)
+    delivered_at = Column(DateTime, nullable=True)
+    actual_delivery_time = Column(DateTime, nullable=True)
+    failed_reason = Column(Unicode(255), nullable=True)
+    failure_reason = Column(Unicode(500), nullable=True)
+    pod_image_url = Column(Unicode(500), nullable=True)
+    delivery_status = Column(String(30), nullable=True)
+    return_status = Column(String(50), nullable=True)
+    items_detail = Column(UnicodeText, nullable=True)
+    note = Column(UnicodeText, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+
+class StockAdjustmentEntity(Base):
+    __tablename__ = "stock_adjustments"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    warehouse_id = Column(String(50), nullable=False, index=True)
+    warehouse_name = Column(Unicode(255), nullable=False)
+    reason_type = Column(String(50), nullable=False)  # damaged, lost, expired, other
+    reason_note = Column(UnicodeText, nullable=False)
+    total_loss_value = Column(Float, default=0.0, nullable=False)
+    total_items = Column(Integer, default=0)
+    total_quantity = Column(Integer, default=0)
+    status = Column(String(20), default="PENDING", nullable=False)  # PENDING | APPROVED | REJECTED
+    items_json = Column(UnicodeText, nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by = Column(Unicode(100), nullable=False)
+    created_by_role = Column(String(50), nullable=True)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_by = Column(Unicode(100), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    rejected_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    rejected_by = Column(Unicode(100), nullable=True)
+    rejected_at = Column(DateTime, nullable=True)
+    rejection_reason = Column(UnicodeText, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 

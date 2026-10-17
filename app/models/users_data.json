@@ -68,9 +68,9 @@
     "full_name": "Lê Thủ Kho",
     "email": "kho@congty.vn",
     "phone": "0766276516",
-    "role": "sales_manager",
+    "role": "warehouse",
     "roles": [
-      "sales_manager"
+      "warehouse"
     ],
     "hashed_password": "$2b$12$6v6UeBSwWb4Q8hLwks0uxut1/5WSJeHRJlrOlAUQSn2kgvJ15PWKW",
     "branch": "Kho Tổng Hà Nội",
@@ -131,9 +131,9 @@
     "full_name": "Vu Mua Hang",
     "email": "muahang@congty.vn",
     "phone": "0833516998",
-    "role": "customer",
+    "role": "purchasing",
     "roles": [
-      "customer"
+      "purchasing"
     ],
     "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
     "branch": "Trụ sở chính",

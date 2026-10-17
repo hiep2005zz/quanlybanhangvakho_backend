@@ -911,6 +911,9 @@ def _format_order_response(
                 appr_reason = f"Chiết khấu ({disc_rate}%) vượt hạn mức chính sách cần duyệt"
             else:
                 appr_reason = "Bán dưới giá sàn cần quản lý duyệt"
+    else:
+        # Đơn đã xác nhận/duyệt/hoàn tất không còn yêu cầu phê duyệt
+        req_appr = False
 
     # Khi đơn hàng không còn ở trạng thái chờ duyệt (đã xác nhận / duyệt / hủy / v.v.), làm sạch thông báo đại lý tự đặt chờ xác nhận
     if appr_reason and order.status not in ("PENDING_APPROVAL", "PENDING", "REVISION_REQUIRED"):
@@ -2088,11 +2091,14 @@ def create_sales_entry_order(
                 f"Đại lý có khoản nợ quá hạn ({max_debt_age} ngày > {overdue_days_allowed} ngày cho phép) - Chuyển sang phê duyệt theo chính sách công nợ"
             )
 
-    if requires_approval or is_customer:
+    if is_admin:
+        requires_approval = False
+        order_status = "CONFIRMED"
+    elif requires_approval or is_customer:
         order_status = "PENDING_APPROVAL"
     else:
         order_status = "CONFIRMED"
-    approval_reason = " | ".join(approval_reasons) if approval_reasons else None
+    approval_reason = " | ".join(approval_reasons) if (approval_reasons and not is_admin) else None
 
     created_at = datetime.now(timezone.utc)
     db_order = OrderEntity(
