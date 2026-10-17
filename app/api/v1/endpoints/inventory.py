@@ -6,7 +6,7 @@ import math
 from typing import List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, desc
 from app.api.deps import require_permission, require_sales_role, require_roles
 from app.core.database import get_db
 from app.core.rbac import Permission, Role
@@ -28,7 +28,10 @@ from app.schemas.inventory import (
     StockBookItem,
     StockBookSummary,
     StockBookResponse,
+    StockCardItem,
+    StockCardResponse,
 )
+from app.models.goods_receipt import InventoryLedgerEntity, WarehouseEntity
 from app.api.v1.endpoints.products import RAW_PRODUCTS
 from app.models.entities import ProductEntity, WarehouseStockEntity
 from app.services.audit_service import log_audit_event
@@ -53,6 +56,37 @@ def _find_product(product_id: int):
     return None
 
 
+WAREHOUSE_NUMERIC_MAP = {
+    "WH01": 1,
+    "WH02": 3,
+    "WH03": 2,
+    "KHO_HN": 1,
+    "KHO_HCM": 3,
+    "KHO_DN": 2,
+    "1": 1,
+    "2": 2,
+    "3": 3,
+}
+
+CANONICAL_WAREHOUSE_MAP = {
+    "KHO_HN": "WH01",
+    "WH01": "WH01",
+    "KHO_HCM": "WH02",
+    "WH02": "WH02",
+    "KHO_DN": "WH03",
+    "WH03": "WH03",
+}
+
+WAREHOUSE_CODE_ALIASES = {
+    "KHO_HN": ["WH01", "KHO_HN"],
+    "WH01": ["WH01", "KHO_HN"],
+    "KHO_HCM": ["WH02", "KHO_HCM"],
+    "WH02": ["WH02", "KHO_HCM"],
+    "KHO_DN": ["WH03", "KHO_DN"],
+    "WH03": ["WH03", "KHO_DN"],
+}
+
+
 @router.get("/transactions", response_model=List[InventoryTransaction])
 def get_inventory_transactions(
     current_user: UserResponse = Depends(require_permission(Permission.INVENTORY_READ.value))
@@ -60,8 +94,133 @@ def get_inventory_transactions(
     """
     Xem lịch sử biến động kho.
     Yêu cầu quyền 'inventory:read'.
+    Ràng buộc phân quyền: Các phiếu điều chỉnh tổn thất (ADJ-) chỉ hiển thị cho Quản lý kho và Admin.
     """
-    return INVENTORY_TRANSACTIONS
+    user_roles = [current_user.role]
+    if hasattr(current_user, "roles") and current_user.roles:
+        user_roles.extend(current_user.roles)
+    is_mgr = any(
+        r in [
+            Role.SYSTEM_ADMIN.value,
+            Role.WAREHOUSE_MANAGER.value,
+            "admin",
+            "warehouse_manager",
+        ]
+        for r in user_roles
+    )
+
+    if is_mgr:
+        return INVENTORY_TRANSACTIONS
+    return [
+        tx for tx in INVENTORY_TRANSACTIONS
+        if not (tx.type == "adjust" and ("ADJ-" in (tx.reason or "") or "Phiếu điều chỉnh" in (tx.reason or "")))
+    ]
+
+
+@router.get("/stock-card", response_model=StockCardResponse)
+def get_stock_card(
+    product_id: Optional[int] = Query(None, description="Lọc theo ID sản phẩm"),
+    warehouse_id: Optional[str] = Query(None, description="Lọc theo mã kho (WH01, WH02... hoặc ID số)"),
+    search: Optional[str] = Query(None, description="Tìm kiếm theo mã SP, tên SP, mã chứng từ"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_permission(Permission.INVENTORY_READ.value))
+):
+    """
+    Thẻ kho điện tử (Stock Card / Inventory Ledger).
+    Ghi nhận toàn bộ biến động: Nhập kho (RECEIPT), Xuất kho (ISSUE), và Điều chỉnh tồn kho (ADJUST).
+    RÀNG BUỘC PHÂN QUYỀN BẢO MẬT:
+    Mọi phiếu điều chỉnh tồn kho (ADJUST / ADJ-) CHỈ xuất hiện trên Thẻ kho đối với Quản lý kho và Quản trị viên (Admin).
+    Thủ kho thông thường hoặc các vai trò khác sẽ không nhìn thấy các dòng điều chỉnh tổn thất này.
+    """
+    user_roles = [current_user.role]
+    if hasattr(current_user, "roles") and current_user.roles:
+        user_roles.extend(current_user.roles)
+    is_mgr = any(
+        r in [
+            Role.SYSTEM_ADMIN.value,
+            Role.WAREHOUSE_MANAGER.value,
+            "admin",
+            "warehouse_manager",
+        ]
+        for r in user_roles
+    )
+
+    query = (
+        db.query(
+            InventoryLedgerEntity,
+            ProductEntity.code.label("product_code"),
+            ProductEntity.name.label("product_name"),
+            WarehouseEntity.name.label("warehouse_name"),
+        )
+        .join(ProductEntity, InventoryLedgerEntity.product_id == ProductEntity.id)
+        .outerjoin(WarehouseEntity, InventoryLedgerEntity.warehouse_id == WarehouseEntity.id)
+    )
+
+    if product_id:
+        query = query.filter(InventoryLedgerEntity.product_id == product_id)
+
+    if warehouse_id and warehouse_id != "all":
+        wh_num = WAREHOUSE_NUMERIC_MAP.get(warehouse_id)
+        if not wh_num and warehouse_id.isdigit():
+            wh_num = int(warehouse_id)
+        if not wh_num:
+            wh_row = db.query(WarehouseEntity).filter(
+                or_(WarehouseEntity.code == warehouse_id, WarehouseEntity.name == warehouse_id)
+            ).first()
+            if wh_row:
+                wh_num = wh_row.id
+
+        if wh_num:
+            query = query.filter(InventoryLedgerEntity.warehouse_id == wh_num)
+        else:
+            return StockCardResponse(items=[], total=0)
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                ProductEntity.code.ilike(term),
+                ProductEntity.name.ilike(term),
+                InventoryLedgerEntity.reference_code.ilike(term),
+                InventoryLedgerEntity.note.ilike(term),
+            )
+        )
+
+    # RÀNG BUỘC CỐT LÕI: Chỉ quản lý kho và admin mới thấy phiếu điều chỉnh tổn thất trên thẻ kho
+    if not is_mgr:
+        query = query.filter(
+            InventoryLedgerEntity.transaction_type != "ADJUST",
+            ~InventoryLedgerEntity.reference_code.like("ADJ-%")
+        )
+
+    total = query.count()
+    records = query.order_by(desc(InventoryLedgerEntity.id)).offset(offset).limit(limit).all()
+
+    items = []
+    for ledger, prod_code, prod_name, wh_name in records:
+        items.append(
+            StockCardItem(
+                id=ledger.id,
+                product_id=ledger.product_id,
+                product_code=prod_code or "",
+                product_name=prod_name or "",
+                warehouse_id=ledger.warehouse_id,
+                warehouse_name=wh_name or f"Kho #{ledger.warehouse_id}",
+                reference_code=ledger.reference_code,
+                transaction_type=ledger.transaction_type,
+                quantity=float(ledger.quantity),
+                previous_stock=float(ledger.previous_stock or 0.0),
+                new_stock=float(ledger.new_stock or 0.0),
+                batch_number=ledger.batch_number,
+                performed_by=ledger.performed_by,
+                note=ledger.note,
+                created_at=ledger.created_at,
+            )
+        )
+
+    return StockCardResponse(items=items, total=total)
 
 
 @router.get("/available-stock", response_model=AvailableStockResponse)
@@ -412,20 +571,67 @@ def create_stock_issue(
             detail="Số lượng xuất kho quá lớn (tối đa 10.000.000 đơn vị). Vui lòng nhập số lượng hợp lý."
         )
 
-    # Tiêu chí 1, 2, 4: Quản lý lô và chặn xuất lô quá hạn (kèm cơ chế ghi đè của Warehouse Manager)
+    # Quản lý xuất theo lô: Xử lý hài hòa giữa SCRUM-81 (FEFO selected_batch_id) và Quản lý lô (batch_number)
     deducted_batch = None
+    clean_reason = None
+    target_wh_id_int = None
+    wh_entity = None
     if db and prod_entity:
-        from app.services.batch_service import validate_and_deduct_batch_for_issue
-        deducted_batch = validate_and_deduct_batch_for_issue(
-            db=db,
-            product=prod_entity,
-            batch_number=data.batch_number,
-            quantity_to_deduct=float(base_qty),
-            warehouse_id=data.warehouse_id or 1,
-            override_expired=bool(data.override_expired),
-            override_reason=data.override_reason,
-            current_user=current_user,
+        from app.models.goods_receipt import WarehouseEntity, ProductBatchEntity
+        from app.services.batch_suggestion_service import (
+            resolve_warehouse_id_int,
+            validate_batch_change_reason,
+            check_warehouse_user_permission,
         )
+
+        target_wh_id_int = resolve_warehouse_id_int(db, data.warehouse_id or "WH01")
+        wh_entity = db.query(WarehouseEntity).filter(WarehouseEntity.id == target_wh_id_int).first() if target_wh_id_int else None
+        check_warehouse_user_permission(current_user, wh_entity)
+
+        is_batch_managed = bool(getattr(prod_entity, "is_batch_managed", False))
+
+        if data.selected_batch_id:
+            # Luồng SCRUM-81: Gợi ý theo FEFO và chọn lô theo ID
+            clean_reason = validate_batch_change_reason(
+                selected_batch_id=data.selected_batch_id,
+                suggested_batch_id=data.suggested_batch_id,
+                batch_change_reason=data.batch_change_reason,
+            )
+            b_chk = db.query(ProductBatchEntity).filter(
+                ProductBatchEntity.id == data.selected_batch_id,
+                ProductBatchEntity.product_id == prod_entity.id,
+            ).first()
+            if not b_chk:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Không tìm thấy lô hàng ID {data.selected_batch_id} của sản phẩm '{prod_entity.name}' tại kho."
+                )
+            if b_chk.quantity < base_qty:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Lô hàng '{b_chk.batch_number}' không đủ số lượng tồn để xuất. Tồn hiện tại: {b_chk.quantity}, yêu cầu xuất: {base_qty}."
+                )
+        elif data.batch_number:
+            # Luồng Quản lý lô: Chỉ định trực tiếp số lô (kèm kiểm tra HSD & cờ override)
+            from app.services.batch_service import validate_and_deduct_batch_for_issue
+            deducted_batch = validate_and_deduct_batch_for_issue(
+                db=db,
+                product=prod_entity,
+                batch_number=data.batch_number,
+                quantity_to_deduct=float(base_qty),
+                warehouse_id=target_wh_id_int or 1,
+                override_expired=bool(data.override_expired),
+                override_reason=data.override_reason,
+                current_user=current_user,
+            )
+        elif is_batch_managed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Sản phẩm '{prod_entity.name}' (Mã: {prod_entity.code}) đã bật cấu hình quản lý lô "
+                    f"(is_batch_managed=True). Bắt buộc phải chỉ định số lô (batch_number) khi xuất kho."
+                ),
+            )
 
     previous_stock = product["stock"] if product else prod_entity.stock
     if previous_stock < base_qty:
@@ -466,10 +672,48 @@ def create_stock_issue(
     INVENTORY_TRANSACTIONS.insert(0, tx)
 
     if db:
+        if data.selected_batch_id:
+            # SCRUM-81: Tiêu chí 3: Mở lock và trừ đúng tồn lô đã chọn trong DB transaction
+            from app.services.batch_suggestion_service import execute_batch_deduction
+            deducted_batch = execute_batch_deduction(
+                db=db,
+                product=prod_entity,
+                warehouse_id=target_wh_id_int or 1,
+                base_qty=base_qty,
+                selected_batch_id=data.selected_batch_id,
+                suggested_batch_id=data.suggested_batch_id,
+                batch_change_reason=clean_reason,
+                reference_code=f"XK-{int(time.time())}",
+                performed_by=current_user.username,
+                note=reason_str,
+            )
+
+        target_wh_code = str(data.warehouse_id) if data.warehouse_id in ["WH01", "WH02", "WH03"] else None
+        if not target_wh_code and wh_entity:
+            w_code = (wh_entity.code or "").upper()
+            if "HN" in w_code or wh_entity.id == 1:
+                target_wh_code = "WH01"
+            elif "HCM" in w_code or wh_entity.id == 3:
+                target_wh_code = "WH02"
+            elif "DN" in w_code or wh_entity.id == 2:
+                target_wh_code = "WH03"
+            else:
+                target_wh_code = wh_entity.code
+        if not target_wh_code:
+            target_wh_code = str(data.warehouse_id or "WH01")
+
         ws = db.query(WarehouseStockEntity).filter(
-            WarehouseStockEntity.warehouse_id == "WH01",
+            WarehouseStockEntity.warehouse_id == target_wh_code,
             WarehouseStockEntity.product_id == data.product_id
         ).first()
+        if not ws:
+            alt_ids = [str(data.warehouse_id or "WH01"), "WH01"]
+            if wh_entity and wh_entity.code:
+                alt_ids.append(wh_entity.code)
+            ws = db.query(WarehouseStockEntity).filter(
+                WarehouseStockEntity.warehouse_id.in_(alt_ids),
+                WarehouseStockEntity.product_id == data.product_id
+            ).first()
         if ws:
             ws.actual_stock = max(0, (ws.actual_stock or 0) - int(base_qty))
             if ws.quantity_on_hand is not None:
@@ -491,10 +735,14 @@ def create_stock_issue(
             performed_by=current_user.username,
             user_role=current_user.role,
             reason=reason_str,
+            selected_batch_id=data.selected_batch_id or (deducted_batch.id if deducted_batch else None),
+            suggested_batch_id=data.suggested_batch_id,
+            batch_change_reason=clean_reason,
+            batch_number=deducted_batch.batch_number if deducted_batch else data.batch_number,
         )
         db.add(db_tx)
 
-        if deducted_batch:
+        if deducted_batch and not data.selected_batch_id:
             from app.models.goods_receipt import InventoryLedgerEntity
             db.add(
                 InventoryLedgerEntity(
@@ -665,11 +913,22 @@ def clear_stock_quantity(
 
 
 @router.get("/warehouses", response_model=List[WarehouseInfo])
-def get_warehouses_list():
+def get_warehouses_list(db: Session = Depends(get_db)):
     """Lấy danh sách các kho hoạt động trong hệ thống."""
+    warehouses_dict = dict(DEFAULT_WAREHOUSES)
+    if db:
+        try:
+            db_whs = db.query(WarehouseEntity).filter(WarehouseEntity.is_active == True).all()
+            for wh in db_whs:
+                if wh.code:
+                    c_id = CANONICAL_WAREHOUSE_MAP.get(wh.code, wh.code)
+                    warehouses_dict[c_id] = wh.name
+        except Exception:
+            pass
+
     return [
         WarehouseInfo(warehouse_id=w_id, warehouse_name=w_name)
-        for w_id, w_name in DEFAULT_WAREHOUSES.items()
+        for w_id, w_name in warehouses_dict.items()
     ]
 
 
@@ -730,9 +989,18 @@ def get_inventory_thresholds(
 
         # Lọc theo kho
         if wh_filter != "ALL" and wh_filter != "all":
-            base_query = base_query.filter(WarehouseStockEntity.warehouse_id == wh_filter)
+            aliases = WAREHOUSE_CODE_ALIASES.get(wh_filter, [wh_filter])
+            base_query = base_query.filter(WarehouseStockEntity.warehouse_id.in_(aliases))
         else:
-            base_query = base_query.filter(WarehouseStockEntity.warehouse_id.in_(list(DEFAULT_WAREHOUSES.keys())))
+            all_wh_ids = set(DEFAULT_WAREHOUSES.keys())
+            try:
+                db_whs = db.query(WarehouseEntity.code).filter(WarehouseEntity.is_active == True).all()
+                for (wcode,) in db_whs:
+                    if wcode:
+                        all_wh_ids.add(CANONICAL_WAREHOUSE_MAP.get(wcode, wcode))
+            except Exception:
+                pass
+            base_query = base_query.filter(WarehouseStockEntity.warehouse_id.in_(list(all_wh_ids)))
 
         # Lọc theo trạng thái
         if f_mode == "LOW_ONLY":
@@ -1198,9 +1466,20 @@ def get_stock_book(
     global _LAST_SYNC_WAREHOUSE_STOCKS, _CATEGORIES_CACHE, _STOCK_BOOK_CACHE
     now = time.time()
 
+    warehouses_dict = dict(DEFAULT_WAREHOUSES)
+    if db:
+        try:
+            db_whs = db.query(WarehouseEntity).filter(WarehouseEntity.is_active == True).all()
+            for wh in db_whs:
+                if wh.code:
+                    c_id = CANONICAL_WAREHOUSE_MAP.get(wh.code, wh.code)
+                    warehouses_dict[c_id] = wh.name
+        except Exception:
+            pass
+
     warehouses_info = [
         WarehouseInfo(warehouse_id=wid, warehouse_name=wname)
-        for wid, wname in DEFAULT_WAREHOUSES.items()
+        for wid, wname in warehouses_dict.items()
     ]
 
     # 1. Đồng bộ bản ghi kho (chạy tối đa 1 lần mỗi 5 phút để tránh nghẽn truy vấn khi người dùng lướt chuyển trang)
@@ -1226,6 +1505,9 @@ def get_stock_book(
                 WarehouseStockEntity.reserved_stock,
                 WarehouseStockEntity.min_stock,
                 ProductEntity.min_stock.label("prod_min_stock"),
+                ProductEntity.is_batch_managed,
+                ProductEntity.cost_price,
+                ProductEntity.sell_price,
             )
             .join(ProductEntity, WarehouseStockEntity.product_id == ProductEntity.id)
             .filter(ProductEntity.status != "inactive")
@@ -1233,9 +1515,10 @@ def get_stock_book(
 
         # Lọc theo kho
         if warehouse_id and warehouse_id != "all":
-            base_query = base_query.filter(WarehouseStockEntity.warehouse_id == warehouse_id)
+            aliases = WAREHOUSE_CODE_ALIASES.get(warehouse_id, [warehouse_id])
+            base_query = base_query.filter(WarehouseStockEntity.warehouse_id.in_(aliases))
         else:
-            base_query = base_query.filter(WarehouseStockEntity.warehouse_id.in_(list(DEFAULT_WAREHOUSES.keys())))
+            base_query = base_query.filter(WarehouseStockEntity.warehouse_id.in_(list(warehouses_dict.keys())))
 
         # Lọc theo ngành hàng / danh mục
         if category and category != "all":
@@ -1306,6 +1589,7 @@ def get_stock_book(
             paginated_rows = ordered_query.all()
 
         # 5. Khởi tạo danh sách items (chỉ đúng số bản ghi của trang đó)
+        can_view_cost = getattr(current_user, "can_view_cost", False) or (Permission.COST_READ.value in current_user.permissions)
         items: List[StockBookItem] = []
         for r in paginated_rows:
             act = r.actual_stock or 0
@@ -1335,6 +1619,9 @@ def get_stock_book(
                 min_stock=min_stk,
                 is_low_stock=is_low,
                 status=status_label,
+                is_batch_managed=bool(r.is_batch_managed or False),
+                cost_price=float(r.cost_price) if can_view_cost and r.cost_price is not None else None,
+                sell_price=float(r.sell_price) if r.sell_price is not None else None,
             ))
 
         summary = StockBookSummary(
@@ -1435,26 +1722,41 @@ def create_stock_transfer(
     - Kiểm tra tồn khả dụng tại kho gửi (available_stock >= transfer_qty).
     - Hàng đang chuyển được ghi nhận là IN_TRANSIT, trừ tồn kho đi, CHƯA cộng vào kho đến.
     """
-    if data.from_warehouse_id == data.to_warehouse_id:
+    valid_warehouses = dict(DEFAULT_WAREHOUSES)
+    if db:
+        try:
+            db_whs = db.query(WarehouseEntity).filter(WarehouseEntity.is_active == True).all()
+            for wh in db_whs:
+                if wh.code:
+                    c_id = CANONICAL_WAREHOUSE_MAP.get(wh.code, wh.code)
+                    valid_warehouses[c_id] = wh.name
+                    valid_warehouses[wh.code] = wh.name
+        except Exception:
+            pass
+
+    from_c_id = CANONICAL_WAREHOUSE_MAP.get(data.from_warehouse_id, data.from_warehouse_id)
+    to_c_id = CANONICAL_WAREHOUSE_MAP.get(data.to_warehouse_id, data.to_warehouse_id)
+
+    if from_c_id == to_c_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Kho chuyển đi và kho tiếp nhận không được trùng nhau."
         )
 
-    if data.from_warehouse_id not in DEFAULT_WAREHOUSES:
+    if from_c_id not in valid_warehouses and data.from_warehouse_id not in valid_warehouses:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Mã kho đi '{data.from_warehouse_id}' không hợp lệ."
         )
 
-    if data.to_warehouse_id not in DEFAULT_WAREHOUSES:
+    if to_c_id not in valid_warehouses and data.to_warehouse_id not in valid_warehouses:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Mã kho đến '{data.to_warehouse_id}' không hợp lệ."
         )
 
-    from_name = DEFAULT_WAREHOUSES[data.from_warehouse_id]
-    to_name = DEFAULT_WAREHOUSES[data.to_warehouse_id]
+    from_name = valid_warehouses.get(from_c_id) or valid_warehouses.get(data.from_warehouse_id, data.from_warehouse_id)
+    to_name = valid_warehouses.get(to_c_id) or valid_warehouses.get(data.to_warehouse_id, data.to_warehouse_id)
 
     items_detail = []
     total_transfer_qty = 0
@@ -1796,5 +2098,41 @@ def cancel_stock_transfer(
     )
 
     return _format_stock_transfer_response(transfer)
+
+
+@router.get("/batches/suggest")
+def suggest_batches_for_product(
+    product_id: int = Query(..., description="ID sản phẩm (SKU)"),
+    warehouse_id: Optional[str] = Query("WH01", description="Mã kho hoặc ID kho"),
+    quantity: float = Query(1.0, description="Số lượng cần xuất"),
+    conversion_rate: float = Query(1.0, description="Hệ số quy đổi sang đơn vị cơ sở"),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_permission(Permission.INVENTORY_READ.value)),
+):
+    """
+    SCRUM-81: API truy vấn trực tiếp từ CSDL gợi ý lô theo FEFO (hạn dùng gần nhất xếp trước).
+    Trả về:
+    - suggested_batch: Lô đầu tiên có HSD gần nhất còn đủ số lượng.
+    - available_batches: Toàn bộ danh sách lô còn hạn và còn tồn khả dụng của SKU tại kho.
+    """
+    from app.services.batch_suggestion_service import resolve_warehouse_id_int, get_fefo_batch_suggestions
+    wh_id_int = resolve_warehouse_id_int(db, warehouse_id) or 1
+    base_qty = float(quantity) * float(conversion_rate or 1.0)
+
+    suggested, avail_list = get_fefo_batch_suggestions(
+        db=db,
+        product_id=product_id,
+        warehouse_id=wh_id_int,
+        required_base_qty=base_qty,
+    )
+
+    return {
+        "product_id": product_id,
+        "warehouse_id": wh_id_int,
+        "required_base_qty": base_qty,
+        "suggested_batch": suggested,
+        "available_batches": avail_list,
+    }
+
 
 

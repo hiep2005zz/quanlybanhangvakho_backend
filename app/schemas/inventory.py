@@ -1,6 +1,6 @@
 # backend/app/schemas/inventory.py
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Union
 from pydantic import BaseModel, Field
 
 class StockAdjustRequest(BaseModel):
@@ -25,8 +25,12 @@ class StockIssueRequest(BaseModel):
     note: Optional[str] = None
     unit_name: Optional[str] = None
     conversion_rate: Optional[float] = Field(None, gt=0)
+    # SCRUM-81 & Batch Management: Quản lý lô xuất kho
+    warehouse_id: Optional[Union[int, str]] = Field(1, description="ID kho xuất hàng")
+    selected_batch_id: Optional[int] = None
+    suggested_batch_id: Optional[int] = None
+    batch_change_reason: Optional[str] = None
     batch_number: Optional[str] = Field(None, description="Số lô hàng xuất kho (bắt buộc nếu SKU quản lý lô)")
-    warehouse_id: Optional[int] = Field(1, description="ID kho xuất hàng")
     override_expired: Optional[bool] = Field(False, description="Xác nhận ghi đè xuất lô quá hạn (chỉ Warehouse Manager)")
     override_reason: Optional[str] = Field(None, description="Lý do xác nhận ghi đè xuất lô quá hạn")
 
@@ -156,6 +160,9 @@ class StockBookItem(BaseModel):
     min_stock: int
     is_low_stock: bool
     status: str
+    is_batch_managed: Optional[bool] = False
+    cost_price: Optional[float] = None
+    sell_price: Optional[float] = None
 
 
 class StockBookSummary(BaseModel):
@@ -173,5 +180,28 @@ class StockBookResponse(BaseModel):
     total: Optional[int] = None
     page: Optional[int] = None
     page_size: Optional[int] = None
+
+
+class StockCardItem(BaseModel):
+    id: int
+    product_id: int
+    product_code: str
+    product_name: str
+    warehouse_id: int
+    warehouse_name: str
+    reference_code: Optional[str] = None
+    transaction_type: str  # RECEIPT, ISSUE, ADJUST
+    quantity: float
+    previous_stock: float
+    new_stock: float
+    batch_number: Optional[str] = None
+    performed_by: Optional[str] = None
+    note: Optional[str] = None
+    created_at: datetime
+
+
+class StockCardResponse(BaseModel):
+    items: List[StockCardItem]
+    total: int
 
 
