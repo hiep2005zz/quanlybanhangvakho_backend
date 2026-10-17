@@ -75,9 +75,9 @@ app.include_router(audit_logs.router, prefix="/api/v1/audit-logs", tags=["AuditL
 app.include_router(profile.router, prefix="/api/v1/me", tags=["Profile"])
 app.include_router(profile.router, prefix="/api/v1/profile", tags=["Profile"])
 app.include_router(suppliers.router, prefix="/api/v1/suppliers", tags=["Suppliers"])
+app.include_router(dealers.router, prefix="/api/v1/dealers", tags=["Dealers"])
 app.include_router(delivery_points.dealers_router, prefix="/api/v1/dealers", tags=["Dealers"])
 app.include_router(delivery_points.router, prefix="/api/v1/dealers", tags=["Delivery Points"])
-app.include_router(dealers.router, prefix="/api/v1/dealers", tags=["Dealers"])
 from app.api.v1.endpoints import price_books, discounts, goods_receipts, warehouses, stock_audits, pricing, batches, inventory_reports, deliveries, stock_adjustments, payment_collections
 app.include_router(price_books.router, prefix="/api/v1/price-books", tags=["PriceBooks"])
 app.include_router(discounts.router, prefix="/api/v1/discounts", tags=["Discounts"])

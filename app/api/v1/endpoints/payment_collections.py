@@ -91,12 +91,11 @@ def create_payment_collection(
         if order:
             order_code = order.order_code or f"ORD-{order.id}"
 
-    # 3. Sinh mã chứng từ duy nhất: COL-YYYYMMDD-XXXX
+    # 3. Sinh mã chứng từ duy nhất theo ngày thu tiền: COL-YYYYMMDD-XXXX
     now_utc = datetime.now(timezone.utc)
-    date_str = now_utc.strftime("%Y%m%d")
-    code = f"COL-{date_str}-{uuid.uuid4().hex[:6].upper()}"
-
     collection_time = payload.collection_date or now_utc
+    date_str = collection_time.strftime("%Y%m%d")
+    code = f"COL-{date_str}-{uuid.uuid4().hex[:6].upper()}"
 
     # 4. Tạo bản ghi khoản thu
     collection = PaymentCollectionEntity(
