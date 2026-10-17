@@ -73,15 +73,35 @@ def compute_debt_ledger_data(
         b_over_90 = 0.0
         oldest_days = 0
 
+        # Map debt adjustments của đại lý này để giảm trừ trực tiếp vào bucket tuổi nợ của hóa đơn/đơn hàng gốc
+        d_adjustments: dict[str, float] = {}
+        try:
+            from app.models.debt_adjustment import DebtAdjustmentEntity
+            for adj in db.query(DebtAdjustmentEntity).filter(
+                DebtAdjustmentEntity.dealer_id == d.id,
+                DebtAdjustmentEntity.status == "POSTED",
+            ).all():
+                c = adj.original_invoice_code.replace("HD-", "").strip()
+                d_adjustments[c] = d_adjustments.get(c, 0.0) + float(adj.total_adjusted_amount or 0.0)
+        except Exception:
+            pass
+
         for o in d_orders:
             amt = float(o.total_amount or 0.0)
             total_receivable += amt
 
+            adj_offset = d_adjustments.get(o.order_code, 0.0)
             if o.status == "PAID":
                 total_paid += amt
             else:
-                # Outstanding debt order
-                remaining_debt += amt
+                # Outstanding debt order sau khi trừ giảm nợ từ trả hàng
+                effective_rem = max(0.0, amt - adj_offset)
+                total_paid += min(amt, adj_offset)
+                remaining_debt += effective_rem
+
+                if effective_rem <= 0:
+                    continue
+
                 # Calculate age in days from order created_at (or due date)
                 created_dt = o.created_at
                 if created_dt:
@@ -94,15 +114,15 @@ def compute_debt_ledger_data(
                 if age_days > oldest_days:
                     oldest_days = age_days
 
-                # Ageing bucket placement
+                # Ageing bucket placement (áp dụng số tiền nợ thực tế sau giảm trừ)
                 if age_days <= 30:
-                    b_0_30 += amt
+                    b_0_30 += effective_rem
                 elif age_days <= 60:
-                    b_31_60 += amt
+                    b_31_60 += effective_rem
                 elif age_days <= 90:
-                    b_61_90 += amt
+                    b_61_90 += effective_rem
                 else:
-                    b_over_90 += amt
+                    b_over_90 += effective_rem
 
         # Overdue condition:
         # If dealer has debt that exceeded allowed credit terms (max_debt_days or overdue_days_allowed)

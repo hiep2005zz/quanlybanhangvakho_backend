@@ -311,27 +311,44 @@ def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
     except Exception:
         pass
 
+    adj_by_order: dict[str, float] = {}
+    try:
+        from app.models.debt_adjustment import DebtAdjustmentEntity
+        with SessionLocal() as db_session:
+            for adj in db_session.query(DebtAdjustmentEntity).filter(
+                DebtAdjustmentEntity.dealer_id == dealer.id,
+                DebtAdjustmentEntity.status == "POSTED",
+            ).all():
+                ord_c = adj.original_invoice_code.replace("HD-", "").strip()
+                adj_by_order[ord_c] = adj_by_order.get(ord_c, 0.0) + float(adj.total_adjusted_amount or 0.0)
+    except Exception:
+        pass
+
     now = datetime.now(timezone.utc)
     for o in orders_db.values():
         if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
-            current_debt += float(o.get("total_amount", 0.0) or 0.0)
-            created_at_val = o.get("created_at")
-            if created_at_val:
-                try:
-                    if isinstance(created_at_val, str):
-                        s = created_at_val.replace("Z", "+00:00")
-                        order_date = datetime.fromisoformat(s)
-                        if not order_date.tzinfo:
-                            order_date = order_date.replace(tzinfo=timezone.utc)
-                    elif isinstance(created_at_val, datetime):
-                        order_date = created_at_val if created_at_val.tzinfo else created_at_val.replace(tzinfo=timezone.utc)
-                    else:
-                        order_date = now
-                    days_old = max(0, (now - order_date).days)
-                    if days_old > max_debt_age:
-                        max_debt_age = days_old
-                except Exception:
-                    pass
+            ord_c = o.get("order_code", "")
+            adj_offset = adj_by_order.get(ord_c, 0.0)
+            eff_debt = max(0.0, float(o.get("total_amount", 0.0) or 0.0) - adj_offset)
+            current_debt += eff_debt
+            if eff_debt > 0:
+                created_at_val = o.get("created_at")
+                if created_at_val:
+                    try:
+                        if isinstance(created_at_val, str):
+                            s = created_at_val.replace("Z", "+00:00")
+                            order_date = datetime.fromisoformat(s)
+                            if not order_date.tzinfo:
+                                order_date = order_date.replace(tzinfo=timezone.utc)
+                        elif isinstance(created_at_val, datetime):
+                            order_date = created_at_val if created_at_val.tzinfo else created_at_val.replace(tzinfo=timezone.utc)
+                        else:
+                            order_date = now
+                        days_old = max(0, (now - order_date).days)
+                        if days_old > max_debt_age:
+                            max_debt_age = days_old
+                    except Exception:
+                        pass
 
     credit_limit = float(getattr(dealer, "credit_limit", 50000000.0) or 50000000.0)
     allowed_days = int(getattr(dealer, "overdue_days_allowed", getattr(dealer, "max_debt_days", 30)) or 30)
