@@ -337,6 +337,25 @@ def get_products_for_customer(
     except Exception:
         tx_counts_map = {}
 
+    # SCRUM-56 / AC 1 & AC 2: Tính tồn khả dụng theo kho phụ trách của Đại lý
+    # Tồn khả dụng = max(0, actual_stock - reserved_stock)
+    wh_stock_map: dict[int, int] = {}
+    try:
+        from app.services.inventory_availability_service import resolve_dealer_warehouse, sync_missing_warehouse_stocks
+        sync_missing_warehouse_stocks(db)
+        from app.models.entities import WarehouseStockEntity
+        wh_id, _ = resolve_dealer_warehouse(dealer) if dealer else ("WH01", "Kho Tổng Hà Nội")
+        if wh_id:
+            wh_records = db.query(WarehouseStockEntity).filter(
+                WarehouseStockEntity.warehouse_id == wh_id
+            ).all()
+            for rec in wh_records:
+                actual = rec.actual_stock or 0
+                reserved = rec.reserved_stock or 0
+                wh_stock_map[rec.product_id] = max(0, actual - reserved)
+    except Exception as e:
+        print(f"Warning resolving dealer warehouse available stocks: {e}")
+
     for db_p, eff_sell, eff_floor in rows:
         units_raw = getattr(db_p, "units", None) or []
         units_converted: list[UnitConversionItem] = []
@@ -352,7 +371,15 @@ def get_products_for_customer(
                 except (ValueError, TypeError):
                     pass
 
-        stock = int(db_p.stock or 0)
+        if db_p.id in wh_stock_map:
+            stock = wh_stock_map[db_p.id]
+        else:
+            stock = 0
+
+        item_status = db_p.status or "active"
+        if stock <= 0 and item_status == "active":
+            item_status = "out_of_stock"
+
         sell_price = float(eff_sell if eff_sell is not None else (db_p.sell_price or 0.0))
         floor_price = float(eff_floor if eff_floor is not None else (db_p.floor_price or 0.0))
 
@@ -380,7 +407,7 @@ def get_products_for_customer(
                 units=units_converted,
                 packaging_specification=db_p.packaging_specification or "",
                 images=db_images,
-                status=db_p.status or "active",
+                status=item_status,
                 is_batch_managed=bool(db_p.is_batch_managed),
                 transaction_count=tx_counts_map.get(db_p.id, 0),
                 # AC 3 & Zero-Trust: Tuyệt đối giấu giá vốn và biên lợi nhuận đối với Customer
