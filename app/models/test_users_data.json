@@ -9,7 +9,7 @@
     "roles": [
       "admin"
     ],
-    "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
+    "hashed_password": "$2b$12$z918ebG417pKiIICZc2EMuJJFXLYh4bxAp9R8/SbcirDdaqiTMRHC",
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
@@ -30,7 +30,7 @@
     "roles": [
       "sales_manager"
     ],
-    "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
+    "hashed_password": "$2b$12$z918ebG417pKiIICZc2EMuJJFXLYh4bxAp9R8/SbcirDdaqiTMRHC",
     "branch": "Toàn quốc",
     "is_active": true,
     "status": "ACTIVE",
@@ -51,7 +51,7 @@
     "roles": [
       "sales"
     ],
-    "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
+    "hashed_password": "$2b$12$z918ebG417pKiIICZc2EMuJJFXLYh4bxAp9R8/SbcirDdaqiTMRHC",
     "branch": "Khu vực Miền Bắc",
     "is_active": true,
     "status": "ACTIVE",
@@ -72,7 +72,7 @@
     "roles": [
       "warehouse"
     ],
-    "hashed_password": "$2b$12$6v6UeBSwWb4Q8hLwks0uxut1/5WSJeHRJlrOlAUQSn2kgvJ15PWKW",
+    "hashed_password": "$2b$12$z918ebG417pKiIICZc2EMuJJFXLYh4bxAp9R8/SbcirDdaqiTMRHC",
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -93,7 +93,7 @@
     "roles": [
       "warehouse_manager"
     ],
-    "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
+    "hashed_password": "$2b$12$z918ebG417pKiIICZc2EMuJJFXLYh4bxAp9R8/SbcirDdaqiTMRHC",
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
@@ -114,7 +114,7 @@
     "roles": [
       "accountant"
     ],
-    "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
+    "hashed_password": "$2b$12$z918ebG417pKiIICZc2EMuJJFXLYh4bxAp9R8/SbcirDdaqiTMRHC",
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",
@@ -135,7 +135,7 @@
     "roles": [
       "purchasing"
     ],
-    "hashed_password": "$2b$12$saN.pwf8bmJRCvfbQ32XKuvMlL8NG2TgdnPRRO1U8/p9bKGQLVZ9W",
+    "hashed_password": "$2b$12$z918ebG417pKiIICZc2EMuJJFXLYh4bxAp9R8/SbcirDdaqiTMRHC",
     "branch": "Trụ sở chính",
     "is_active": true,
     "status": "ACTIVE",
@@ -261,7 +261,7 @@
     "roles": [
       "sales"
     ],
-    "hashed_password": "$2b$12$cdfTC8D7X809O2Sb6mWZEOtFAF6Bnx/jJ3.MtZx6iI6mBPO6KcPie",
+    "hashed_password": "$2b$12$z918ebG417pKiIICZc2EMuJJFXLYh4bxAp9R8/SbcirDdaqiTMRHC",
     "branch": "Kho Tổng Hà Nội",
     "is_active": true,
     "status": "ACTIVE",
