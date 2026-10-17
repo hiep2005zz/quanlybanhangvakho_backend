@@ -87,10 +87,22 @@ def resolve_dealer_warehouse(dealer: Any) -> Tuple[str, str]:
     # Kiểm tra cấu hình trực tiếp
     w_id = getattr(dealer, "warehouse_id", None)
     w_name = getattr(dealer, "warehouse_name", None)
-    if w_id and w_name:
-        return (w_id, w_name)
-    if w_id and w_id in DEFAULT_WAREHOUSES:
-        return (w_id, DEFAULT_WAREHOUSES[w_id])
+    if w_id:
+        if str(w_id).isdigit():
+            try:
+                from app.core.database import SessionLocal
+                from app.models.goods_receipt import WarehouseEntity
+                with SessionLocal() as db_session:
+                    wh = db_session.query(WarehouseEntity).filter(WarehouseEntity.id == int(w_id)).first()
+                    if wh:
+                        w_id = wh.code or str(wh.id)
+                        w_name = wh.name
+            except Exception:
+                pass
+        if not w_name and str(w_id) in DEFAULT_WAREHOUSES:
+            w_name = DEFAULT_WAREHOUSES[str(w_id)]
+        if w_name:
+            return (str(w_id), w_name)
 
     # Tra cứu theo địa bàn / khu vực
     region_str = str(getattr(dealer, "region", "") or "").lower()
@@ -309,15 +321,19 @@ def get_dealer_stock_summary(db: Session, dealer_id: int) -> Dict[str, Any]:
                     "stock": rp.get("stock", 0),
                 }
 
+    # Lấy nhanh toàn bộ tồn kho của warehouse_id trong 1 câu query duy nhất (tránh N+1 query lặp qua 8.700+ sản phẩm)
+    existing_stocks = db.query(WarehouseStockEntity).filter(WarehouseStockEntity.warehouse_id == warehouse_id).all()
+    stocks_map = {st.product_id: st for st in existing_stocks}
+
     items_summary = []
     for pid, pdata in product_map.items():
-        try:
-            stock_record = get_or_create_warehouse_stock(db, warehouse_id, warehouse_name, pid, for_update=False)
-            actual = stock_record.actual_stock or 0
-            reserved = stock_record.reserved_stock or 0
+        st = stocks_map.get(pid)
+        if st:
+            actual = st.actual_stock or 0
+            reserved = st.reserved_stock or 0
             available = max(0, actual - reserved)
-        except Exception:
-            actual = pdata.get("stock", 0)
+        else:
+            actual = pdata.get("stock", 0) if not db_products else 0
             reserved = 0
             available = actual
 
