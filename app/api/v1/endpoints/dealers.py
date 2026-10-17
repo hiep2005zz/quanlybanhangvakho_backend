@@ -1727,12 +1727,21 @@ def delete_dealer(
 @router.get("")
 @router.get("/")
 def get_dealers(
-    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "accountant", "customer"]))
+    search: Optional[str] = Query(default=None, description="Tìm nhanh theo mã đại lý, tên hoặc số điện thoại"),
+    keyword: Optional[str] = Query(default=None, description="Tương đương search"),
+    page: Optional[int] = Query(default=None, ge=1, description="Trang hiện tại (phân trang)"),
+    page_size: Optional[int] = Query(default=None, ge=1, description="Số lượng mỗi trang (mặc định 10)"),
+    limit: Optional[int] = Query(default=None, ge=1, description="Số lượng bản ghi (tương đương page_size)"),
+    skip: Optional[int] = Query(default=None, ge=0, description="Bỏ qua số bản ghi"),
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "accountant", "customer", "warehouse_manager", "warehouse"]))
 ):
-    """Lấy danh sách tất cả đại lý (tự động cô lập cho customer)."""
+    """Lấy danh sách đại lý (hỗ trợ tìm kiếm, phân trang cuộn vô tận hoặc trả về toàn bộ nếu không truyền param)."""
     load_dealers_db()
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
     is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
+
+    search_query = (search or keyword or "").strip()
+    is_paginated = page is not None or page_size is not None or limit is not None or skip is not None
 
     if is_customer:
         customer_dealer = DEALERS_DB.get(current_user.id)
@@ -1745,8 +1754,11 @@ def get_dealers(
                     customer_dealer = d
                     break
         if not customer_dealer:
+            if is_paginated:
+                return {"items": [], "dealers": [], "total": 0, "page": page or 1, "page_size": page_size or 10, "has_more": False}
             return []
-        return [{
+        
+        single_item = {
             "id": customer_dealer.id,
             "code": customer_dealer.code,
             "name": customer_dealer.name,
@@ -1768,7 +1780,21 @@ def get_dealers(
             "applied_price_book": get_applied_price_book_info(getattr(customer_dealer, "customer_group", "Đại lý cấp 1")),
             "warehouse_id": getattr(customer_dealer, "warehouse_id", None),
             "warehouse_name": getattr(customer_dealer, "warehouse_name", None),
-        }]
+        }
+
+        if search_query:
+            clean_kw = search_query.lower()
+            match = clean_kw in (single_item.get("code") or "").lower() or \
+                    clean_kw in (single_item.get("name") or "").lower() or \
+                    clean_kw in (single_item.get("phone") or "").lower()
+            if not match:
+                if is_paginated:
+                    return {"items": [], "dealers": [], "total": 0, "page": page or 1, "page_size": page_size or 10, "has_more": False}
+                return []
+
+        if is_paginated:
+            return {"items": [single_item], "dealers": [single_item], "total": 1, "page": page or 1, "page_size": page_size or 10, "has_more": False}
+        return [single_item]
 
     from app.api.v1.endpoints.orders import ORDERS_DB
     res = []
@@ -1799,6 +1825,48 @@ def get_dealers(
             "warehouse_id": getattr(d, "warehouse_id", None),
             "warehouse_name": getattr(d, "warehouse_name", None),
         })
+
+    # Lọc theo từ khóa tìm kiếm nếu có
+    if search_query:
+        clean_kw = search_query.lower()
+        clean_digits = "".join(ch for ch in clean_kw if ch.isdigit())
+        filtered = []
+        for d in res:
+            code_match = clean_kw in (d.get("code") or "").lower()
+            name_match = clean_kw in (d.get("name") or "").lower()
+            tax_match = clean_kw in (d.get("tax_code") or "").lower()
+            phone_str = d.get("phone") or ""
+            phone_match = clean_kw in phone_str.lower()
+            if not phone_match and clean_digits and len(clean_digits) >= 3:
+                phone_match = clean_digits in "".join(ch for ch in phone_str if ch.isdigit())
+            if code_match or name_match or tax_match or phone_match:
+                filtered.append(d)
+        res = filtered
+
+    # Sắp xếp đại lý mới nhất lên đầu
+    res.sort(key=lambda d: d.get("id") or 0, reverse=True)
+    total_count = len(res)
+
+    if is_paginated:
+        ps = limit or page_size or 10
+        if skip is not None:
+            start_idx = skip
+            p = (skip // ps) + 1
+        else:
+            p = page or 1
+            start_idx = (p - 1) * ps
+        end_idx = start_idx + ps
+        paged_items = res[start_idx:end_idx]
+        has_more = end_idx < total_count
+        return {
+            "items": paged_items,
+            "dealers": paged_items,
+            "total": total_count,
+            "page": p,
+            "page_size": ps,
+            "has_more": has_more,
+        }
+
     return res
 
 
