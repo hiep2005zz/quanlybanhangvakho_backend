@@ -207,6 +207,9 @@ def approve_order_and_reserve_stock(
     # Kiểm tra trạng thái hợp lệ
     cur_status = (order.status or "").upper()
     if cur_status not in ("PENDING_APPROVAL", "PENDING", "DRAFT", "REVISION_REQUIRED"):
+        # Xử lý idempotent: Nếu đơn hàng đã được duyệt thành công trước đó (CONFIRMED hoặc APPROVED), trả về trực tiếp đơn hàng
+        if cur_status in ("CONFIRMED", "APPROVED") and (order.approval_status == "APPROVED" or getattr(order, "requires_approval", False) is False):
+            return order
         raise OrderNotEligibleForApprovalException(cur_status)
 
     # Xác định đại lý & kho phụ trách
@@ -332,6 +335,10 @@ def approve_order_and_reserve_stock(
                         for el in js_items:
                             el["is_reserved"] = True
                         js_data["items"] = js_items
+                        js_data["requires_approval"] = False
+                        js_data["approval_status"] = "APPROVED"
+                        js_data["approved_by"] = approved_by
+                        js_data["approved_at"] = now_utc.isoformat()
                         order.items_json = json.dumps(js_data, ensure_ascii=False)
                 except Exception as ex:
                     logger.warning(f"Could not update items_json is_reserved: {ex}")

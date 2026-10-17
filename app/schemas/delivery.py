@@ -1,6 +1,7 @@
 # backend/app/schemas/delivery.py
 from __future__ import annotations
 import re
+import json
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, Field, field_validator
@@ -36,6 +37,22 @@ class DeliveryStopResponse(BaseModel):
     return_status: Optional[str] = None
     items_detail: Optional[List[dict]] = None
     note: Optional[str] = None
+
+    @field_validator('items_detail', mode='before')
+    @classmethod
+    def normalize_items_detail(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except Exception:
+                return None
+        if isinstance(v, dict):
+            v = v.get("items", [])
+        if isinstance(v, list):
+            return [it for it in v if isinstance(it, dict)]
+        return None
 
     model_config = {"from_attributes": True}
 

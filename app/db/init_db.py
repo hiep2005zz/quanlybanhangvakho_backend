@@ -18,7 +18,9 @@ from app.models.entities import (
     StockTransferEntity,
     DeliveryTripEntity,
     DeliveryStopEntity,
+    StockAdjustmentEntity,
 )
+from app.models.payment_collection import PaymentCollectionEntity
 from app.models.supplier import SupplierEntity
 from app.models.goods_receipt import (
     WarehouseEntity,
@@ -36,6 +38,7 @@ from app.models.warehouse import (
 )
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
+from app.models.invoice import InvoiceEntity
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 
@@ -898,6 +901,24 @@ def init_db():
                         )
                         db.add(ws_new)
                         existing_ws.add((p.id, wid))
+            db.flush()
+
+            # Đảm bảo actual_stock trong warehouse_stocks >= tổng tồn trên các kệ + 50 (cho tồn chưa phân bổ)
+            loc_sums = db.query(
+                LocationStockEntity.warehouse_id,
+                LocationStockEntity.product_id,
+                func.sum(LocationStockEntity.quantity)
+            ).group_by(LocationStockEntity.warehouse_id, LocationStockEntity.product_id).all()
+            for wid_int, pid, total_loc_qty in loc_sums:
+                target_wid = "WH01" if wid_int == 1 else ("WH03" if wid_int == 2 else ("WH02" if wid_int == 3 else f"WH{wid_int:02d}"))
+                ws_rec = db.query(WarehouseStockEntity).filter(
+                    WarehouseStockEntity.warehouse_id == target_wid,
+                    WarehouseStockEntity.product_id == pid
+                ).first()
+                if ws_rec:
+                    needed = int(total_loc_qty) + 50
+                    if (ws_rec.actual_stock or 0) < needed:
+                        ws_rec.actual_stock = needed
             db.flush()
 
             wh_rows = db.query(WarehouseStockEntity.product_id, func.sum(WarehouseStockEntity.actual_stock)).group_by(WarehouseStockEntity.product_id).all()

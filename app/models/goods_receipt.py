@@ -16,6 +16,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from app.core.database import Base
+from app.models.supplier import SupplierEntity
+from app.models.entities import ProductEntity
 
 
 def get_utc_now():

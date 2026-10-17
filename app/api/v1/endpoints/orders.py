@@ -862,6 +862,9 @@ def _format_order_response(
                 appr_reason = f"Chiết khấu ({disc_rate}%) vượt hạn mức chính sách cần duyệt"
             else:
                 appr_reason = "Bán dưới giá sàn cần quản lý duyệt"
+    else:
+        # Đơn đã xác nhận/duyệt/hoàn tất không còn yêu cầu phê duyệt
+        req_appr = False
 
     # Khi đơn hàng không còn ở trạng thái chờ duyệt (đã xác nhận / duyệt / hủy / v.v.), làm sạch thông báo đại lý tự đặt chờ xác nhận
     if appr_reason and order.status not in ("PENDING_APPROVAL", "PENDING", "REVISION_REQUIRED"):

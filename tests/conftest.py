@@ -163,10 +163,21 @@ def reset_test_state():
         if p2:
             p2.base_unit = "Chiếc"
             p2.units_json = json.dumps([{"unit_name": "Kiện", "conversion_rate": 10.0}], ensure_ascii=False)
+        from app.models.warehouse import LocationStockEntity
+        loc_sums = db.query(
+            LocationStockEntity.warehouse_id,
+            LocationStockEntity.product_id,
+            func.sum(LocationStockEntity.quantity)
+        ).group_by(LocationStockEntity.warehouse_id, LocationStockEntity.product_id).all()
+        loc_sum_map = {(wid, pid): int(qty) for wid, pid, qty in loc_sums}
+
         for ws in db.query(WarehouseStockEntity).all():
             ws.reserved_stock = 0
-            if ws.actual_stock is None or ws.actual_stock < 150:
-                ws.actual_stock = 150
+            wid_int = 1 if ws.warehouse_id in ["WH01", "KHO_HN"] else (2 if ws.warehouse_id in ["WH03", "KHO_DN"] else (3 if ws.warehouse_id in ["WH02", "KHO_HCM"] else 1))
+            shelves_qty = loc_sum_map.get((wid_int, ws.product_id), 0)
+            min_needed = max(150, shelves_qty + 50)
+            if ws.actual_stock is None or ws.actual_stock < min_needed:
+                ws.actual_stock = min_needed
         db.commit()
     finally:
         db.close()

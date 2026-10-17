@@ -40,12 +40,18 @@ def sync_missing_warehouse_stocks(db: Session, force: bool = False) -> bool:
     _LAST_SYNC_TIME = now
     try:
         from app.models.entities import WarehouseStockEntity, ProductEntity
+        from app.models.goods_receipt import WarehouseEntity
+
+        # 1. Chỉ đồng bộ cho các kho mặc định hệ thống (DEFAULT_WAREHOUSES: WH01, WH02, WH03)
+        # Các kho mới do người dùng tạo sẽ chỉ có sản phẩm khi thực tế có giao dịch nhập kho / chuyển kho / điều chỉnh.
+        warehouse_map = dict(DEFAULT_WAREHOUSES)
+
         existing_pairs = set(db.query(WarehouseStockEntity.product_id, WarehouseStockEntity.warehouse_id).all())
         prods = db.query(ProductEntity.id, ProductEntity.min_stock).all()
         created = False
         new_items = []
         for p_id, p_min in prods:
-            for wid, wname in DEFAULT_WAREHOUSES.items():
+            for wid, wname in warehouse_map.items():
                 if (p_id, wid) not in existing_pairs:
                     new_items.append(WarehouseStockEntity(
                         warehouse_id=wid,
