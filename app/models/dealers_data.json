@@ -7,7 +7,7 @@
     "phone": "0888888888",
     "email": "saomai@daily.vn",
     "address": "8888",
-    "region": "Hà Nội",
+    "region": "Cần Thơ",
     "assigned_sale_id": 3,
     "credit_limit": 100000000.0,
     "max_debt_days": 2,
@@ -18,8 +18,8 @@
     "locked_at": null,
     "locked_by": null,
     "transaction_count": 2,
-    "warehouse_id": null,
-    "warehouse_name": null
+    "warehouse_id": "KHO_66",
+    "warehouse_name": "abc"
   },
   "2": {
     "id": 2,

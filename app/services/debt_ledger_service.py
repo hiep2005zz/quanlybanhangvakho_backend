@@ -84,14 +84,8 @@ def compute_debt_ledger_data(
         d_orders = dealer_orders_map.get(d.id, [])
         total_receivable = 0.0
         total_paid = 0.0
-        remaining_debt = 0.0
 
-        b_0_30 = 0.0
-        b_31_60 = 0.0
-        b_61_90 = 0.0
-        b_over_90 = 0.0
-        oldest_days = 0
-
+        unpaid_orders = []
         for o in d_orders:
             amt = float(o.total_amount or 0.0)
             total_receivable += amt
@@ -99,9 +93,6 @@ def compute_debt_ledger_data(
             if o.status == "PAID":
                 total_paid += amt
             else:
-                # Outstanding debt order
-                remaining_debt += amt
-                # Calculate age in days from order created_at (or due date)
                 created_dt = o.created_at
                 if created_dt:
                     if created_dt.tzinfo is None:
@@ -109,11 +100,40 @@ def compute_debt_ledger_data(
                     age_days = max(0, (now - created_dt).days)
                 else:
                     age_days = 0
+                unpaid_orders.append({
+                    "amount": amt,
+                    "age_days": age_days,
+                    "created_at": created_dt,
+                })
 
+        # Deduct confirmed collections from route collections
+        extra_paid = dealer_payments_map.get(d.id, 0.0)
+        total_paid += extra_paid
+
+        # Cấn trừ số tiền thu theo tuyến (extra_paid) vào các đơn chưa thanh toán theo FIFO (đơn cũ trước)
+        unpaid_orders.sort(key=lambda x: x["created_at"] or datetime.min.replace(tzinfo=timezone.utc))
+
+        rem_pay = extra_paid
+        remaining_debt = 0.0
+        b_0_30 = 0.0
+        b_31_60 = 0.0
+        b_61_90 = 0.0
+        b_over_90 = 0.0
+        oldest_days = 0
+
+        for ord_it in unpaid_orders:
+            amt = ord_it["amount"]
+            if rem_pay > 0:
+                ded = min(amt, rem_pay)
+                amt -= ded
+                rem_pay -= ded
+
+            if amt > 0.0001:
+                remaining_debt += amt
+                age_days = ord_it["age_days"]
                 if age_days > oldest_days:
                     oldest_days = age_days
 
-                # Ageing bucket placement
                 if age_days <= 30:
                     b_0_30 += amt
                 elif age_days <= 60:
@@ -122,31 +142,6 @@ def compute_debt_ledger_data(
                     b_61_90 += amt
                 else:
                     b_over_90 += amt
-
-        # Deduct confirmed collections from route collections
-        extra_paid = dealer_payments_map.get(d.id, 0.0)
-        total_paid += extra_paid
-        remaining_debt = max(0.0, remaining_debt - extra_paid)
-
-        # Cấn trừ số tiền thu theo tuyến (extra_paid) vào các nhóm tuổi nợ theo FIFO
-        if extra_paid > 0:
-            paid_to_deduct = extra_paid
-            # Nhóm > 90
-            deduct_over_90 = min(b_over_90, paid_to_deduct)
-            b_over_90 -= deduct_over_90
-            paid_to_deduct -= deduct_over_90
-            # Nhóm 61 - 90
-            deduct_61_90 = min(b_61_90, paid_to_deduct)
-            b_61_90 -= deduct_61_90
-            paid_to_deduct -= deduct_61_90
-            # Nhóm 31 - 60
-            deduct_31_60 = min(b_31_60, paid_to_deduct)
-            b_31_60 -= deduct_31_60
-            paid_to_deduct -= deduct_31_60
-            # Nhóm 0 - 30
-            deduct_0_30 = min(b_0_30, paid_to_deduct)
-            b_0_30 -= deduct_0_30
-            paid_to_deduct -= deduct_0_30
 
         if remaining_debt <= 0:
             remaining_debt = 0.0
