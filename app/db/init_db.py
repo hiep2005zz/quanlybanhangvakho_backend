@@ -39,6 +39,12 @@ from app.models.warehouse import (
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
 from app.models.invoice import InvoiceEntity
+from app.models.debt_adjustment import (
+    DebtAdjustmentEntity,
+    DebtAdjustmentItemEntity,
+    ReturnOrderEntity,
+    ReturnOrderItemEntity,
+)
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 
@@ -65,6 +71,7 @@ def _ensure_legacy_columns(bind=engine):
             "avatar_url": ("TEXT", "NVARCHAR(500)"),
         },
         "products": {
+            "category_id": ("INTEGER NULL", "INT NULL"),
             "base_unit": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
             "units_json": ("TEXT", "NVARCHAR(MAX)"),
             "packaging_specification": ("VARCHAR(255)", "NVARCHAR(255)"),
@@ -72,6 +79,7 @@ def _ensure_legacy_columns(bind=engine):
             "status": ("VARCHAR(50) DEFAULT 'active'", "NVARCHAR(50) DEFAULT 'active'"),
             "is_batch_managed": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
             "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
+            "floor_price": ("FLOAT NULL", "FLOAT NULL"),
         },
         "warehouse_stocks": {
             "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
@@ -447,6 +455,7 @@ def init_db():
         else:
             for sql_statement in [
                 "IF COL_LENGTH('users', 'avatar_url') IS NULL ALTER TABLE users ADD avatar_url NVARCHAR(500);",
+                "IF COL_LENGTH('products', 'category_id') IS NULL ALTER TABLE products ADD category_id INT NULL;",
                 "IF COL_LENGTH('products', 'base_unit') IS NULL ALTER TABLE products ADD base_unit NVARCHAR(50) DEFAULT N'Cái';",
                 "IF COL_LENGTH('products', 'floor_price') IS NULL ALTER TABLE products ADD floor_price FLOAT DEFAULT 0.0;",
                 "IF COL_LENGTH('products', 'units_json') IS NULL ALTER TABLE products ADD units_json NVARCHAR(MAX);",
@@ -475,9 +484,9 @@ def init_db():
                 "IF COL_LENGTH('discount_tiers', 'discount_type') IS NULL ALTER TABLE discount_tiers ADD discount_type NVARCHAR(20) DEFAULT 'percent';",
                 "UPDATE warehouse_stocks SET quantity_on_hand = actual_stock WHERE quantity_on_hand IS NULL OR quantity_on_hand = 0;",
                 "UPDATE warehouse_stocks SET reserved_quantity = reserved_stock WHERE reserved_quantity IS NULL;",
-                "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL AND COL_LENGTH('delivery_trips', 'vehicle_plate') IS NOT NULL UPDATE delivery_trips SET vehicle_plate = license_plate WHERE (vehicle_plate IS NULL OR vehicle_plate = '') AND license_plate IS NOT NULL;",
-                "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'dispatched_at') IS NOT NULL UPDATE delivery_trips SET dispatched_at = departure_time WHERE dispatched_at IS NULL AND departure_time IS NOT NULL;",
-                "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'estimated_delivery_time') IS NOT NULL UPDATE delivery_trips SET estimated_delivery_time = expected_completion_time WHERE estimated_delivery_time IS NULL AND expected_completion_time IS NOT NULL;",
+                "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL AND COL_LENGTH('delivery_trips', 'vehicle_plate') IS NOT NULL EXEC('UPDATE delivery_trips SET vehicle_plate = license_plate WHERE (vehicle_plate IS NULL OR vehicle_plate = '''') AND license_plate IS NOT NULL;');",
+                "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'dispatched_at') IS NOT NULL EXEC('UPDATE delivery_trips SET dispatched_at = departure_time WHERE dispatched_at IS NULL AND departure_time IS NOT NULL;');",
+                "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'estimated_delivery_time') IS NOT NULL EXEC('UPDATE delivery_trips SET estimated_delivery_time = expected_completion_time WHERE estimated_delivery_time IS NULL AND expected_completion_time IS NOT NULL;');",
                 "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN license_plate;",
                 "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN departure_time;",
                 "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN expected_completion_time;",
@@ -488,9 +497,9 @@ def init_db():
                 "IF COL_LENGTH('delivery_stops', 'failure_reason') IS NULL ALTER TABLE delivery_stops ADD failure_reason NVARCHAR(MAX);",
                 "IF COL_LENGTH('delivery_stops', 'return_status') IS NULL ALTER TABLE delivery_stops ADD return_status NVARCHAR(50);",
                 "IF COL_LENGTH('delivery_stops', 'items_detail') IS NULL ALTER TABLE delivery_stops ADD items_detail NVARCHAR(MAX);",
-                "UPDATE delivery_stops SET actual_delivery_time = delivered_at WHERE actual_delivery_time IS NULL AND delivered_at IS NOT NULL;",
-                "UPDATE delivery_stops SET failure_reason = failed_reason WHERE failure_reason IS NULL AND failed_reason IS NOT NULL;",
-                "UPDATE delivery_stops SET delivery_status = status WHERE delivery_status IS NULL AND status IS NOT NULL;",
+                "IF COL_LENGTH('delivery_stops', 'delivered_at') IS NOT NULL AND COL_LENGTH('delivery_stops', 'actual_delivery_time') IS NOT NULL EXEC('UPDATE delivery_stops SET actual_delivery_time = delivered_at WHERE actual_delivery_time IS NULL AND delivered_at IS NOT NULL;');",
+                "IF COL_LENGTH('delivery_stops', 'failed_reason') IS NOT NULL AND COL_LENGTH('delivery_stops', 'failure_reason') IS NOT NULL EXEC('UPDATE delivery_stops SET failure_reason = failed_reason WHERE failure_reason IS NULL AND failed_reason IS NOT NULL;');",
+                "IF COL_LENGTH('delivery_stops', 'status') IS NOT NULL AND COL_LENGTH('delivery_stops', 'delivery_status') IS NOT NULL EXEC('UPDATE delivery_stops SET delivery_status = status WHERE delivery_status IS NULL AND status IS NOT NULL;');",
             ]:
                 try:
                     conn.execute(text(sql_statement))
@@ -549,13 +558,13 @@ def init_db():
         if db.query(CategoryEntity).count() == 0:
             print("Seeding initial categories...")
             initial_categories = [
-                CategoryEntity(id=1, name="Thời trang", parent_id=None),
-                CategoryEntity(id=2, name="Giày dép", parent_id=None),
-                CategoryEntity(id=3, name="Phụ kiện", parent_id=None),
-                CategoryEntity(id=7, name="Đồ điện tử", parent_id=None),
-                CategoryEntity(id=4, name="Áo Nam", parent_id=1),
-                CategoryEntity(id=5, name="Quần Nam", parent_id=1),
-                CategoryEntity(id=6, name="Áo Thun", parent_id=4),
+                CategoryEntity(id=1, code="CAT001", name="Thời trang", parent_id=None),
+                CategoryEntity(id=2, code="CAT002", name="Giày dép", parent_id=None),
+                CategoryEntity(id=3, code="CAT003", name="Phụ kiện", parent_id=None),
+                CategoryEntity(id=7, code="CAT007", name="Đồ điện tử", parent_id=None),
+                CategoryEntity(id=4, code="CAT004", name="Áo Nam", parent_id=1),
+                CategoryEntity(id=5, code="CAT005", name="Quần Nam", parent_id=1),
+                CategoryEntity(id=6, code="CAT006", name="Áo Thun", parent_id=4),
             ]
             db.add_all(initial_categories)
             db.commit()
@@ -630,10 +639,10 @@ def init_db():
         if db.query(DealerDeliveryPointEntity).count() == 0:
             print("Seeding initial dealer delivery points...")
             points = [
-                DealerDeliveryPointEntity(dealer_id=1, name="Kho tổng Lê Lợi", address="123 Lê Lợi, Q1, TP. HCM", is_default=True),
-                DealerDeliveryPointEntity(dealer_id=1, name="Chi nhánh Bình Thạnh", address="45 Xô Viết Nghệ Tĩnh, Bình Thạnh, TP. HCM", is_default=False),
-                DealerDeliveryPointEntity(dealer_id=2, name="Cửa hàng Ba Đình", address="456 Hoàng Hoa Thám, Ba Đình, Hà Nội", is_default=True),
-                DealerDeliveryPointEntity(dealer_id=3, name="Cơ sở Hải Châu", address="789 Nguyễn Văn Linh, Đà Nẵng", is_default=True),
+                DealerDeliveryPointEntity(dealer_id=1, label="Kho tổng Lê Lợi", address="123 Lê Lợi, Q1, TP. HCM", receiver_name="Kho tổng", receiver_phone="0912345678", is_default=True),
+                DealerDeliveryPointEntity(dealer_id=1, label="Chi nhánh Bình Thạnh", address="45 Xô Viết Nghệ Tĩnh, Bình Thạnh, TP. HCM", receiver_name="Chi nhánh", receiver_phone="0912345679", is_default=False),
+                DealerDeliveryPointEntity(dealer_id=2, label="Cửa hàng Ba Đình", address="456 Hoàng Hoa Thám, Ba Đình, Hà Nội", receiver_name="Cửa hàng Ba Đình", receiver_phone="0987654321", is_default=True),
+                DealerDeliveryPointEntity(dealer_id=3, label="Cơ sở Hải Châu", address="789 Nguyễn Văn Linh, Đà Nẵng", receiver_name="Cơ sở Hải Châu", receiver_phone="0905123456", is_default=True),
             ]
             db.add_all(points)
             db.commit()
@@ -643,9 +652,9 @@ def init_db():
         if db.query(SupplierEntity).count() == 0:
             print("Seeding initial suppliers...")
             initial_suppliers = [
-                SupplierEntity(id=1, code="NCC001", name="Công ty Cổ phần May Việt Tiến", tax_code="0300123456", phone="02838640800", email="contact@viettien.com.vn", address="Số 7 Lê Minh Xuân, Phường 7, Tân Bình, TP. HCM", status="active"),
-                SupplierEntity(id=2, code="NCC002", name="Tập đoàn Dệt May Phong Phú", tax_code="0300987654", phone="02838963533", email="info@phongphu.com.vn", address="48 Tăng Nhơn Phú, Tăng Nhơn Phú B, TP. Thủ Đức, TP. HCM", status="active"),
-                SupplierEntity(id=3, code="NCC003", name="Công ty TNHH Giày Biti's Việt Nam", tax_code="0301112233", phone="02838753443", email="support@bitis.com.vn", address="22 Lý Chiêu Hoàng, Phường 10, Quận 6, TP. HCM", status="active"),
+                SupplierEntity(id=1, code="NCC001", name="Công ty Cổ phần May Việt Tiến", tax_code="0300123456", contact_person="Nguyễn Văn Tiến", payment_terms="Thanh toán 30 ngày", is_active=True),
+                SupplierEntity(id=2, code="NCC002", name="Tập đoàn Dệt May Phong Phú", tax_code="0300987654", contact_person="Trần Phong Phú", payment_terms="Thanh toán ngay", is_active=True),
+                SupplierEntity(id=3, code="NCC003", name="Công ty TNHH Giày Biti's Việt Nam", tax_code="0301112233", contact_person="Lê Biti", payment_terms="Gối đầu 45 ngày", is_active=True),
             ]
             db.add_all(initial_suppliers)
             db.commit()
@@ -781,11 +790,11 @@ def init_db():
         if db.query(UnitOfMeasureEntity).count() == 0:
             print("Seeding initial units of measure...")
             initial_uoms = [
-                UnitOfMeasureEntity(id=1, name="Cái", description="Đơn vị đếm cơ bản", is_active=True),
-                UnitOfMeasureEntity(id=2, name="Hộp", description="Hộp đóng gói nhỏ", is_active=True),
-                UnitOfMeasureEntity(id=3, name="Thùng", description="Thùng carton tiêu chuẩn", is_active=True),
-                UnitOfMeasureEntity(id=4, name="Bộ", description="Bộ sản phẩm hoàn chỉnh", is_active=True),
-                UnitOfMeasureEntity(id=5, name="Kiện", description="Kiện hàng lớn", is_active=True),
+                UnitOfMeasureEntity(id=1, code="CAI", name="Cái", description="Đơn vị đếm cơ bản"),
+                UnitOfMeasureEntity(id=2, code="HOP", name="Hộp", description="Hộp đóng gói nhỏ"),
+                UnitOfMeasureEntity(id=3, code="THUNG", name="Thùng", description="Thùng carton tiêu chuẩn"),
+                UnitOfMeasureEntity(id=4, code="BO", name="Bộ", description="Bộ sản phẩm hoàn chỉnh"),
+                UnitOfMeasureEntity(id=5, code="KIEN", name="Kiện", description="Kiện hàng lớn"),
             ]
             db.add_all(initial_uoms)
             db.commit()
@@ -836,10 +845,13 @@ def init_db():
             policies = [
                 DiscountPolicyEntity(
                     id=1,
+                    code="CK-SL-001",
                     name="Chiết khấu số lượng Áo Thun Polo",
+                    title="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP001",
                     description="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP001",
-                    product_id=1,
+                    category="ALL",
                     is_active=True,
+                    status="active",
                     tiers=[
                         DiscountTierEntity(min_quantity=10, max_quantity=29, discount_percent=5.0),
                         DiscountTierEntity(min_quantity=30, max_quantity=99, discount_percent=10.0),
@@ -848,10 +860,13 @@ def init_db():
                 ),
                 DiscountPolicyEntity(
                     id=2,
+                    code="CK-SL-002",
                     name="Chiết khấu số lượng Quần Jeans Slimfit",
+                    title="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP002",
                     description="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP002",
-                    product_id=2,
+                    category="ALL",
                     is_active=True,
+                    status="active",
                     tiers=[
                         DiscountTierEntity(min_quantity=20, max_quantity=49, discount_percent=8.0),
                         DiscountTierEntity(min_quantity=50, max_quantity=None, discount_percent=12.0),
@@ -931,6 +946,111 @@ def init_db():
             print("Product stocks synchronized from warehouses successfully.")
         except Exception as sync_err:
             print(f"Error syncing product stocks from warehouses: {sync_err}")
+
+        # 10.5. Seed initial orders if empty
+        if db.query(OrderEntity).count() == 0:
+            print("Seeding initial orders...")
+            from app.api.v1.endpoints.orders import ORDERS_DB
+            from datetime import datetime, timezone
+            for o_id, mem_order in ORDERS_DB.items():
+                ocode = mem_order.get("order_code")
+                dt_str = mem_order.get("created_at")
+                c_at = datetime.fromisoformat(dt_str.replace("Z", "+00:00")) if dt_str else datetime.now(timezone.utc)
+                db.add(OrderEntity(
+                    order_code=ocode,
+                    dealer_id=mem_order.get("dealer_id", 1),
+                    dealer_name=mem_order.get("dealer_name", ""),
+                    created_by=mem_order.get("created_by", "sales"),
+                    assigned_sale_id=mem_order.get("assigned_sale_id"),
+                    assigned_sale_name=mem_order.get("assigned_sale_name"),
+                    total_amount=mem_order.get("total_amount", 0.0),
+                    status=mem_order.get("status", "CONFIRMED"),
+                    note=mem_order.get("note"),
+                    delivery_point_id=mem_order.get("delivery_point_id"),
+                    discount_rate=mem_order.get("discount_percent", 0.0),
+                    discount_amount=mem_order.get("discount_amount", 0.0),
+                    requires_approval=mem_order.get("requires_approval", False),
+                    approval_reason=mem_order.get("approval_reason"),
+                    items_json=json.dumps(mem_order.get("items", []), ensure_ascii=False),
+                    created_at=c_at,
+                ))
+            db.commit()
+            print("Initial orders seeded successfully.")
+
+        # 11. Seed sample confirmed Return Order (Phiếu trả hàng hoàn kho) nếu chưa có
+        try:
+            if db.query(ReturnOrderEntity).count() == 0:
+                print("Seeding initial confirmed return order...")
+                # Tìm đơn hàng của đại lý 1 hoặc 2
+                sample_order = (
+                    db.query(OrderEntity)
+                    .filter(~OrderEntity.status.in_(["CANCELLED", "DRAFT", "REJECTED"]))
+                    .order_by(OrderEntity.id.asc())
+                    .first()
+                )
+                if sample_order:
+                    sample_dealer = db.query(DealerEntity).filter(DealerEntity.id == sample_order.dealer_id).first()
+                    if sample_dealer:
+                        from app.services.invoice_service import sync_dealer_invoices_from_orders
+                        sync_dealer_invoices_from_orders(sample_dealer, db)
+                    inv_code = f"HD-{sample_order.order_code}"
+                    sample_inv = db.query(InvoiceEntity).filter(InvoiceEntity.invoice_code == inv_code).first()
+
+                    # Lấy sản phẩm từ đơn hàng
+                    from app.services.debt_adjustment_service import extract_original_sold_items_map
+                    items_map = extract_original_sold_items_map(sample_inv, sample_order, db)
+                    ret_items = []
+                    subtotal = 0.0
+                    for pid, item_info in list(items_map.items())[:2]:
+                        qty = max(1, min(2, item_info.get("sold_quantity", 1)))
+                        uprice = float(item_info.get("unit_price", 0.0))
+                        ltot = qty * uprice
+                        subtotal += ltot
+                        ret_items.append(
+                            ReturnOrderItemEntity(
+                                product_id=pid,
+                                product_code=item_info["product_code"],
+                                product_name=item_info["product_name"],
+                                unit_name=item_info["unit_name"],
+                                quantity=qty,
+                                unit_price=uprice,
+                                line_total=ltot,
+                                reason="Hàng giao sai quy cách theo phản ánh của đại lý",
+                            )
+                        )
+
+                    if ret_items:
+                        from datetime import datetime, timezone
+                        now_utc = datetime.now(timezone.utc)
+                        today_s = now_utc.strftime("%Y%m%d")
+                        ret_order = ReturnOrderEntity(
+                            return_code=f"TH-{today_s}-001",
+                            order_id=sample_order.id,
+                            order_code=sample_order.order_code,
+                            original_invoice_id=sample_inv.id if sample_inv else None,
+                            original_invoice_code=inv_code,
+                            dealer_id=sample_order.dealer_id,
+                            dealer_name=sample_order.dealer_name,
+                            warehouse_id="WH01",
+                            warehouse_name="Kho Tổng Hà Nội",
+                            status="CONFIRMED",
+                            reason="Khách trả lại do sai quy cách sản phẩm, kho đã kiểm nhận hoàn kho",
+                            note="Phiếu trả hàng đã hoàn tất thủ tục nhập kho",
+                            subtotal_amount=subtotal,
+                            tax_amount=0.0,
+                            total_amount=subtotal,
+                            created_by_id=1,
+                            created_by_name="Quản trị viên",
+                            confirmed_by_id=1,
+                            confirmed_by_name="Quản trị viên",
+                            confirmed_at=now_utc,
+                            items=ret_items,
+                        )
+                        db.add(ret_order)
+                        db.commit()
+                        print(f"Sample return order {ret_order.return_code} seeded successfully.")
+        except Exception as ro_err:
+            print(f"Notice: Return order seed skipped: {ro_err}")
 
         print("Database initialization completed successfully.")
     except Exception as e:

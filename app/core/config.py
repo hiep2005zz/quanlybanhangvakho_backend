@@ -29,7 +29,7 @@ class Settings:
     MAIL_TLS: bool = os.getenv("MAIL_TLS", "True").lower() in ("true", "1", "yes")
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL",
-        "sqlite:///./quanlybanhang.db"
+        "mssql+pyodbc://localhost/quanlybanhang?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes"
     )
 
 settings = Settings()
