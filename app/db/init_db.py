@@ -70,6 +70,7 @@ def _ensure_legacy_columns(bind=engine):
             "avatar_url": ("TEXT", "NVARCHAR(500)"),
         },
         "products": {
+            "category_id": ("INTEGER NULL", "INT NULL"),
             "base_unit": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
             "units_json": ("TEXT", "NVARCHAR(MAX)"),
             "packaging_specification": ("VARCHAR(255)", "NVARCHAR(255)"),
@@ -480,9 +481,9 @@ def init_db():
                 "IF COL_LENGTH('discount_tiers', 'discount_type') IS NULL ALTER TABLE discount_tiers ADD discount_type NVARCHAR(20) DEFAULT 'percent';",
                 "UPDATE warehouse_stocks SET quantity_on_hand = actual_stock WHERE quantity_on_hand IS NULL OR quantity_on_hand = 0;",
                 "UPDATE warehouse_stocks SET reserved_quantity = reserved_stock WHERE reserved_quantity IS NULL;",
-                "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL AND COL_LENGTH('delivery_trips', 'vehicle_plate') IS NOT NULL UPDATE delivery_trips SET vehicle_plate = license_plate WHERE (vehicle_plate IS NULL OR vehicle_plate = '') AND license_plate IS NOT NULL;",
-                "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'dispatched_at') IS NOT NULL UPDATE delivery_trips SET dispatched_at = departure_time WHERE dispatched_at IS NULL AND departure_time IS NOT NULL;",
-                "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'estimated_delivery_time') IS NOT NULL UPDATE delivery_trips SET estimated_delivery_time = expected_completion_time WHERE estimated_delivery_time IS NULL AND expected_completion_time IS NOT NULL;",
+                "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL AND COL_LENGTH('delivery_trips', 'vehicle_plate') IS NOT NULL EXEC('UPDATE delivery_trips SET vehicle_plate = license_plate WHERE (vehicle_plate IS NULL OR vehicle_plate = '''''') AND license_plate IS NOT NULL');",
+                "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'dispatched_at') IS NOT NULL EXEC('UPDATE delivery_trips SET dispatched_at = departure_time WHERE dispatched_at IS NULL AND departure_time IS NOT NULL');",
+                "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'estimated_delivery_time') IS NOT NULL EXEC('UPDATE delivery_trips SET estimated_delivery_time = expected_completion_time WHERE estimated_delivery_time IS NULL AND expected_completion_time IS NOT NULL');",
                 "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN license_plate;",
                 "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN departure_time;",
                 "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN expected_completion_time;",
@@ -493,9 +494,9 @@ def init_db():
                 "IF COL_LENGTH('delivery_stops', 'failure_reason') IS NULL ALTER TABLE delivery_stops ADD failure_reason NVARCHAR(MAX);",
                 "IF COL_LENGTH('delivery_stops', 'return_status') IS NULL ALTER TABLE delivery_stops ADD return_status NVARCHAR(50);",
                 "IF COL_LENGTH('delivery_stops', 'items_detail') IS NULL ALTER TABLE delivery_stops ADD items_detail NVARCHAR(MAX);",
-                "UPDATE delivery_stops SET actual_delivery_time = delivered_at WHERE actual_delivery_time IS NULL AND delivered_at IS NOT NULL;",
-                "UPDATE delivery_stops SET failure_reason = failed_reason WHERE failure_reason IS NULL AND failed_reason IS NOT NULL;",
-                "UPDATE delivery_stops SET delivery_status = status WHERE delivery_status IS NULL AND status IS NOT NULL;",
+                "IF COL_LENGTH('delivery_stops', 'actual_delivery_time') IS NOT NULL AND COL_LENGTH('delivery_stops', 'delivered_at') IS NOT NULL EXEC('UPDATE delivery_stops SET actual_delivery_time = delivered_at WHERE actual_delivery_time IS NULL AND delivered_at IS NOT NULL');",
+                "IF COL_LENGTH('delivery_stops', 'failure_reason') IS NOT NULL AND COL_LENGTH('delivery_stops', 'failed_reason') IS NOT NULL EXEC('UPDATE delivery_stops SET failure_reason = failed_reason WHERE failure_reason IS NULL AND failed_reason IS NOT NULL');",
+                "IF COL_LENGTH('delivery_stops', 'delivery_status') IS NOT NULL AND COL_LENGTH('delivery_stops', 'status') IS NOT NULL EXEC('UPDATE delivery_stops SET delivery_status = status WHERE delivery_status IS NULL AND status IS NOT NULL');",
             ]:
                 try:
                     conn.execute(text(sql_statement))
@@ -554,13 +555,13 @@ def init_db():
         if db.query(CategoryEntity).count() == 0:
             print("Seeding initial categories...")
             initial_categories = [
-                CategoryEntity(id=1, name="Thời trang", parent_id=None),
-                CategoryEntity(id=2, name="Giày dép", parent_id=None),
-                CategoryEntity(id=3, name="Phụ kiện", parent_id=None),
-                CategoryEntity(id=7, name="Đồ điện tử", parent_id=None),
-                CategoryEntity(id=4, name="Áo Nam", parent_id=1),
-                CategoryEntity(id=5, name="Quần Nam", parent_id=1),
-                CategoryEntity(id=6, name="Áo Thun", parent_id=4),
+                CategoryEntity(id=1, code="CAT01", name="Thời trang", parent_id=None),
+                CategoryEntity(id=2, code="CAT02", name="Giày dép", parent_id=None),
+                CategoryEntity(id=3, code="CAT03", name="Phụ kiện", parent_id=None),
+                CategoryEntity(id=7, code="CAT07", name="Đồ điện tử", parent_id=None),
+                CategoryEntity(id=4, code="CAT04", name="Áo Nam", parent_id=1),
+                CategoryEntity(id=5, code="CAT05", name="Quần Nam", parent_id=1),
+                CategoryEntity(id=6, code="CAT06", name="Áo Thun", parent_id=4),
             ]
             db.add_all(initial_categories)
             db.commit()
@@ -635,10 +636,10 @@ def init_db():
         if db.query(DealerDeliveryPointEntity).count() == 0:
             print("Seeding initial dealer delivery points...")
             points = [
-                DealerDeliveryPointEntity(dealer_id=1, name="Kho tổng Lê Lợi", address="123 Lê Lợi, Q1, TP. HCM", is_default=True),
-                DealerDeliveryPointEntity(dealer_id=1, name="Chi nhánh Bình Thạnh", address="45 Xô Viết Nghệ Tĩnh, Bình Thạnh, TP. HCM", is_default=False),
-                DealerDeliveryPointEntity(dealer_id=2, name="Cửa hàng Ba Đình", address="456 Hoàng Hoa Thám, Ba Đình, Hà Nội", is_default=True),
-                DealerDeliveryPointEntity(dealer_id=3, name="Cơ sở Hải Châu", address="789 Nguyễn Văn Linh, Đà Nẵng", is_default=True),
+                DealerDeliveryPointEntity(dealer_id=1, label="Kho tổng Lê Lợi", address="123 Lê Lợi, Q1, TP. HCM", receiver_name="Đại Lý Toàn Thắng", receiver_phone="0912345678", is_default=True),
+                DealerDeliveryPointEntity(dealer_id=1, label="Chi nhánh Bình Thạnh", address="45 Xô Viết Nghệ Tĩnh, Bình Thạnh, TP. HCM", receiver_name="Đại Lý Toàn Thắng", receiver_phone="0912345678", is_default=False),
+                DealerDeliveryPointEntity(dealer_id=2, label="Cửa hàng Ba Đình", address="456 Hoàng Hoa Thám, Ba Đình, Hà Nội", receiver_name="Đại Lý Minh Khang", receiver_phone="0987654321", is_default=True),
+                DealerDeliveryPointEntity(dealer_id=3, label="Cơ sở Hải Châu", address="789 Nguyễn Văn Linh, Đà Nẵng", receiver_name="Cửa Hàng Hạnh Phúc", receiver_phone="0905123456", is_default=True),
             ]
             db.add_all(points)
             db.commit()
@@ -648,9 +649,9 @@ def init_db():
         if db.query(SupplierEntity).count() == 0:
             print("Seeding initial suppliers...")
             initial_suppliers = [
-                SupplierEntity(id=1, code="NCC001", name="Công ty Cổ phần May Việt Tiến", tax_code="0300123456", phone="02838640800", email="contact@viettien.com.vn", address="Số 7 Lê Minh Xuân, Phường 7, Tân Bình, TP. HCM", status="active"),
-                SupplierEntity(id=2, code="NCC002", name="Tập đoàn Dệt May Phong Phú", tax_code="0300987654", phone="02838963533", email="info@phongphu.com.vn", address="48 Tăng Nhơn Phú, Tăng Nhơn Phú B, TP. Thủ Đức, TP. HCM", status="active"),
-                SupplierEntity(id=3, code="NCC003", name="Công ty TNHH Giày Biti's Việt Nam", tax_code="0301112233", phone="02838753443", email="support@bitis.com.vn", address="22 Lý Chiêu Hoàng, Phường 10, Quận 6, TP. HCM", status="active"),
+                SupplierEntity(id=1, code="NCC001", name="Công ty Cổ phần May Việt Tiến", tax_code="0300123456", contact_person="Nguyễn Văn Việt", payment_terms="Thanh toán 30 ngày", is_active=True),
+                SupplierEntity(id=2, code="NCC002", name="Tập đoàn Dệt May Phong Phú", tax_code="0300987654", contact_person="Trần Phong Phú", payment_terms="Thanh toán ngay", is_active=True),
+                SupplierEntity(id=3, code="NCC003", name="Công ty TNHH Giày Biti's Việt Nam", tax_code="0301112233", contact_person="Lê Bitis", payment_terms="Thanh toán 45 ngày", is_active=True),
             ]
             db.add_all(initial_suppliers)
             db.commit()
@@ -786,11 +787,11 @@ def init_db():
         if db.query(UnitOfMeasureEntity).count() == 0:
             print("Seeding initial units of measure...")
             initial_uoms = [
-                UnitOfMeasureEntity(id=1, name="Cái", description="Đơn vị đếm cơ bản", is_active=True),
-                UnitOfMeasureEntity(id=2, name="Hộp", description="Hộp đóng gói nhỏ", is_active=True),
-                UnitOfMeasureEntity(id=3, name="Thùng", description="Thùng carton tiêu chuẩn", is_active=True),
-                UnitOfMeasureEntity(id=4, name="Bộ", description="Bộ sản phẩm hoàn chỉnh", is_active=True),
-                UnitOfMeasureEntity(id=5, name="Kiện", description="Kiện hàng lớn", is_active=True),
+                UnitOfMeasureEntity(id=1, code="CAI", name="Cái", description="Đơn vị đếm cơ bản"),
+                UnitOfMeasureEntity(id=2, code="HOP", name="Hộp", description="Hộp đóng gói nhỏ"),
+                UnitOfMeasureEntity(id=3, code="THUNG", name="Thùng", description="Thùng carton tiêu chuẩn"),
+                UnitOfMeasureEntity(id=4, code="BO", name="Bộ", description="Bộ sản phẩm hoàn chỉnh"),
+                UnitOfMeasureEntity(id=5, code="KIEN", name="Kiện", description="Kiện hàng lớn"),
             ]
             db.add_all(initial_uoms)
             db.commit()
@@ -841,9 +842,9 @@ def init_db():
             policies = [
                 DiscountPolicyEntity(
                     id=1,
+                    code="CK-POLO",
                     name="Chiết khấu số lượng Áo Thun Polo",
                     description="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP001",
-                    product_id=1,
                     is_active=True,
                     tiers=[
                         DiscountTierEntity(min_quantity=10, max_quantity=29, discount_percent=5.0),
@@ -853,9 +854,9 @@ def init_db():
                 ),
                 DiscountPolicyEntity(
                     id=2,
+                    code="CK-JEANS",
                     name="Chiết khấu số lượng Quần Jeans Slimfit",
                     description="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP002",
-                    product_id=2,
                     is_active=True,
                     tiers=[
                         DiscountTierEntity(min_quantity=20, max_quantity=49, discount_percent=8.0),
@@ -947,7 +948,8 @@ def init_db():
 
         print("Database initialization completed successfully.")
     except Exception as e:
-        print(f"Error during seeding: {e}")
+        safe_msg = str(e).encode("ascii", errors="backslashreplace").decode("ascii")
+        print(f"Error during seeding: {safe_msg}")
         db.rollback()
     finally:
         db.close()
