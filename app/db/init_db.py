@@ -44,7 +44,7 @@ from app.models.warehouse import (
 )
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
-from app.models.invoice import InvoiceEntity
+from app.models.invoice import InvoiceEntity, InvoiceDeliveryNoteEntity, InvoiceItemEntity
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 
@@ -173,6 +173,18 @@ def _ensure_legacy_columns(bind=engine):
             "failure_reason": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
             "return_status": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
             "items_detail": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
+        },
+        "invoices": {
+            "source_type": ("VARCHAR(50) DEFAULT 'ORDER'", "NVARCHAR(50) DEFAULT 'ORDER'"),
+            "issue_status": ("VARCHAR(30) DEFAULT 'ISSUED'", "NVARCHAR(30) DEFAULT 'ISSUED'"),
+            "template_code": ("VARCHAR(50) DEFAULT '1/001'", "NVARCHAR(50) DEFAULT '1/001'"),
+            "invoice_series": ("VARCHAR(20) DEFAULT 'C26TAA'", "NVARCHAR(20) DEFAULT 'C26TAA'"),
+            "subtotal_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "vat_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "discount_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "issued_by": ("VARCHAR(100) NULL", "NVARCHAR(100) NULL"),
+            "delivery_dispatches_summary": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
+            "currency": ("VARCHAR(10) DEFAULT 'VND'", "NVARCHAR(10) DEFAULT 'VND'"),
         },
     }
     inspector = inspect(bind)
