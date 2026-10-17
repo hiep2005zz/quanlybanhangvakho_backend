@@ -172,7 +172,7 @@ def reset_test_state():
         cfg = db.query(CreditPolicyConfigEntity).first()
         if cfg:
             cfg.over_limit_action = "REQUIRE_APPROVAL"
-            cfg.overdue_action = "REQUIRE_APPROVAL"
+            cfg.overdue_action = "BLOCK"
             cfg.auto_eval_enabled = True
         db.commit()
     finally:

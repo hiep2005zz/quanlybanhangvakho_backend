@@ -69,6 +69,7 @@ def _ensure_legacy_columns(bind=engine):
             "status": ("VARCHAR(50) DEFAULT 'active'", "NVARCHAR(50) DEFAULT 'active'"),
             "is_batch_managed": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
             "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
+            "category_id": ("INTEGER", "INT NULL"),
         },
         "warehouse_stocks": {
             "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
@@ -443,13 +444,13 @@ def init_db(bind=None):
         if db.query(CategoryEntity).count() == 0:
             print("Seeding initial categories...")
             initial_categories = [
-                CategoryEntity(id=1, name="Thời trang", parent_id=None),
-                CategoryEntity(id=2, name="Giày dép", parent_id=None),
-                CategoryEntity(id=3, name="Phụ kiện", parent_id=None),
-                CategoryEntity(id=7, name="Đồ điện tử", parent_id=None),
-                CategoryEntity(id=4, name="Áo Nam", parent_id=1),
-                CategoryEntity(id=5, name="Quần Nam", parent_id=1),
-                CategoryEntity(id=6, name="Áo Thun", parent_id=4),
+                CategoryEntity(id=1, code="CAT001", name="Thời trang", parent_id=None),
+                CategoryEntity(id=2, code="CAT002", name="Giày dép", parent_id=None),
+                CategoryEntity(id=3, code="CAT003", name="Phụ kiện", parent_id=None),
+                CategoryEntity(id=7, code="CAT007", name="Đồ điện tử", parent_id=None),
+                CategoryEntity(id=4, code="CAT004", name="Áo Nam", parent_id=1),
+                CategoryEntity(id=5, code="CAT005", name="Quần Nam", parent_id=1),
+                CategoryEntity(id=6, code="CAT006", name="Áo Thun", parent_id=4),
             ]
             db.add_all(initial_categories)
             db.commit()
@@ -524,10 +525,10 @@ def init_db(bind=None):
         if db.query(DealerDeliveryPointEntity).count() == 0:
             print("Seeding initial dealer delivery points...")
             points = [
-                DealerDeliveryPointEntity(dealer_id=1, name="Kho tổng Lê Lợi", address="123 Lê Lợi, Q1, TP. HCM", is_default=True),
-                DealerDeliveryPointEntity(dealer_id=1, name="Chi nhánh Bình Thạnh", address="45 Xô Viết Nghệ Tĩnh, Bình Thạnh, TP. HCM", is_default=False),
-                DealerDeliveryPointEntity(dealer_id=2, name="Cửa hàng Ba Đình", address="456 Hoàng Hoa Thám, Ba Đình, Hà Nội", is_default=True),
-                DealerDeliveryPointEntity(dealer_id=3, name="Cơ sở Hải Châu", address="789 Nguyễn Văn Linh, Đà Nẵng", is_default=True),
+                DealerDeliveryPointEntity(dealer_id=1, label="Kho tổng Lê Lợi", address="123 Lê Lợi, Q1, TP. HCM", receiver_name="Nguyễn Văn A", receiver_phone="0912345678", is_default=True, is_active=True),
+                DealerDeliveryPointEntity(dealer_id=1, label="Chi nhánh Bình Thạnh", address="45 Xô Viết Nghệ Tĩnh, Bình Thạnh, TP. HCM", receiver_name="Nguyễn Văn A", receiver_phone="0912345678", is_default=False, is_active=True),
+                DealerDeliveryPointEntity(dealer_id=2, label="Cửa hàng Ba Đình", address="456 Hoàng Hoa Thám, Ba Đình, Hà Nội", receiver_name="Trần Văn B", receiver_phone="0987654321", is_default=True, is_active=True),
+                DealerDeliveryPointEntity(dealer_id=3, label="Cơ sở Hải Châu", address="789 Nguyễn Văn Linh, Đà Nẵng", receiver_name="Lê Văn C", receiver_phone="0905123456", is_default=True, is_active=True),
             ]
             db.add_all(points)
             db.commit()
@@ -537,9 +538,9 @@ def init_db(bind=None):
         if db.query(SupplierEntity).count() == 0:
             print("Seeding initial suppliers...")
             initial_suppliers = [
-                SupplierEntity(id=1, code="NCC001", name="Công ty Cổ phần May Việt Tiến", tax_code="0300123456", phone="02838640800", email="contact@viettien.com.vn", address="Số 7 Lê Minh Xuân, Phường 7, Tân Bình, TP. HCM", status="active"),
-                SupplierEntity(id=2, code="NCC002", name="Tập đoàn Dệt May Phong Phú", tax_code="0300987654", phone="02838963533", email="info@phongphu.com.vn", address="48 Tăng Nhơn Phú, Tăng Nhơn Phú B, TP. Thủ Đức, TP. HCM", status="active"),
-                SupplierEntity(id=3, code="NCC003", name="Công ty TNHH Giày Biti's Việt Nam", tax_code="0301112233", phone="02838753443", email="support@bitis.com.vn", address="22 Lý Chiêu Hoàng, Phường 10, Quận 6, TP. HCM", status="active"),
+                SupplierEntity(id=1, code="NCC001", name="Công ty Cổ phần May Việt Tiến", tax_code="0300123456", contact_person="Nguyễn Văn A", payment_terms="Thanh toán 30 ngày", is_active=True),
+                SupplierEntity(id=2, code="NCC002", name="Tập đoàn Dệt May Phong Phú", tax_code="0300987654", contact_person="Trần Thị B", payment_terms="Thanh toán ngay", is_active=True),
+                SupplierEntity(id=3, code="NCC003", name="Công ty TNHH Giày Biti's Việt Nam", tax_code="0301112233", contact_person="Lê Văn C", payment_terms="Công nợ 45 ngày", is_active=True),
             ]
             db.add_all(initial_suppliers)
             db.commit()
@@ -675,11 +676,11 @@ def init_db(bind=None):
         if db.query(UnitOfMeasureEntity).count() == 0:
             print("Seeding initial units of measure...")
             initial_uoms = [
-                UnitOfMeasureEntity(id=1, name="Cái", description="Đơn vị đếm cơ bản", is_active=True),
-                UnitOfMeasureEntity(id=2, name="Hộp", description="Hộp đóng gói nhỏ", is_active=True),
-                UnitOfMeasureEntity(id=3, name="Thùng", description="Thùng carton tiêu chuẩn", is_active=True),
-                UnitOfMeasureEntity(id=4, name="Bộ", description="Bộ sản phẩm hoàn chỉnh", is_active=True),
-                UnitOfMeasureEntity(id=5, name="Kiện", description="Kiện hàng lớn", is_active=True),
+                UnitOfMeasureEntity(id=1, code="UOM_CAI", name="Cái", description="Đơn vị đếm cơ bản"),
+                UnitOfMeasureEntity(id=2, code="UOM_HOP", name="Hộp", description="Hộp đóng gói nhỏ"),
+                UnitOfMeasureEntity(id=3, code="UOM_THUNG", name="Thùng", description="Thùng carton tiêu chuẩn"),
+                UnitOfMeasureEntity(id=4, code="UOM_BO", name="Bộ", description="Bộ sản phẩm hoàn chỉnh"),
+                UnitOfMeasureEntity(id=5, code="UOM_KIEN", name="Kiện", description="Kiện hàng lớn"),
             ]
             db.add_all(initial_uoms)
             db.commit()
@@ -730,9 +731,9 @@ def init_db(bind=None):
             policies = [
                 DiscountPolicyEntity(
                     id=1,
+                    code="POL001",
                     name="Chiết khấu số lượng Áo Thun Polo",
                     description="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP001",
-                    product_id=1,
                     is_active=True,
                     tiers=[
                         DiscountTierEntity(min_quantity=10, max_quantity=29, discount_percent=5.0),
@@ -742,9 +743,9 @@ def init_db(bind=None):
                 ),
                 DiscountPolicyEntity(
                     id=2,
+                    code="POL002",
                     name="Chiết khấu số lượng Quần Jeans Slimfit",
                     description="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP002",
-                    product_id=2,
                     is_active=True,
                     tiers=[
                         DiscountTierEntity(min_quantity=20, max_quantity=49, discount_percent=8.0),
