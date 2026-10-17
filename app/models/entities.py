@@ -131,7 +131,7 @@ class ProductEntity(Base):
     code = Column(String(50), unique=True, index=True, nullable=False)
     name = Column(Unicode(255), nullable=False)
     category = Column(Unicode(100), default="Thời trang")
-    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True, index=True)
     stock = Column(Integer, default=0)
     cost_price = Column(Float, default=0.0)
     sell_price = Column(Float, default=0.0)
@@ -141,9 +141,9 @@ class ProductEntity(Base):
     packaging_specification = Column(Unicode(255), nullable=True)
     images_json = Column(UnicodeText, nullable=True)
     is_batch_managed = Column(Boolean, default=False)
-    status = Column(String(50), default="active")
+    status = Column(String(50), default="active", index=True)
     min_stock = Column(Integer, default=10, nullable=True)
-    created_at = Column(DateTime, default=get_utc_now)
+    created_at = Column(DateTime, default=get_utc_now, index=True)
 
     category_rel = relationship("CategoryEntity", backref="products")
 
@@ -252,10 +252,10 @@ class OrderEntity(Base):
     assigned_sale_id = Column(Integer, nullable=True)
     assigned_sale_name = Column(Unicode(255), nullable=True)
     total_amount = Column(Float, default=0.0)
-    status = Column(String(50), default="PENDING")
+    status = Column(String(50), default="PENDING", index=True)
     note = Column(UnicodeText, nullable=True)
     items_json = Column(UnicodeText, nullable=True)  # JSON order items
-    created_at = Column(DateTime, default=get_utc_now)
+    created_at = Column(DateTime, default=get_utc_now, index=True)
     delivery_point_id = Column(Integer, ForeignKey("dealer_delivery_points.id"), nullable=True)
     discount_rate = Column(Float, default=0.0)
     discount_amount = Column(Float, default=0.0)
@@ -489,6 +489,34 @@ class DeliveryStopEntity(Base):
     return_status = Column(String(50), nullable=True)
     items_detail = Column(UnicodeText, nullable=True)
     note = Column(UnicodeText, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+
+class StockAdjustmentEntity(Base):
+    __tablename__ = "stock_adjustments"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    warehouse_id = Column(String(50), nullable=False, index=True)
+    warehouse_name = Column(Unicode(255), nullable=False)
+    reason_type = Column(String(50), nullable=False)  # damaged, lost, expired, other
+    reason_note = Column(UnicodeText, nullable=False)
+    total_loss_value = Column(Float, default=0.0, nullable=False)
+    total_items = Column(Integer, default=0)
+    total_quantity = Column(Integer, default=0)
+    status = Column(String(20), default="PENDING", nullable=False)  # PENDING | APPROVED | REJECTED
+    items_json = Column(UnicodeText, nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by = Column(Unicode(100), nullable=False)
+    created_by_role = Column(String(50), nullable=True)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_by = Column(Unicode(100), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    rejected_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    rejected_by = Column(Unicode(100), nullable=True)
+    rejected_at = Column(DateTime, nullable=True)
+    rejection_reason = Column(UnicodeText, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 

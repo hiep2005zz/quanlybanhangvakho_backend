@@ -54,7 +54,7 @@ app.include_router(suppliers.router, prefix="/api/v1/suppliers", tags=["Supplier
 app.include_router(delivery_points.dealers_router, prefix="/api/v1/dealers", tags=["Dealers"])
 app.include_router(delivery_points.router, prefix="/api/v1/dealers", tags=["Delivery Points"])
 app.include_router(dealers.router, prefix="/api/v1/dealers", tags=["Dealers"])
-from app.api.v1.endpoints import price_books, discounts, goods_receipts, warehouses, stock_audits, pricing, batches, deliveries
+from app.api.v1.endpoints import price_books, discounts, goods_receipts, warehouses, stock_audits, pricing, batches, inventory_reports, deliveries, stock_adjustments, payment_collections
 app.include_router(price_books.router, prefix="/api/v1/price-books", tags=["PriceBooks"])
 app.include_router(discounts.router, prefix="/api/v1/discounts", tags=["Discounts"])
 app.include_router(pricing.router, prefix="/api/v1/pricing", tags=["Pricing"])
@@ -63,8 +63,13 @@ app.include_router(goods_receipts.router, prefix="/api/v1/goods-receipts", tags=
 app.include_router(goods_receipts.router, prefix="/goods-receipts", tags=["Goods Receipts"])
 app.include_router(warehouses.router, prefix="/api/v1/warehouses", tags=["Warehouses"])
 app.include_router(stock_audits.router, prefix="/api/v1/stock-audits", tags=["Stock Audits"])
+from app.api.v1.endpoints import agency_debts
+app.include_router(agency_debts.router, prefix="/api/v1/agency-debts", tags=["Agency Debts"])
 app.include_router(batches.router, prefix="/api/v1/batches", tags=["Batches"])
+app.include_router(inventory_reports.router, prefix="/api/v1/inventory", tags=["Inventory Reports"])
 app.include_router(deliveries.router, prefix="/api/v1/deliveries", tags=["Deliveries"])
+app.include_router(stock_adjustments.router, prefix="/api/v1/stock-adjustments", tags=["Stock Adjustments"])
+app.include_router(payment_collections.router, prefix="/api/v1/payment-collections", tags=["Payment Collections"])
 
 # Mount static folder for user avatars / media uploads
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
