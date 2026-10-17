@@ -21,6 +21,7 @@ def compute_debt_ledger_data(
     assigned_sale_id: Optional[int] = None,
     overdue_only: bool = False,
     search: Optional[str] = None,
+    ageing_bucket: Optional[str] = None,
 ) -> DebtLedgerResponse:
     """
     Computes debt ledger per dealer with 4 ageing buckets:
@@ -28,7 +29,7 @@ def compute_debt_ledger_data(
     - 31-60 days
     - 61-90 days
     - > 90 days
-    Directly calculated from real database orders and dealers.
+    Directly calculated from real database orders, confirmed payment collections, and dealers.
     """
     # 1. Fetch dealers
     dealers_query = db.query(DealerEntity)
@@ -65,6 +66,24 @@ def compute_debt_ledger_data(
         if inv.dealer_id not in dealer_invoices_map:
             dealer_invoices_map[inv.dealer_id] = []
         dealer_invoices_map[inv.dealer_id].append(inv)
+
+    # 3. Fetch confirmed payment collections (if any)
+    dealer_payments_map = {}
+    try:
+        from app.models.payment_collection import PaymentCollectionEntity
+        payment_collections = (
+            db.query(PaymentCollectionEntity)
+            .filter(PaymentCollectionEntity.status == "CONFIRMED")
+            .all()
+        )
+        for pc in payment_collections:
+            if pc.dealer_id:
+                amt = float(getattr(pc, "amount", getattr(pc, "amount_collected", 0.0)) or 0.0)
+                dealer_payments_map[pc.dealer_id] = (
+                    dealer_payments_map.get(pc.dealer_id, 0.0) + amt
+                )
+    except Exception:
+        dealer_payments_map = {}
 
     now = datetime.now(timezone.utc)
     items: List[DealerDebtAgeingItem] = []
@@ -115,6 +134,7 @@ def compute_debt_ledger_data(
                     else:
                         b_over_90 += rem
         else:
+            unpaid_orders = []
             for o in d_orders:
                 amt = float(o.total_amount or 0.0)
                 total_receivable += amt
@@ -122,7 +142,6 @@ def compute_debt_ledger_data(
                 if o.status == "PAID":
                     total_paid += amt
                 else:
-                    remaining_debt += amt
                     created_dt = o.created_at
                     if created_dt:
                         if created_dt.tzinfo is None:
@@ -130,7 +149,30 @@ def compute_debt_ledger_data(
                         age_days = max(0, (now - created_dt).days)
                     else:
                         age_days = 0
+                    unpaid_orders.append({
+                        "amount": amt,
+                        "age_days": age_days,
+                        "created_at": created_dt,
+                    })
 
+            # Deduct confirmed collections from route collections
+            extra_paid = dealer_payments_map.get(d.id, 0.0)
+            total_paid += extra_paid
+
+            # Cấn trừ số tiền thu theo tuyến (extra_paid) vào các đơn chưa thanh toán theo FIFO (đơn cũ trước)
+            unpaid_orders.sort(key=lambda x: x["created_at"] or datetime.min.replace(tzinfo=timezone.utc))
+
+            rem_pay = extra_paid
+            for ord_it in unpaid_orders:
+                amt = ord_it["amount"]
+                if rem_pay > 0:
+                    ded = min(amt, rem_pay)
+                    amt -= ded
+                    rem_pay -= ded
+
+                if amt > 0.0001:
+                    remaining_debt += amt
+                    age_days = ord_it["age_days"]
                     if age_days > oldest_days:
                         oldest_days = age_days
 
@@ -143,15 +185,41 @@ def compute_debt_ledger_data(
                     else:
                         b_over_90 += amt
 
-        # Overdue condition:
-        # If dealer has debt that exceeded allowed credit terms (max_debt_days or overdue_days_allowed)
-        # Or has debt past 30 days
-        allowed_grace = (d.max_debt_days or 30) + (d.overdue_days_allowed or 0)
-        is_overdue = (remaining_debt > 0 and oldest_days > allowed_grace) or ((b_31_60 + b_61_90 + b_over_90) > 0)
+        if remaining_debt <= 0:
+            remaining_debt = 0.0
+            oldest_days = 0
+            b_0_30 = 0.0
+            b_31_60 = 0.0
+            b_61_90 = 0.0
+            b_over_90 = 0.0
+            is_overdue = False
+        else:
+            # Overdue condition:
+            # If dealer has debt that exceeded allowed credit terms (max_debt_days or overdue_days_allowed)
+            # Or has debt past 30 days
+            allowed_grace = (d.max_debt_days or 30) + (d.overdue_days_allowed or 0)
+            is_overdue = (oldest_days > allowed_grace) or ((b_31_60 + b_61_90 + b_over_90) > 0)
 
         # Apply overdue_only filter if requested
         if overdue_only and not is_overdue:
             continue
+
+        # Apply ageing_bucket filter if requested
+        if ageing_bucket and ageing_bucket not in ["", "all"]:
+            if ageing_bucket == "0-30" and b_0_30 <= 0:
+                continue
+            elif ageing_bucket == "31-60" and b_31_60 <= 0:
+                continue
+            elif ageing_bucket == "61-90" and b_61_90 <= 0:
+                continue
+            elif ageing_bucket == "over_90" and b_over_90 <= 0:
+                continue
+            elif ageing_bucket == "has_debt" and remaining_debt <= 0:
+                continue
+            elif ageing_bucket == "settled" and remaining_debt > 0:
+                continue
+            elif ageing_bucket == "overdue" and not is_overdue:
+                continue
 
         sale_name = sales_users.get(d.assigned_sale_id, "Chưa phân công") if d.assigned_sale_id else "Chưa phân công"
 
