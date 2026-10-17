@@ -16,6 +16,7 @@ from app.models.sales_target import (
 )
 from app.api.v1.endpoints.auth import get_current_user, UserResponse
 from app.api.v1.endpoints.orders import ORDERS_DB
+from app.api.v1.endpoints.dealers import normalize_region_name
 from app.models.dealer import DEALERS_DB
 from app.models.user import USERS_DB
 
@@ -166,13 +167,15 @@ def get_dealer_region_map(db: Session) -> Dict[int, str]:
     try:
         db_dealers = db.query(DealerEntity).all()
         for d in db_dealers:
-            d_map[d.id] = getattr(d, "region", None) or "Chưa phân vùng"
+            raw_reg = getattr(d, "region", None)
+            d_map[d.id] = normalize_region_name(raw_reg) if raw_reg else "Chưa phân vùng"
     except Exception:
         pass
 
     for d_id, d_data in DEALERS_DB.items():
         if d_id not in d_map:
-            d_map[d_id] = d_data.get("region") or "Chưa phân vùng"
+            raw_reg = getattr(d_data, "region", None) if not isinstance(d_data, dict) else d_data.get("region")
+            d_map[d_id] = normalize_region_name(raw_reg) if raw_reg else "Chưa phân vùng"
 
     return d_map
 
@@ -203,9 +206,11 @@ def calculate_actual_revenue(
                 total += amount
         elif target_type == "region":
             if region:
+                target_reg = normalize_region_name(region).lower()
                 d_id = o.get("dealer_id")
                 d_region = dealers_region_map.get(d_id, "")
-                if d_region and (region.lower() in d_region.lower() or d_region.lower() in region.lower()):
+                norm_d_reg = normalize_region_name(d_region).lower()
+                if norm_d_reg and (target_reg in norm_d_reg or norm_d_reg in target_reg):
                     total += amount
 
     return total
@@ -404,19 +409,23 @@ def get_sales_targets_metadata(
             {"id": 1, "username": "admin", "full_name": "Đào Ngọc Hiệp", "role": "admin", "role_label": "Admin"},
         ]
 
-    # 2. Danh sách khu vực duy nhất từ bảng dealers và DEALERS_DB
-    regions_set = set(["Hà Nội", "TP. HCM", "Miền Bắc", "Miền Trung", "Miền Nam"])
+    # 2. Danh sách khu vực duy nhất đồng bộ trực tiếp từ danh bạ đại lý (dealers)
+    regions_set = set()
     try:
         dealers = db.query(DealerEntity).all()
         for d in dealers:
             if d.region and d.region.strip():
-                regions_set.add(d.region.strip())
+                regions_set.add(normalize_region_name(d.region.strip()))
     except Exception:
         pass
     for d_data in DEALERS_DB.values():
-        r = d_data.get("region")
+        r = getattr(d_data, "region", None) if not isinstance(d_data, dict) else d_data.get("region")
         if r and r.strip():
-            regions_set.add(r.strip())
+            regions_set.add(normalize_region_name(r.strip()))
+
+    # Fallback dự phòng chỉ khi danh bạ đại lý hoàn toàn chưa có khu vực nào
+    if not regions_set:
+        regions_set = set(["Hà Nội", "Hải Phòng", "TP. HCM", "Đà Nẵng"])
 
     return {
         "salespersons": sorted(salespersons, key=lambda x: x["id"]),
@@ -508,12 +517,14 @@ def create_sales_target(
             if u:
                 emp_name = u.full_name or u.username
             elif payload.employee_id in USERS_DB:
-                emp_name = USERS_DB[payload.employee_id].get("full_name") or USERS_DB[payload.employee_id].get("username")
+                u_obj = USERS_DB[payload.employee_id]
+                emp_name = (getattr(u_obj, "full_name", None) or getattr(u_obj, "username", None)) if not isinstance(u_obj, dict) else (u_obj.get("full_name") or u_obj.get("username"))
             else:
                 emp_name = f"Nhân viên #{payload.employee_id}"
     elif payload.target_type == "region":
         if not payload.region or not payload.region.strip():
             raise HTTPException(status_code=400, detail="Vui lòng nhập tên khu vực.")
+        payload.region = normalize_region_name(payload.region.strip())
 
     # Kiểm tra trùng lặp
     for t in SALES_TARGETS_DB.values():

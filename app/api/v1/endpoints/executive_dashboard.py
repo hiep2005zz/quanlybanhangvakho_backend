@@ -69,6 +69,23 @@ def check_executive_access(current_user: UserResponse):
             detail="Chỉ Quản trị hệ thống và Quản lý kinh doanh mới có quyền truy cập Dashboard điều hành.",
         )
 
+def normalize_region_name(raw: Optional[str]) -> str:
+    if not raw or not str(raw).strip():
+        return "Khác"
+    clean = str(raw).strip()
+    low = clean.lower()
+    if low in ["ha noi", "hanoi", "hn"]:
+        return "Hà Nội"
+    if low in ["tp hcm", "tp.hcm", "tphcm", "ho chi minh", "hcm", "tp. hcm", "sai gon", "saigon", "tp ho chi minh"]:
+        return "TP. HCM"
+    if low in ["da nang", "danang"]:
+        return "Đà Nẵng"
+    if low in ["hai phong", "haiphong"]:
+        return "Hải Phòng"
+    if low in ["can tho", "cantho"]:
+        return "Cần Thơ"
+    return clean
+
 
 @router.get("/executive-metrics", response_model=ExecutiveDashboardResponse)
 def get_executive_metrics(
@@ -225,7 +242,7 @@ def get_executive_metrics(
                 # Khu vực đại lý
                 d_obj = dealers_map.get(o["dealer_id"])
                 reg = getattr(d_obj, "region", None) if d_obj else (d_obj.get("region") if isinstance(d_obj, dict) else None)
-                region_name = reg or "Khác"
+                region_name = normalize_region_name(reg)
                 if region_name not in region_stats:
                     region_stats[region_name] = {"revenue": 0.0, "order_count": 0}
                 region_stats[region_name]["revenue"] += amt
@@ -243,6 +260,24 @@ def get_executive_metrics(
     dealer_overdue_list = []
     total_system_overdue_debt = 0.0
 
+    confirmed_payments_map: Dict[int, float] = {}
+    try:
+        from app.models.payment_collection import PaymentCollectionEntity
+        rows = (
+            db.query(
+                PaymentCollectionEntity.dealer_id,
+                func.sum(PaymentCollectionEntity.amount)
+            )
+            .filter(PaymentCollectionEntity.status == "CONFIRMED")
+            .group_by(PaymentCollectionEntity.dealer_id)
+            .all()
+        )
+        for did, total_amt in rows:
+            if did:
+                confirmed_payments_map[did] = float(total_amt or 0.0)
+    except Exception:
+        pass
+
     for d_id, d in dealers_map.items():
         d_code = getattr(d, "code", None) or (d.get("code") if isinstance(d, dict) else f"DL{d_id:03d}")
         d_name = getattr(d, "name", None) or (d.get("name") if isinstance(d, dict) else f"Đại lý {d_id}")
@@ -254,15 +289,30 @@ def get_executive_metrics(
 
         sale_name = sales_map.get(d_sale_id, "Chưa phân công")
 
-        dealer_orders = [o for o in all_orders if o["dealer_id"] == d_id and o["status"] not in ("PAID", "CANCELLED", "REJECTED")]
+        raw_orders = [o for o in all_orders if o["dealer_id"] == d_id and o["status"] not in ("PAID", "CANCELLED", "REJECTED")]
+        dealer_orders = [
+            {"amount": o["total_amount"], "created_at": o["created_at"]}
+            for o in raw_orders
+        ]
+        dealer_orders.sort(key=lambda x: x["created_at"])
+
+        rem_pay = confirmed_payments_map.get(d_id, 0.0)
+        for ord_it in dealer_orders:
+            if rem_pay > 0:
+                ded = min(ord_it["amount"], rem_pay)
+                ord_it["amount"] -= ded
+                rem_pay -= ded
+
         dealer_debt = 0.0
         dealer_overdue = 0.0
         max_overdue_days = 0
 
-        for o in dealer_orders:
-            amt = o["total_amount"]
+        for ord_it in dealer_orders:
+            amt = ord_it["amount"]
+            if amt <= 0.0001:
+                continue
             dealer_debt += amt
-            dt: datetime = o["created_at"]
+            dt: datetime = ord_it["created_at"]
             if not dt.tzinfo:
                 dt = dt.replace(tzinfo=timezone.utc)
             days_old = max(0, (now - dt).days)
@@ -316,12 +366,6 @@ def get_executive_metrics(
         ))
 
     region_revenue_list: List[RegionRevenueItem] = []
-    # Đảm bảo luôn có các miền chính dù chưa có đơn để biểu đồ cân đối
-    default_regions = ["Miền Bắc", "Miền Trung", "Miền Nam"]
-    for r in default_regions:
-        if r not in region_stats:
-            region_stats[r] = {"revenue": 0.0, "order_count": 0}
-
     total_region_rev = sum(v["revenue"] for v in region_stats.values())
     for r_name, r_data in region_stats.items():
         pct = round((r_data["revenue"] / total_region_rev * 100), 1) if total_region_rev > 0 else 0.0

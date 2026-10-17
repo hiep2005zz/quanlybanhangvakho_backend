@@ -5,11 +5,14 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query, HTTPException, status, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.api.deps import require_roles, get_current_user
 from app.core.database import get_db
 from app.models.dealer import DEALERS_DB, Dealer, save_dealers_db, load_dealers_db
 from app.models.user import USERS_DB, load_users_db
+from app.models.entities import OrderEntity, DealerEntity
+from app.models.payment_collection import PaymentCollectionEntity
 from app.schemas.auth import UserResponse
 from app.services.audit_service import log_audit_event
 
@@ -247,9 +250,27 @@ def get_sale_name(assigned_sale_id: Optional[int]) -> Optional[str]:
     return None
 
 
+def normalize_region_name(raw: Optional[str]) -> str:
+    if not raw or not str(raw).strip():
+        return "Chưa xác định"
+    s = str(raw).strip()
+    low = s.lower()
+    if low in ["ha noi", "hanoi", "hn"]:
+        return "Hà Nội"
+    if low in ["tp hcm", "tp.hcm", "tphcm", "ho chi minh", "hcm", "tp. hcm", "sai gon", "saigon", "tp ho chi minh"]:
+        return "TP. HCM"
+    if low in ["da nang", "danang"]:
+        return "Đà Nẵng"
+    if low in ["hai phong", "haiphong"]:
+        return "Hải Phòng"
+    if low in ["can tho", "cantho"]:
+        return "Cần Thơ"
+    return s
+
+
 def get_region(address: Optional[str]) -> str:
     """
-    Lấy khu vực từ địa chỉ hiện có.
+    Lấy khu vực từ địa chỉ hiện có và chuẩn hóa tên khu vực.
     Ví dụ: '120 Cầu Giấy, Hà Nội' -> 'Hà Nội'
     """
     if not address:
@@ -257,7 +278,7 @@ def get_region(address: Optional[str]) -> str:
 
     parts = [part.strip() for part in address.split(",") if part.strip()]
     if parts:
-        return parts[-1]
+        return normalize_region_name(parts[-1])
 
     return "Chưa xác định"
 
@@ -430,6 +451,7 @@ def get_debt_aging_report(
     assigned_sale_id: Optional[int] = Query(None, description="Lọc theo nhân viên kinh doanh phụ trách"),
     risk_level: Optional[str] = Query(None, description="Lọc theo mức độ rủi ro (CRITICAL, HIGH, WARNING, SAFE)"),
     search: Optional[str] = Query(None, description="Tìm theo mã hoặc tên đại lý"),
+    db: Session = Depends(get_db),
     current_user: UserResponse = Depends(
         require_roles(["admin", "sales_manager", "sales", "accountant"])
     ),
@@ -437,6 +459,7 @@ def get_debt_aging_report(
     """
     Báo cáo công nợ quá hạn theo tuổi nợ cho Kế toán công nợ:
     - Tổng hợp theo 5 nhóm tuổi nợ: Trong hạn, Quá hạn 1-30, 31-60, 61-90, >90 ngày
+    - Tự động cấn trừ các khoản thu tiền đã khớp quỹ (PaymentCollection CONFIRMED) theo FIFO (First In First Out)
     - Phân tích và chỉ ra đại lý có rủi ro cao nhất cần xử lý trước
     - Lọc theo nhân viên phụ trách, mức độ rủi ro, tìm kiếm
     """
@@ -461,6 +484,24 @@ def get_debt_aging_report(
                 sales_list.append({"id": u.id, "name": u.full_name})
     sales_list.sort(key=lambda s: s["name"])
 
+    # Truy vấn tổng tiền đã thu được kế toán xác nhận (PaymentCollection CONFIRMED) theo từng đại lý
+    confirmed_payments_map: Dict[int, float] = {}
+    try:
+        rows = (
+            db.query(
+                PaymentCollectionEntity.dealer_id,
+                func.sum(PaymentCollectionEntity.amount)
+            )
+            .filter(PaymentCollectionEntity.status == "CONFIRMED")
+            .group_by(PaymentCollectionEntity.dealer_id)
+            .all()
+        )
+        for dealer_id, total_amt in rows:
+            if dealer_id:
+                confirmed_payments_map[dealer_id] = float(total_amt or 0.0)
+    except Exception as ex:
+        logger.warning(f"Error querying confirmed payments: {ex}")
+
     # Tính toán công nợ cho từng đại lý
     all_dealers_aging: List[DebtAgingItem] = []
     total_system_debt = 0.0
@@ -476,6 +517,64 @@ def get_debt_aging_report(
         credit_limit = float(getattr(d, "credit_limit", 50000000.0) or 50000000.0)
         allowed_days = int(getattr(d, "overdue_days_allowed", getattr(d, "max_debt_days", 30)) or 30)
         sale_name = get_sale_name(d.assigned_sale_id)
+        total_paid = confirmed_payments_map.get(d.id, 0.0)
+
+        # Quét và gom toàn bộ đơn hàng chưa thanh toán của đại lý này
+        seen_order_codes = set()
+        dealer_orders = []
+
+        try:
+            db_orders = db.query(OrderEntity).filter(OrderEntity.dealer_id == d.id).all()
+            for o_ent in db_orders:
+                st = (o_ent.status or "").upper()
+                if st not in ("PAID", "CANCELLED", "REJECTED"):
+                    c = o_ent.order_code
+                    if c and c not in seen_order_codes:
+                        seen_order_codes.add(c)
+                        dt = o_ent.created_at or now
+                        if isinstance(dt, datetime) and not dt.tzinfo:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        dealer_orders.append({
+                            "order_code": c,
+                            "amount": float(o_ent.total_amount or 0.0),
+                            "created_at": dt,
+                        })
+        except Exception:
+            pass
+
+        for o in ORDERS_DB.values():
+            if o.get("dealer_id") == d.id and str(o.get("status", "")).upper() not in ("PAID", "CANCELLED", "REJECTED"):
+                c = o.get("order_code")
+                if c and c not in seen_order_codes:
+                    seen_order_codes.add(c)
+                    created_at_val = o.get("created_at")
+                    order_date = now
+                    if created_at_val:
+                        try:
+                            if isinstance(created_at_val, str):
+                                order_date = datetime.fromisoformat(created_at_val.replace("Z", "+00:00"))
+                            elif isinstance(created_at_val, datetime):
+                                order_date = created_at_val
+                            if not order_date.tzinfo:
+                                order_date = order_date.replace(tzinfo=timezone.utc)
+                        except Exception:
+                            pass
+                    dealer_orders.append({
+                        "order_code": c,
+                        "amount": float(o.get("total_amount", 0.0) or 0.0),
+                        "created_at": order_date,
+                    })
+
+        # Sắp xếp các đơn theo thứ tự ngày tăng dần (đơn cũ nhất lên đầu để cấn trừ nợ trước theo FIFO)
+        dealer_orders.sort(key=lambda x: x["created_at"])
+
+        # Cấn trừ số tiền đã thu (PaymentCollection CONFIRMED) theo FIFO
+        remaining_payment = total_paid
+        for ord_item in dealer_orders:
+            if remaining_payment > 0:
+                deduct = min(ord_item["amount"], remaining_payment)
+                ord_item["amount"] -= deduct
+                remaining_payment -= deduct
 
         debt_current = 0.0
         debt_overdue_1_30 = 0.0
@@ -487,45 +586,32 @@ def get_debt_aging_report(
         overdue_invoices_count = 0
         total_invoices_count = 0
 
-        # Quét các đơn hàng chưa thanh toán của đại lý này
-        for o in ORDERS_DB.values():
-            if o.get("dealer_id") == d.id and o.get("status") not in ("PAID", "CANCELLED"):
-                total_invoices_count += 1
-                amt = float(o.get("total_amount", 0.0) or 0.0)
-                created_at_val = o.get("created_at")
-                order_date = now
-                if created_at_val:
-                    try:
-                        if isinstance(created_at_val, str):
-                            s = created_at_val.replace("Z", "+00:00")
-                            order_date = datetime.fromisoformat(s)
-                            if not order_date.tzinfo:
-                                order_date = order_date.replace(tzinfo=timezone.utc)
-                        elif isinstance(created_at_val, datetime):
-                            order_date = created_at_val if created_at_val.tzinfo else created_at_val.replace(tzinfo=timezone.utc)
-                    except Exception:
-                        pass
+        for ord_item in dealer_orders:
+            amt = ord_item["amount"]
+            if amt <= 0.0001:
+                continue
 
-                days_old = max(0, (now - order_date).days)
-                if days_old > max_debt_age:
-                    max_debt_age = days_old
+            total_invoices_count += 1
+            days_old = max(0, (now - ord_item["created_at"]).days)
+            if days_old > max_debt_age:
+                max_debt_age = days_old
 
-                if days_old <= allowed_days:
-                    debt_current += amt
+            if days_old <= allowed_days:
+                debt_current += amt
+            else:
+                overdue_days = days_old - allowed_days
+                if overdue_days > max_overdue_days:
+                    max_overdue_days = overdue_days
+                overdue_invoices_count += 1
+
+                if 1 <= overdue_days <= 30:
+                    debt_overdue_1_30 += amt
+                elif 31 <= overdue_days <= 60:
+                    debt_overdue_31_60 += amt
+                elif 61 <= overdue_days <= 90:
+                    debt_overdue_61_90 += amt
                 else:
-                    overdue_days = days_old - allowed_days
-                    if overdue_days > max_overdue_days:
-                        max_overdue_days = overdue_days
-                    overdue_invoices_count += 1
-
-                    if 1 <= overdue_days <= 30:
-                        debt_overdue_1_30 += amt
-                    elif 31 <= overdue_days <= 60:
-                        debt_overdue_31_60 += amt
-                    elif 61 <= overdue_days <= 90:
-                        debt_overdue_61_90 += amt
-                    else:
-                        debt_overdue_over_90 += amt
+                    debt_overdue_over_90 += amt
 
         dealer_current_debt = debt_current + debt_overdue_1_30 + debt_overdue_31_60 + debt_overdue_61_90 + debt_overdue_over_90
         dealer_total_overdue = debt_overdue_1_30 + debt_overdue_31_60 + debt_overdue_61_90 + debt_overdue_over_90
@@ -703,6 +789,7 @@ def search_dealers(
         ge=1,
         description="Số lượng bản ghi mỗi trang"
     ),
+    db: Session = Depends(get_db),
     current_user: UserResponse = Depends(
         require_roles([
             "admin",
@@ -2123,6 +2210,7 @@ def get_dealer_debt_ledger_endpoint(
     assigned_sale_id: Optional[int] = Query(None, description="Lọc theo nhân viên phụ trách"),
     overdue_only: bool = Query(False, description="Lọc riêng các đại lý có nợ quá hạn"),
     search: Optional[str] = Query(None, description="Tìm kiếm theo mã, tên, SĐT đại lý"),
+    ageing_bucket: Optional[str] = Query(None, description="Lọc theo nhóm tuổi nợ (all, 0-30, 31-60, 61-90, over_90, has_debt, settled, overdue)"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "accountant"])),
 ):
@@ -2137,6 +2225,7 @@ def get_dealer_debt_ledger_endpoint(
         assigned_sale_id=assigned_sale_id,
         overdue_only=overdue_only,
         search=search,
+        ageing_bucket=ageing_bucket,
     )
 
 
@@ -2146,6 +2235,7 @@ def export_dealer_debt_ledger_endpoint(
     assigned_sale_id: Optional[int] = Query(None, description="Lọc theo nhân viên phụ trách"),
     overdue_only: bool = Query(False, description="Lọc riêng các đại lý có nợ quá hạn"),
     search: Optional[str] = Query(None, description="Tìm kiếm theo mã, tên, SĐT đại lý"),
+    ageing_bucket: Optional[str] = Query(None, description="Lọc theo nhóm tuổi nợ (all, 0-30, 31-60, 61-90, over_90, has_debt, settled, overdue)"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "accountant"])),
 ):
@@ -2161,6 +2251,7 @@ def export_dealer_debt_ledger_endpoint(
         assigned_sale_id=assigned_sale_id,
         overdue_only=overdue_only,
         search=search,
+        ageing_bucket=ageing_bucket,
     )
     excel_bytes = export_debt_ledger_excel(data)
 

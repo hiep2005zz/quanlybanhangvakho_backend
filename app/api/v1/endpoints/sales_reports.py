@@ -55,6 +55,24 @@ class SalesMultidimensionalResponse(BaseModel):
     can_view_profit: bool
 
 
+def normalize_region_name(raw: Optional[str]) -> str:
+    if not raw or not str(raw).strip() or str(raw).strip() == "Chưa phân vùng":
+        return "Chưa phân vùng"
+    clean = str(raw).strip()
+    low = clean.lower()
+    if low in ["ha noi", "hanoi", "hn"]:
+        return "Hà Nội"
+    if low in ["tp hcm", "tp.hcm", "tphcm", "ho chi minh", "hcm", "tp. hcm", "sai gon", "saigon", "tp ho chi minh"]:
+        return "TP. HCM"
+    if low in ["da nang", "danang"]:
+        return "Đà Nẵng"
+    if low in ["hai phong", "haiphong"]:
+        return "Hải Phòng"
+    if low in ["can tho", "cantho"]:
+        return "Cần Thơ"
+    return clean
+
+
 def check_sales_report_access(current_user: UserResponse) -> bool:
     """
     Kiểm tra quyền truy cập báo cáo doanh số:
@@ -367,7 +385,8 @@ def get_sales_multidimensional_report(
             return str(sale_id), f"NV{sale_id:03d}" if sale_id else "N/A", sale_name, "Kinh doanh"
 
         elif dimension == "region":
-            reg = d_info.get("region") or "Chưa phân vùng"
+            raw_reg = d_info.get("region") or "Chưa phân vùng"
+            reg = normalize_region_name(raw_reg)
             return reg, None, reg, "Địa bàn kinh doanh"
 
         elif dimension == "dealer":
