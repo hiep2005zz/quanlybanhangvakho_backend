@@ -402,3 +402,57 @@ def test_tieu_chi_5_prevent_delete_and_allow_adjustment(accountant_token, sample
     assert inv1_data["paid_amount"] == 0.0
     assert inv1_data["remaining_debt"] == 3000000.0
     assert inv1_data["status"] == "UNPAID"
+
+
+def test_partial_payment_adjustment(accountant_token, sample_dealer_with_invoices):
+    """
+    Kiểm tra chức năng điều chỉnh giảm một phần:
+    - Thu 3,000,000 đ vào hoá đơn 88011.
+    - Kế toán điều chỉnh giảm một phần: 1,000,000 đ.
+    - Hoá đơn phải còn paid_amount = 2,000,000 đ, remaining_debt = 1,000,000 đ.
+    - Trạng thái hoá đơn chuyển thành PARTIALLY_PAID (Thanh toán một phần).
+    - Bút toán điều chỉnh ghi nhận đúng adjustment_amount = 1,000,000 đ.
+    """
+    dealer_id = sample_dealer_with_invoices
+
+    # Ghi nhận phiếu thu 3,000,000 đ
+    create_resp = client.post(
+        "/api/v1/debt-payments",
+        headers={"Authorization": f"Bearer {accountant_token}"},
+        json={
+            "dealer_id": dealer_id,
+            "amount": 3000000.0,
+            "payment_method": "Chuyển khoản",
+            "allocation_mode": "AUTO_FIFO",
+        },
+    )
+    assert create_resp.status_code == 201
+    receipt_id = create_resp.json()["id"]
+
+    # Điều chỉnh giảm một phần: 1,000,000 đ
+    adj_resp = client.post(
+        f"/api/v1/debt-payments/{receipt_id}/adjust",
+        headers={"Authorization": f"Bearer {accountant_token}"},
+        json={
+            "reason": "Điều chỉnh giảm 1,000,000 đ do chiết khấu bổ sung",
+            "adjustment_amount": 1000000.0,
+            "invoice_adjustments": [
+                {"invoice_id": 88011, "amount": 1000000.0}
+            ]
+        },
+    )
+    assert adj_resp.status_code == 201
+    adj_data = adj_resp.json()
+    assert adj_data["adjustment_amount"] == 1000000.0
+    assert "chiết khấu bổ sung" in adj_data["reason"]
+
+    # Kiểm tra hoá đơn 88011: paid = 2,000,000 đ, remaining = 1,000,000 đ, status = PARTIALLY_PAID
+    invs_resp = client.get(
+        f"/api/v1/debt-payments/dealers/{dealer_id}/invoices",
+        headers={"Authorization": f"Bearer {accountant_token}"},
+    )
+    assert invs_resp.status_code == 200
+    inv1_data = next(i for i in invs_resp.json() if i["id"] == 88011)
+    assert inv1_data["paid_amount"] == 2000000.0
+    assert inv1_data["remaining_debt"] == 1000000.0
+    assert inv1_data["status"] == "PARTIALLY_PAID"

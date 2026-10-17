@@ -45,6 +45,11 @@ class FifoPreviewItem(BaseModel):
     new_status_label: str
 
 
+class InvoiceAdjustmentItem(BaseModel):
+    invoice_id: int = Field(..., description="ID của hoá đơn được điều chỉnh")
+    amount: float = Field(..., ge=0, description="Số tiền điều chỉnh giảm cho hoá đơn này (>= 0)")
+
+
 class CreateAdjustmentRequest(BaseModel):
     """
     Tiêu chí 5: Đã ghi nhận thì không xoá, chỉ lập bút toán điều chỉnh.
@@ -52,6 +57,8 @@ class CreateAdjustmentRequest(BaseModel):
     """
     reason: str = Field(..., min_length=1, description="Lý do điều chỉnh (Bắt buộc)")
     adjustment_amount: Optional[float] = Field(default=None, gt=0, description="Số tiền điều chỉnh (mặc định toàn bộ)")
+    invoice_id: Optional[int] = Field(default=None, description="ID hoá đơn điều chỉnh cụ thể (tuỳ chọn)")
+    invoice_adjustments: Optional[List[InvoiceAdjustmentItem]] = Field(default=None, description="Danh sách chi tiết điều chỉnh từng hoá đơn (tuỳ chọn)")
 
 
 class PaymentAllocationResponse(BaseModel):

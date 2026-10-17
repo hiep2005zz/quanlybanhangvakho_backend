@@ -763,6 +763,68 @@ def create_payment_adjustment(
             detail="Khoản thanh toán này đã được lập bút toán điều chỉnh trước đó."
         )
 
+    # Lọc danh sách allocations cần điều chỉnh (nếu có chỉ định hoá đơn cụ thể)
+    target_allocations = receipt.allocations
+    if payload.invoice_id is not None:
+        target_allocations = [a for a in receipt.allocations if a.invoice_id == payload.invoice_id]
+        if not target_allocations:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Hoá đơn ID {payload.invoice_id} không thuộc phiếu thu này."
+            )
+
+    total_cur_allocated = sum(float(alloc.current_allocated_amount or 0.0) for alloc in target_allocations)
+    if total_cur_allocated <= 0.0001:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Khoản thanh toán này không còn số tiền đối trừ nào để điều chỉnh."
+        )
+
+    # Xác định số tiền điều chỉnh
+    has_invoice_adjustments = bool(payload.invoice_adjustments)
+    invoice_adj_map = {}
+    if has_invoice_adjustments:
+        invoice_adj_map = {item.invoice_id: float(item.amount) for item in payload.invoice_adjustments}
+        # Validate từng hoá đơn
+        for inv_id, amt in invoice_adj_map.items():
+            if amt < 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Số tiền điều chỉnh cho hoá đơn {inv_id} không được âm."
+                )
+            matched_alloc = next((a for a in receipt.allocations if a.invoice_id == inv_id), None)
+            if not matched_alloc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Hoá đơn ID {inv_id} không thuộc phiếu thu này."
+                )
+            cur_alloc = float(matched_alloc.current_allocated_amount or 0.0)
+            if amt > cur_alloc + 0.001:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Số tiền điều chỉnh ({amt:,.0f} đ) vượt quá số tiền đã đối trừ của hoá đơn ({cur_alloc:,.0f} đ)."
+                )
+        target_reduce = sum(invoice_adj_map.values())
+        if target_reduce <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Số tiền điều chỉnh giảm phải lớn hơn 0 đ."
+            )
+    elif payload.adjustment_amount is not None:
+        target_reduce = float(payload.adjustment_amount)
+        if target_reduce <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Số tiền điều chỉnh giảm phải lớn hơn 0 đ."
+            )
+        if target_reduce > total_cur_allocated + 0.001:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Số tiền điều chỉnh ({target_reduce:,.0f} đ) không được vượt quá số tiền đã đối trừ ({total_cur_allocated:,.0f} đ)."
+            )
+    else:
+        target_reduce = total_cur_allocated
+
     now_utc = get_utc_now()
     date_prefix = now_utc.strftime("%Y%m%d")
     today_count = db.query(func.count(PaymentAdjustmentEntity.id)).filter(
@@ -778,56 +840,73 @@ def create_payment_adjustment(
     try:
         adjust_amount = 0.0
         revert_details = []
+        remaining_to_reduce = target_reduce
 
-        # Hoàn lại số tiền đối trừ trên từng hoá đơn
-        for alloc in receipt.allocations:
+        # Hoàn lại đúng số tiền đối trừ được yêu cầu trên từng hoá đơn
+        for alloc in target_allocations:
             cur_allocated = float(alloc.current_allocated_amount or 0.0)
-            if cur_allocated > 0:
-                inv = db.query(InvoiceEntity).filter(InvoiceEntity.id == alloc.invoice_id).first()
-                if inv:
-                    # Giảm số tiền đã thu trên hoá đơn
-                    new_paid = max(0.0, float(inv.paid_amount or 0.0) - cur_allocated)
-                    inv.paid_amount = new_paid
-                    inv.remaining_debt = max(0.0, float(inv.total_amount or 0.0) - new_paid)
+            if cur_allocated <= 0:
+                continue
 
-                    # Khôi phục trạng thái chuẩn
-                    due = inv.due_date
-                    if due.tzinfo is None:
-                        due = due.replace(tzinfo=timezone.utc)
+            if has_invoice_adjustments:
+                reduce_for_alloc = invoice_adj_map.get(alloc.invoice_id, 0.0)
+            else:
+                reduce_for_alloc = min(cur_allocated, remaining_to_reduce)
 
+            if reduce_for_alloc <= 0:
+                continue
+
+            inv = db.query(InvoiceEntity).filter(InvoiceEntity.id == alloc.invoice_id).first()
+            if inv:
+                # Giảm số tiền đã thu trên hoá đơn, hoàn lại dư nợ
+                new_paid = max(0.0, float(inv.paid_amount or 0.0) - reduce_for_alloc)
+                inv.paid_amount = new_paid
+                new_remaining = max(0.0, float(inv.total_amount or 0.0) - new_paid)
+                inv.remaining_debt = new_remaining
+                inv.remaining_amount = new_remaining
+
+                # Khôi phục trạng thái chuẩn
+                due = inv.due_date
+                if due.tzinfo is None:
+                    due = due.replace(tzinfo=timezone.utc)
+
+                if new_paid == 0:
+                    inv.status = "OVERDUE" if due < now_utc else "UNPAID"
+                elif inv.remaining_debt > 0.001:
+                    inv.status = "PARTIALLY_PAID"
+                else:
+                    inv.remaining_debt = 0.0
+                    inv.remaining_amount = 0.0
+                    inv.status = "PAID"
+
+                ord_obj = None
+                if inv.order_id:
+                    ord_obj = db.query(OrderEntity).filter(OrderEntity.id == inv.order_id).first()
+                if not ord_obj and inv.order_code:
+                    ord_obj = db.query(OrderEntity).filter(OrderEntity.order_code == inv.order_code).first()
+
+                if ord_obj:
                     if new_paid == 0:
-                        inv.status = "OVERDUE" if due < now_utc else "UNPAID"
-                    elif inv.remaining_debt > 0.001:
-                        inv.status = "PARTIALLY_PAID"
+                        ord_obj.status = "CONFIRMED"
+                    elif inv.remaining_debt > 0:
+                        ord_obj.status = "PARTIAL"
                     else:
-                        inv.remaining_debt = 0.0
-                        inv.status = "PAID"
+                        ord_obj.status = "PAID"
 
-                    ord_obj = None
-                    if inv.order_id:
-                        ord_obj = db.query(OrderEntity).filter(OrderEntity.id == inv.order_id).first()
-                    if not ord_obj and inv.order_code:
-                        ord_obj = db.query(OrderEntity).filter(OrderEntity.order_code == inv.order_code).first()
+                revert_details.append({
+                    "invoice_id": inv.id,
+                    "invoice_code": inv.invoice_code,
+                    "reverted_amount": reduce_for_alloc,
+                    "new_paid_amount": inv.paid_amount,
+                    "new_remaining_debt": inv.remaining_debt,
+                    "new_status": inv.status,
+                })
 
-                    if ord_obj:
-                        if new_paid == 0:
-                            ord_obj.status = "CONFIRMED"
-                        elif inv.remaining_debt > 0:
-                            ord_obj.status = "PARTIAL"
-                        else:
-                            ord_obj.status = "PAID"
-
-                    revert_details.append({
-                        "invoice_id": inv.id,
-                        "invoice_code": inv.invoice_code,
-                        "reverted_amount": cur_allocated,
-                        "new_paid_amount": inv.paid_amount,
-                        "new_remaining_debt": inv.remaining_debt,
-                        "new_status": inv.status,
-                    })
-
-                adjust_amount += cur_allocated
-                alloc.current_allocated_amount = 0.0
+            adjust_amount += reduce_for_alloc
+            alloc.current_allocated_amount = max(0.0, cur_allocated - reduce_for_alloc)
+            remaining_to_reduce -= reduce_for_alloc
+            if not has_invoice_adjustments and remaining_to_reduce <= 0.0001:
+                break
 
         receipt.status = "ADJUSTED"
 
