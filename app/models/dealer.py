@@ -146,7 +146,9 @@ def save_dealers_db():
                 db_dealer.email = d.email
                 db_dealer.address = d.address
                 db_dealer.region = d.region
-                db_dealer.assigned_sale_id = d.assigned_sale_id
+                from app.models.entities import UserEntity
+                valid_user_ids = {u[0] for u in db.query(UserEntity.id).all()}
+                db_dealer.assigned_sale_id = d.assigned_sale_id if d.assigned_sale_id in valid_user_ids else None
                 db_dealer.credit_limit = getattr(d, "credit_limit", getattr(db_dealer, "credit_limit", 0))
                 db_dealer.max_debt_days = getattr(d, "max_debt_days", getattr(db_dealer, "max_debt_days", 30))
                 if hasattr(db_dealer, "overdue_days_allowed"):

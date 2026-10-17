@@ -514,30 +514,23 @@ def search_dealers(
     clean_kw_normalized = keyword_clean.replace("-", "").replace(" ", "").replace("_", "") if keyword_clean else ""
 
     results = []
+    dealers_data_changed = False
 
-    from app.api.v1.endpoints.orders import ORDERS_DB
+    from app.api.v1.endpoints.orders import ORDERS_DB, calculate_dealer_debt_summary
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
 
     for dealer in DEALERS_DB.values():
-        # Tính toán công nợ hiện tại và tuổi nợ
-        current_debt = 0.0
-        max_debt_age = 0
-        for o in ORDERS_DB.values():
-            if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
-                current_debt += o.get("total_amount", 0.0)
-                created_at_str = o.get("created_at")
-                if created_at_str:
-                    try:
-                        order_date = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-                        days_old = (now - order_date).days
-                        if days_old > max_debt_age:
-                            max_debt_age = days_old
-                    except Exception:
-                        pass
-        
-        c_limit = getattr(dealer, "credit_limit", 50000000.0)
-        c_days = getattr(dealer, "max_debt_days", 30)
+        debt_info = calculate_dealer_debt_summary(dealer, ORDERS_DB)
+        current_debt = float(debt_info.get("current_debt", 0.0))
+        max_debt_age = int(debt_info.get("max_debt_age", 0))
+        c_limit = float(debt_info.get("credit_limit", 50000000.0))
+        c_days = int(debt_info.get("max_debt_days", 30))
+        is_over_l = bool(debt_info.get("is_over_limit", False))
+        is_over_d = bool(debt_info.get("is_overdue", False))
+        has_flag = bool(debt_info.get("credit_warning_flag", False))
+        flag_reason = debt_info.get("credit_flag_reason")
+
         if current_debt > c_limit and max_debt_age > c_days:
             debt_status = "Vượt hạn mức & Quá hạn"
         elif current_debt > c_limit:
@@ -632,11 +625,28 @@ def search_dealers(
         # ==========================================
         # 7. LỌC THEO CỜ CẢNH BÁO TÍN DỤNG (S7-04)
         # ==========================================
-        is_over_l = getattr(dealer, "is_over_credit_limit", current_debt > c_limit)
-        is_over_d = getattr(dealer, "is_overdue", max_debt_age > c_days)
-        has_flag = getattr(dealer, "credit_warning_flag", (is_over_l or is_over_d))
-        flag_reason = getattr(dealer, "credit_flag_reason", (debt_status if debt_status != "Trong hạn mức" else None))
+        # Tự động tính toán theo công nợ thực tế thay vì phụ thuộc cờ lưu tĩnh
+        is_over_l = bool(current_debt > c_limit) if (c_limit is not None and c_limit > 0) else False
+        is_over_d = bool(max_debt_age > c_days) if (c_days is not None and c_days > 0) else False
+        has_flag = is_over_l or is_over_d or bool(getattr(dealer, "credit_warning_flag", False))
+
+        reasons = []
+        if is_over_l:
+            reasons.append(f"Vượt hạn mức ({current_debt:,.0f} đ > {c_limit:,.0f} đ)")
+        if is_over_d:
+            reasons.append(f"Quá hạn thanh toán ({max_debt_age} ngày > {c_days} ngày)")
+        flag_reason = " | ".join(reasons) if reasons else getattr(dealer, "credit_flag_reason", None)
         last_eval = getattr(dealer, "last_credit_evaluated_at", None)
+
+        if (getattr(dealer, "is_over_credit_limit", None) != is_over_l or
+            getattr(dealer, "is_overdue", None) != is_over_d or
+            getattr(dealer, "credit_warning_flag", None) != has_flag or
+            getattr(dealer, "credit_flag_reason", None) != flag_reason):
+            dealer.is_over_credit_limit = is_over_l
+            dealer.is_overdue = is_over_d
+            dealer.credit_warning_flag = has_flag
+            dealer.credit_flag_reason = flag_reason
+            dealers_data_changed = True
 
         if credit_status:
             cs = credit_status.lower().strip()
@@ -684,6 +694,9 @@ def search_dealers(
             "warehouse_id": getattr(dealer, "warehouse_id", None),
             "warehouse_name": getattr(dealer, "warehouse_name", None),
         })
+
+    if dealers_data_changed:
+        save_dealers_db()
 
     # Sắp xếp đại lý mới nhất lên đầu (id giảm dần) để khi tạo mới hiển thị ngay lập tức ở trang 1
     results.sort(key=lambda d: d["id"], reverse=True)

@@ -154,27 +154,34 @@ def evaluate_dealer_credit_flags(
     - Ghi nhận Audit Log nếu có thay đổi trạng thái cờ.
     """
     from app.api.v1.endpoints.orders import ORDERS_DB, calculate_dealer_debt_summary
+    load_dealers_db()
     dealer = DEALERS_DB.get(dealer_id)
     db_dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
-    if not dealer and not db_dealer:
-        load_dealers_db()
-        dealer = DEALERS_DB.get(dealer_id)
-        db_dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
     if not db_dealer and not dealer:
         raise ValueError(f"Không tìm thấy đại lý có ID {dealer_id}")
 
     # Đồng bộ thông tin dealer object
-    if not dealer and db_dealer:
-        dealer = Dealer(
-            id=db_dealer.id,
-            code=db_dealer.code,
-            name=db_dealer.name,
-            credit_limit=db_dealer.credit_limit or 50000000.0,
-            max_debt_days=db_dealer.max_debt_days or 30,
-            overdue_days_allowed=db_dealer.overdue_days_allowed or db_dealer.max_debt_days or 30,
-            status=db_dealer.status or "Đang hoạt động",
-        )
-        DEALERS_DB[dealer.id] = dealer
+    if db_dealer:
+        if not dealer:
+            dealer = Dealer(
+                id=db_dealer.id,
+                code=db_dealer.code,
+                name=db_dealer.name,
+                credit_limit=float(db_dealer.credit_limit or 50000000.0),
+                max_debt_days=int(db_dealer.max_debt_days or 30),
+                overdue_days_allowed=int(db_dealer.overdue_days_allowed or db_dealer.max_debt_days or 30),
+                status=db_dealer.status or "Đang hoạt động",
+            )
+            DEALERS_DB[dealer.id] = dealer
+        else:
+            if db_dealer.credit_limit is not None:
+                dealer.credit_limit = float(db_dealer.credit_limit)
+            if db_dealer.max_debt_days is not None:
+                dealer.max_debt_days = int(db_dealer.max_debt_days)
+            if db_dealer.overdue_days_allowed is not None:
+                dealer.overdue_days_allowed = int(db_dealer.overdue_days_allowed)
+            if db_dealer.status:
+                dealer.status = db_dealer.status
 
     debt_info = calculate_dealer_debt_summary(dealer, ORDERS_DB)
     current_debt = float(debt_info.get("current_debt", 0.0))

@@ -343,6 +343,18 @@ def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
     remaining_credit = max(0.0, credit_limit - current_debt)
     is_overdue = max_debt_age > allowed_days
     is_over_limit = current_debt > credit_limit
+    has_warning_flag = is_over_limit or is_overdue or bool(getattr(dealer, "credit_warning_flag", False))
+    reasons = []
+    if is_over_limit:
+        reasons.append(f"Vượt hạn mức ({current_debt:,.0f} đ > {credit_limit:,.0f} đ)")
+    if is_overdue:
+        reasons.append(f"Quá hạn thanh toán ({max_debt_age} ngày > {allowed_days} ngày)")
+    warning_reason = " | ".join(reasons) if reasons else getattr(dealer, "credit_flag_reason", None)
+
+    dealer.is_over_credit_limit = is_over_limit
+    dealer.is_overdue = is_overdue
+    dealer.credit_warning_flag = has_warning_flag
+    dealer.credit_flag_reason = warning_reason
 
     res_dict = {
         "dealer_id": dealer.id,
@@ -360,8 +372,8 @@ def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
         "max_debt_age": max_debt_age,
         "is_overdue": is_overdue,
         "is_over_limit": is_over_limit,
-        "credit_warning_flag": getattr(dealer, "credit_warning_flag", is_over_limit or is_overdue),
-        "credit_flag_reason": getattr(dealer, "credit_flag_reason", None),
+        "credit_warning_flag": has_warning_flag,
+        "credit_flag_reason": warning_reason,
         "last_credit_evaluated_at": getattr(dealer, "last_credit_evaluated_at", None),
         "over_limit_action": "REQUIRE_APPROVAL",
         "overdue_action": "BLOCK",
