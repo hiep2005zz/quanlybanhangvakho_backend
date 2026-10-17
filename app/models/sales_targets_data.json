@@ -1,0 +1,232 @@
+{
+  "1": {
+    "id": 1,
+    "target_type": "salesperson",
+    "employee_id": 3,
+    "employee_name": "Trần Bán Hàng",
+    "region": "Khu vực Miền Bắc",
+    "month_year": "2026-10",
+    "target_amount": 50000000.0,
+    "is_locked": false,
+    "note": "",
+    "created_by": "sales_manager",
+    "created_at": "2026-10-01T08:00:00Z",
+    "updated_at": "2026-11-19T14:48:57.355587+00:00",
+    "audit_logs": []
+  },
+  "2": {
+    "id": 2,
+    "target_type": "salesperson",
+    "employee_id": 3,
+    "employee_name": "Trần Bán Hàng",
+    "region": "Khu vực Miền Bắc",
+    "month_year": "2026-09",
+    "target_amount": 55000000.0,
+    "is_locked": true,
+    "note": "Chỉ tiêu tháng 9 đã qua kỳ chốt sổ",
+    "created_by": "sales_manager",
+    "created_at": "2026-09-01T08:00:00Z",
+    "updated_at": "2026-10-17T12:07:41.694583+00:00",
+    "audit_logs": [
+      {
+        "modified_at": "2026-10-16T13:35:50.220018+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 45000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-16T13:36:10.779022+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-16T13:41:53.448843+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-16T13:53:38.685411+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-16T14:03:02.342633+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-16T14:28:56.976166+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-16T15:03:06.535658+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-11-16T15:36:11.160643+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T05:39:25.808260+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T05:54:18.179993+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T09:04:04.587777+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T09:15:41.150037+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T09:19:23.564369+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T09:23:00.384526+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T09:25:54.615985+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T10:05:58.881328+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T10:34:12.565213+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T11:03:59.658121+00:00",
+        "modified_by_id": 1,
+        "modified_by_name": "Đào Ngọc Hiệp",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "zzz"
+      },
+      {
+        "modified_at": "2026-10-17T11:18:01.227356+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T11:23:51.457162+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T11:31:33.833873+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T11:51:26.633892+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      },
+      {
+        "modified_at": "2026-10-17T12:07:41.694569+00:00",
+        "modified_by_id": 2,
+        "modified_by_name": "Phạm Trưởng Phòng Sales",
+        "old_target_amount": 55000000.0,
+        "new_target_amount": 55000000.0,
+        "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+      }
+    ]
+  },
+  "3": {
+    "id": 3,
+    "target_type": "region",
+    "employee_id": null,
+    "employee_name": null,
+    "region": "Hà Nội",
+    "month_year": "2026-10",
+    "target_amount": 150000000.0,
+    "is_locked": false,
+    "note": "Chỉ tiêu khu vực Hà Nội",
+    "created_by": "sales_manager",
+    "created_at": "2026-10-01T08:00:00Z",
+    "updated_at": "2026-10-01T08:00:00Z",
+    "audit_logs": []
+  }
+}

@@ -133,6 +133,19 @@ class UpdateThresholdRequest(BaseModel):
     min_stock: int = Field(..., ge=0)
 
 
+class BulkApplyThresholdRequest(BaseModel):
+    min_stock: int = Field(..., ge=0)
+    warehouse_id: Optional[str] = "ALL"
+
+
+class BulkApplyThresholdResponse(BaseModel):
+    success: bool = True
+    message: str
+    updated_count: int
+    min_stock: int
+    warehouse_id: str
+
+
 class LowStockAlertSummary(BaseModel):
     total_low_stock: int
     total_alerts: int = 0
