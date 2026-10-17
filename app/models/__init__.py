@@ -32,3 +32,4 @@ from app.models.warehouse import (
 )
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
+from app.models.return_order import ReturnOrderEntity, ReturnOrderItemEntity

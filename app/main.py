@@ -70,6 +70,8 @@ app.include_router(inventory_reports.router, prefix="/api/v1/inventory", tags=["
 app.include_router(deliveries.router, prefix="/api/v1/deliveries", tags=["Deliveries"])
 app.include_router(stock_adjustments.router, prefix="/api/v1/stock-adjustments", tags=["Stock Adjustments"])
 app.include_router(payment_collections.router, prefix="/api/v1/payment-collections", tags=["Payment Collections"])
+from app.api.v1.endpoints import return_orders
+app.include_router(return_orders.router, prefix="/api/v1/return-orders", tags=["Return Orders / RMA"])
 
 # Mount static folder for user avatars / media uploads
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
