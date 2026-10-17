@@ -20,7 +20,8 @@ from app.services.inventory_turnover_service import (
 
 router = APIRouter()
 
-ALLOWED_REPORT_ROLES = ["admin", "warehouse_manager", "warehouse", "sales_manager", "accountant"]
+# Phân quyền nghiêm ngặt: Chỉ Quản trị viên (admin) và Quản lý kho (warehouse_manager) được xem Báo cáo Tồn kho & Vòng quay.
+ALLOWED_REPORT_ROLES = ["admin", "warehouse_manager"]
 
 
 @router.get("/turnover-report/summary", response_model=TurnoverSummaryResponse)
