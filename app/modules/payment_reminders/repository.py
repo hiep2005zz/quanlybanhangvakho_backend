@@ -1,9 +1,11 @@
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func
+from sqlalchemy import case, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.entities import DealerEntity, OrderEntity
 from app.models.invoice import InvoiceEntity
 from app.modules.payment_reminders.config import (
@@ -16,6 +18,11 @@ from app.modules.payment_reminders.models import PaymentReminderLog
 REMINDER_STATUSES = {"UNPAID", "PARTIAL", "PARTIALLY_PAID", "OVERDUE"}
 REMINDER_TYPES = {"DUE_SOON_3D", "OVERDUE"}
 CHANNELS = {"email", "in_app"}
+SMTP_CONFIGURATION_ERROR = "RuntimeError: SMTP is not configured"
+
+
+def _smtp_is_configured() -> bool:
+    return bool(settings.MAIL_SERVER and settings.MAIL_USERNAME and settings.MAIL_PASSWORD)
 
 
 def _invoice_due_date(invoice: InvoiceEntity) -> date:
@@ -150,12 +157,29 @@ def claim_reminder(
             PaymentReminderLog.channel == channel,
             PaymentReminderLog.reminder_date == reminder_date,
             PaymentReminderLog.status == "failed",
-            PaymentReminderLog.attempts < MAX_SEND_ATTEMPTS,
+            or_(
+                PaymentReminderLog.attempts < MAX_SEND_ATTEMPTS,
+                (
+                    (PaymentReminderLog.channel == "email")
+                    & (PaymentReminderLog.error_message.like(f"{SMTP_CONFIGURATION_ERROR}%"))
+                    & _smtp_is_configured()
+                ),
+            ),
         )
         .update(
             {
                 PaymentReminderLog.status: "pending",
                 PaymentReminderLog.error_message: None,
+                PaymentReminderLog.attempts: case(
+                    (
+                        (PaymentReminderLog.attempts >= MAX_SEND_ATTEMPTS)
+                        & (PaymentReminderLog.channel == "email")
+                        & (PaymentReminderLog.error_message.like(f"{SMTP_CONFIGURATION_ERROR}%"))
+                        & _smtp_is_configured(),
+                        0,
+                    ),
+                    else_=PaymentReminderLog.attempts,
+                ),
                 PaymentReminderLog.updated_at: datetime.now(timezone.utc),
             },
             synchronize_session=False,
@@ -178,13 +202,20 @@ def claim_reminder(
     )
 
 
-def failed_reminders(db: Session, reminder_date: date) -> list[PaymentReminderLog]:
+def failed_reminders(db: Session, as_of_date: date) -> list[PaymentReminderLog]:
     return (
         db.query(PaymentReminderLog)
         .filter(
-            PaymentReminderLog.reminder_date == reminder_date,
+            PaymentReminderLog.reminder_date < as_of_date,
             PaymentReminderLog.status == "failed",
-            PaymentReminderLog.attempts < MAX_SEND_ATTEMPTS,
+            or_(
+                PaymentReminderLog.attempts < MAX_SEND_ATTEMPTS,
+                (
+                    (PaymentReminderLog.channel == "email")
+                    & (PaymentReminderLog.error_message.like(f"{SMTP_CONFIGURATION_ERROR}%"))
+                    & _smtp_is_configured()
+                ),
+            ),
         )
         .all()
     )

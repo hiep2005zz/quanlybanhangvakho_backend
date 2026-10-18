@@ -27,8 +27,9 @@ def _process_invoice_reminder(
     reminder_type: str,
     reminder_date: date,
     summary: dict[str, int | bool],
+    channels: tuple[str, ...] = CHANNELS,
 ) -> None:
-    for channel in CHANNELS:
+    for channel in channels:
         invoice = repository.get_eligible_invoice(
             db, invoice_id, reminder_type, reminder_date, OVERDUE_REPEAT_DAILY
         )
@@ -113,6 +114,26 @@ def run_daily_reminders(
     session = db or SessionLocal()
     reminder_date = today or today_in_ict()
     try:
+        failed_reminders = repository.failed_reminders(session, reminder_date)
+        for log in failed_reminders:
+            invoice = repository.get_eligible_invoice(
+                session,
+                log.invoice_id,
+                log.reminder_type,
+                log.reminder_date,
+                OVERDUE_REPEAT_DAILY,
+            )
+            if invoice is None:
+                continue
+            _process_invoice_reminder(
+                session,
+                log.invoice_id,
+                log.reminder_type,
+                log.reminder_date,
+                summary,
+                channels=(log.channel,),
+            )
+
         due_invoices = repository.select_due_invoices(
             session,
             reminder_date,

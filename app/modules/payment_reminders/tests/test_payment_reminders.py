@@ -254,6 +254,81 @@ def test_run_is_idempotent_and_retries_only_failed_channel(db_session, monkeypat
     assert db_session.query(PaymentReminderNotification).count() == 1
 
 
+def test_run_retries_previous_day_failed_email(db_session, monkeypatch):
+    reminder_date = date(2026, 10, 16)
+    dealer = add_dealer(db_session)
+    invoice = add_invoice(
+        db_session,
+        dealer,
+        invoice_code="PREVIOUS-DAY-RETRY",
+        due_date=reminder_date + timedelta(days=3),
+    )
+    log_id = service.repository.claim_reminder(
+        db_session,
+        invoice.id,
+        dealer.id,
+        "DUE_SOON_3D",
+        "email",
+        reminder_date,
+    )
+    service.repository.begin_attempt(db_session, log_id)
+    service.repository.set_log_status(
+        db_session, log_id, "failed", error_message="RuntimeError: SMTP temporarily unavailable"
+    )
+    email_attempts = []
+    monkeypatch.setattr(notifiers, "send_email_reminder", lambda *_args: email_attempts.append(True))
+
+    summary = service.run_daily_reminders(
+        db_session, today=reminder_date + timedelta(days=1)
+    )
+
+    log = db_session.get(PaymentReminderLog, log_id)
+    assert summary["sent"] == 1
+    assert email_attempts == [True]
+    assert log.status == "sent"
+    assert log.attempts == 2
+    assert db_session.query(PaymentReminderNotification).count() == 0
+
+
+def test_configured_smtp_can_retry_previously_exhausted_configuration_failure(
+    db_session, monkeypatch
+):
+    today = date(2026, 10, 16)
+    dealer = add_dealer(db_session)
+    invoice = add_invoice(
+        db_session,
+        dealer,
+        invoice_code="SMTP-CONFIG-RECOVERY",
+        due_date=today + timedelta(days=3),
+    )
+    log_id = service.repository.claim_reminder(
+        db_session, invoice.id, dealer.id, "DUE_SOON_3D", "email", today
+    )
+    db_session.query(PaymentReminderLog).filter(
+        PaymentReminderLog.id == log_id
+    ).update(
+        {
+            PaymentReminderLog.status: "failed",
+            PaymentReminderLog.attempts: 3,
+            PaymentReminderLog.error_message: (
+                "RuntimeError: SMTP is not configured; payment reminder email was not sent"
+            ),
+        }
+    )
+    db_session.commit()
+    monkeypatch.setattr(notifiers.settings, "MAIL_SERVER", "smtp.test")
+    monkeypatch.setattr(notifiers.settings, "MAIL_USERNAME", "sender@example.com")
+    monkeypatch.setattr(notifiers.settings, "MAIL_PASSWORD", "configured")
+    monkeypatch.setattr(notifiers, "send_email_reminder", lambda *_args: None)
+
+    summary = service.run_daily_reminders(db_session, today=today)
+
+    log = db_session.get(PaymentReminderLog, log_id)
+    assert summary["sent"] == 2
+    assert log.status == "sent"
+    assert log.attempts == 1
+
+
 def test_missing_email_skips_email_but_keeps_in_app(db_session, monkeypatch):
     today = date(2026, 10, 16)
     dealer = add_dealer(db_session, email=None)
