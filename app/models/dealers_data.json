@@ -22,7 +22,7 @@
     "is_overdue": true,
     "credit_warning_flag": true,
     "credit_flag_reason": "Quá hạn thanh toán: khoản nợ 1 ngày >= 1 ngày cho phép",
-    "last_credit_evaluated_at": "2026-10-18T10:44:30.540000",
+    "last_credit_evaluated_at": "2026-10-18T12:11:47.630000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -49,7 +49,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-18T10:44:30.600000",
+    "last_credit_evaluated_at": "2026-10-18T12:11:47.687000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -75,8 +75,8 @@
     "is_over_credit_limit": true,
     "is_overdue": true,
     "credit_warning_flag": true,
-    "credit_flag_reason": "Vượt hạn mức công nợ: 29,412,000 đ > 500,000 đ | Quá hạn thanh toán: khoản nợ 1 ngày >= 1 ngày cho phép",
-    "last_credit_evaluated_at": "2026-10-18T10:44:30.633000",
+    "credit_flag_reason": "Vượt hạn mức công nợ: 29,792,000 đ > 500,000 đ | Quá hạn thanh toán: khoản nợ 1 ngày >= 1 ngày cho phép",
+    "last_credit_evaluated_at": "2026-10-18T12:12:33.983000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -103,7 +103,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-18T10:44:30.663000",
+    "last_credit_evaluated_at": "2026-10-18T12:11:47.747000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -129,8 +129,8 @@
     "is_over_credit_limit": true,
     "is_overdue": true,
     "credit_warning_flag": true,
-    "credit_flag_reason": "Vượt hạn mức công nợ: 2,459,000 đ > 50,000 đ | Quá hạn thanh toán: khoản nợ 1 ngày >= 1 ngày cho phép",
-    "last_credit_evaluated_at": "2026-10-18T10:44:30.691173Z",
+    "credit_flag_reason": "Vượt hạn mức công nợ: 3,929,000 đ > 50,000 đ | Quá hạn thanh toán: khoản nợ 1 ngày >= 1 ngày cho phép",
+    "last_credit_evaluated_at": "2026-10-18T12:16:11.986417Z",
     "warehouse_id": null,
     "warehouse_name": null
   }

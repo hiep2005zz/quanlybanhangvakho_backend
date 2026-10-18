@@ -1,0 +1,9 @@
+{
+  "id": 1,
+  "over_limit_action": "BLOCK",
+  "overdue_action": "BLOCK",
+  "auto_eval_enabled": true,
+  "last_run_at": "2026-10-18T12:11:47.797000",
+  "updated_at": "2026-10-18T12:16:19.120000",
+  "updated_by": "Đào Ngọc Hiệp"
+}
