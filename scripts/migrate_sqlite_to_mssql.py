@@ -14,7 +14,7 @@ SQLITE_DB_PATH = BASE_DIR / "quanlybanhang.db"
 
 MSSQL_CONN_STR = (
     "DRIVER={ODBC Driver 17 for SQL Server};"
-    "SERVER=localhost\\TRANHIEU;"
+    "SERVER=(localdb)\\MSSQLLocalDB;"
     "DATABASE=quanlybanhang;"
     "Trusted_Connection=yes;"
 )
