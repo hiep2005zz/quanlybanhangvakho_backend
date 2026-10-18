@@ -13,10 +13,14 @@ from app.schemas.auth import UserResponse
 from app.models.goods_receipt import WarehouseEntity
 from app.models.warehouse import WarehouseLocationEntity, LocationStockEntity, WarehouseZoneEntity, WarehouseRackEntity
 from app.models.entities import ProductEntity, DealerEntity, OrderEntity, WarehouseStockEntity
+from app.models.user import USERS_DB
+from app.core.rbac import ROLE_DETAILS
+from app.models.dealer import load_dealers_db
 from app.schemas.warehouse import (
     WarehouseCreate,
     WarehouseUpdate,
     WarehouseResponse,
+    WarehouseKeeperItem,
     WarehouseLocationCreate,
     WarehouseLocationUpdate,
     WarehouseLocationResponse,
@@ -184,6 +188,70 @@ def create_warehouse(
         total_products_count=0,
         total_stock_quantity=0,
     )
+
+
+@router.get("/keepers", response_model=List[WarehouseKeeperItem])
+def get_warehouse_keepers(
+    search: Optional[str] = Query(None, description="Tìm kiếm thủ kho theo họ tên, username, SĐT, kho"),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_VIEW_ROLES)),
+):
+    """
+    Lấy danh sách các nhân sự thủ kho trong phân quyền hệ thống (RBAC):
+    - Thủ kho (warehouse)
+    Chỉ lấy người dùng có vai trò Thủ kho.
+    """
+    try:
+        load_dealers_db()
+    except Exception:
+        pass
+
+    warehouse_roles = {"warehouse"}
+    results: List[WarehouseKeeperItem] = []
+
+    for u in USERS_DB.values():
+        if not u.is_active or getattr(u, "status", "ACTIVE") != "ACTIVE":
+            continue
+        roles = set(u.get_roles())
+        if not (roles & warehouse_roles):
+            continue
+        primary_role = "warehouse"
+        role_info = ROLE_DETAILS.get(primary_role, {})
+        role_title = role_info.get("title", "Thủ kho")
+        phone = getattr(u, "phone", None)
+        email = getattr(u, "email", None)
+        branch = getattr(u, "branch", None) or "Chưa phân công"
+
+        if search and search.strip():
+            term = search.strip().lower()
+            match = (
+                term in u.username.lower()
+                or term in (u.full_name or "").lower()
+                or term in (phone or "").lower()
+                or term in (email or "").lower()
+                or term in branch.lower()
+                or term in role_title.lower()
+            )
+            if not match:
+                continue
+
+        results.append(
+            WarehouseKeeperItem(
+                id=u.id,
+                username=u.username,
+                full_name=u.full_name or u.username,
+                role=primary_role,
+                roles=u.get_roles(),
+                role_title=role_title,
+                phone=phone,
+                email=email,
+                branch=branch,
+                badge_color=role_info.get("badge_color", "#059669"),
+                is_active=True,
+            )
+        )
+
+    results.sort(key=lambda item: item.full_name.lower())
+    return results
 
 
 @router.get("/{warehouse_id}", response_model=WarehouseResponse)
