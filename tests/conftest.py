@@ -108,6 +108,10 @@ def reset_test_state():
             db.query(PriceBookItemEntity).filter(PriceBookItemEntity.price_book_id.in_(test_pb_ids)).delete(synchronize_session=False)
             db.query(PriceBookEntity).filter(PriceBookEntity.id.in_(test_pb_ids)).delete(synchronize_session=False)
 
+        # Xóa các phiếu thu phát sinh để không làm sai lệch tính toán công nợ giữa các test
+        from app.models.payment_collection import PaymentCollectionEntity
+        db.query(PaymentCollectionEntity).delete(synchronize_session=False)
+
         db.commit()
 
         # Đặt lại trạng thái ACTIVE, vai trò gốc và mật khẩu chuẩn '123' cho các user hệ thống
@@ -246,6 +250,8 @@ def reset_test_state():
             ws.reserved_stock = 0
             if ws.actual_stock is None or ws.actual_stock > 150 or ws.actual_stock < 50:
                 ws.actual_stock = 120
+        from app.models.payment_collection import PaymentCollectionEntity
+        cleanup_db.query(PaymentCollectionEntity).delete(synchronize_session=False)
         cleanup_db.commit()
 
         from app.models.entities import DealerEntity

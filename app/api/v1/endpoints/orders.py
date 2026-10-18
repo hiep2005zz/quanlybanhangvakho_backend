@@ -23,7 +23,7 @@ from app.models.entities import (
 from typing import List, Optional, Union
 from datetime import date, datetime, timezone, timedelta
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status, status as http_status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, status as http_status, Request, Response, Query
 from sqlalchemy import func, case, or_, and_
 from sqlalchemy.orm import Session
 from app.db.init_db import _ensure_legacy_columns
@@ -462,9 +462,13 @@ def _get_customer_dealer(current_user: UserResponse):
 
 @router.get("/dealers")
 def get_order_dealers(
+    search: Optional[str] = Query(None, description="Tìm kiếm theo mã, tên, SĐT hoặc địa chỉ đại lý"),
+    page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
+    page_size: Optional[int] = Query(None, ge=1, le=100, description="Số lượng đại lý mỗi trang"),
+    response: Response = None,
     current_user: UserResponse = Depends(require_permission(Permission.ORDER_WRITE.value))
 ):
-    """Return dealers available for order entry, restricted to the assigned salesperson or customer."""
+    """Return dealers available for order entry, restricted to the assigned salesperson or customer, with search and pagination support."""
     load_dealers_db()
     dealers = list(DEALERS_DB.values())
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
@@ -482,8 +486,30 @@ def get_order_dealers(
             )
         dealers = [dealer for dealer in dealers if dealer.assigned_sale_id == assigned_user.id]
 
+    # Tìm kiếm theo search query nếu có
+    if search and search.strip():
+        q = search.strip().lower()
+        dealers = [
+            d for d in dealers
+            if (
+                q in (getattr(d, "name", "") or "").lower()
+                or q in (getattr(d, "code", "") or "").lower()
+                or q in (getattr(d, "phone", "") or "").lower()
+                or q in (getattr(d, "address", "") or "").lower()
+            )
+        ]
+
+    sorted_dealers = sorted(dealers, key=lambda item: (item.name or "").lower())
+    total_count = len(sorted_dealers)
+
+    if page is not None and page_size is not None:
+        offset = (page - 1) * page_size
+        paged_dealers = sorted_dealers[offset:offset + page_size]
+    else:
+        paged_dealers = sorted_dealers
+
     res = []
-    for dealer in sorted(dealers, key=lambda item: item.name.lower()):
+    for dealer in paged_dealers:
         debt_info = calculate_dealer_debt_summary(dealer, ORDERS_DB)
         res.append({
             "id": dealer.id,
@@ -504,6 +530,14 @@ def get_order_dealers(
             "is_overdue": debt_info["is_overdue"],
             "is_over_limit": debt_info["is_over_limit"],
         })
+
+    if response is not None:
+        response.headers["X-Total-Count"] = str(total_count)
+        if page is not None and page_size is not None:
+            response.headers["X-Page"] = str(page)
+            response.headers["X-Page-Size"] = str(page_size)
+            response.headers["X-Has-More"] = "true" if (page * page_size) < total_count else "false"
+
     return res
 
 @router.get("/dealers/{dealer_id}/credit-info", response_model=DealerCreditInfoResponse)

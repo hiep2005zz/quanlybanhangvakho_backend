@@ -345,7 +345,12 @@ def get_executive_metrics(
     low_stock_count = 0
     try:
         effective_min = func.coalesce(WarehouseStockEntity.min_stock, ProductEntity.min_stock, 10)
-        res = db.query(WarehouseStockEntity).filter(WarehouseStockEntity.actual_stock <= effective_min).count()
+        res = (
+            db.query(WarehouseStockEntity)
+            .join(ProductEntity, WarehouseStockEntity.product_id == ProductEntity.id)
+            .filter(WarehouseStockEntity.actual_stock <= effective_min)
+            .count()
+        )
         low_stock_count = res
     except Exception:
         # Fallback tính theo ProductEntity
