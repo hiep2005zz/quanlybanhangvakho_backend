@@ -394,16 +394,26 @@ def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
         pass
     return res_dict
 
-def validate_dealer_overdue_debt(dealer, orders_db: dict, db: Optional[Session] = None) -> dict:
+def validate_dealer_overdue_debt(
+    dealer,
+    orders_db: dict,
+    db: Optional[Session] = None,
+    is_admin: bool = False,
+    is_customer: bool = False,
+    skip_policy_block: bool = False,
+) -> dict:
     """
     S7-04 (AC2): Kiểm tra hạn mức công nợ & nợ quá hạn theo cấu hình chính sách công nợ:
-    - Nếu overdue_action == 'BLOCK' và có nợ quá hạn: Bắt buộc chặn đứng luồng tạo đơn (HTTP 400).
-    - Nếu over_limit_action == 'BLOCK' và đại lý đang vượt hạn mức: Bắt buộc chặn đứng luồng tạo đơn (HTTP 400).
-    - Nếu cấu hình là 'REQUIRE_APPROVAL': Cho phép đi tiếp để đánh dấu đơn Cần duyệt (S4-05).
+    - Ở trang admin (Admin hoặc nhân viên tạo đơn): không bị chặn bởi cấu hình (skip_policy_block=True hoặc is_admin=True).
+    - Chỉ áp dụng cấu hình CHẶN khi mua hàng ở trang đại lý (is_customer) hoặc khi không skip_policy_block.
     """
     from app.services.credit_policy_service import get_credit_policy_config
     debt_summary = calculate_dealer_debt_summary(dealer, orders_db)
     
+    # Nếu là Admin hoặc được cấu hình bỏ qua chặn cấu hình công nợ ở trang admin:
+    if is_admin or skip_policy_block:
+        return debt_summary
+
     # Lấy cấu hình chính sách
     config = None
     if db:
@@ -1433,7 +1443,8 @@ def create_order(
         )
 
     # 3. TIÊU CHÍ 3 (Hard Block): Kiểm tra nợ quá hạn trước khi kiểm tra tổng hạn mức công nợ (Tiêu chí 2)
-    debt_summary = validate_dealer_overdue_debt(dealer, ORDERS_DB, db=db)
+    is_admin = any(r.lower() == "admin" for r in user_roles) or (current_user.role and current_user.role.lower() == "admin")
+    debt_summary = validate_dealer_overdue_debt(dealer, ORDERS_DB, db=db, is_admin=is_admin, is_customer=is_customer)
     current_debt = debt_summary["current_debt"]
     credit_limit = debt_summary["credit_limit"]
     overdue_days_allowed = debt_summary["overdue_days_allowed"]
@@ -1624,41 +1635,47 @@ def create_order(
     from app.services.credit_policy_service import get_credit_policy_config
     policy_cfg = get_credit_policy_config(db)
     is_dealer_over_limit = (current_debt + final_total_amount) > credit_limit or over_limit or (current_debt > credit_limit) or bool(getattr(dealer, 'is_over_credit_limit', False)) or (bool(getattr(dealer, 'credit_warning_flag', False)) and 'vượt hạn mức' in (getattr(dealer, 'credit_flag_reason', '') or '').lower())
-    if is_dealer_over_limit:
-        if policy_cfg.over_limit_action == "BLOCK":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Đại lý '{dealer.name}' vượt hạn mức công nợ cho phép (Tổng nợ sau đơn {current_debt + final_total_amount:,.0f} đ > hạn mức {credit_limit:,.0f} đ). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
-            )
-        else:
-            requires_approval = True
-            approval_reasons.append(
-                f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
-            )
-    if is_overdue:
-        if policy_cfg.overdue_action == "BLOCK":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Đại lý '{dealer.name}' đang có khoản nợ quá hạn {max_debt_age} ngày (vượt quá {overdue_days_allowed} ngày cho phép). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
-            )
-        else:
-            requires_approval = True
-            approval_reasons.append(
-                f"Đại lý có khoản nợ quá hạn ({max_debt_age} ngày > {overdue_days_allowed} ngày cho phép) - Chuyển sang phê duyệt theo chính sách công nợ"
-            )
+    if is_admin:
+        # Trang admin: Admin tạo đơn không bị chặn bởi cấu hình và không cần duyệt do nợ
+        pass
+    else:
+        if is_dealer_over_limit:
+            if policy_cfg.over_limit_action == "BLOCK":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Đại lý '{dealer.name}' vượt hạn mức công nợ cho phép (Tổng nợ sau đơn {current_debt + final_total_amount:,.0f} đ > hạn mức {credit_limit:,.0f} đ). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
+                )
+            else:
+                requires_approval = True
+                approval_reasons.append(
+                    f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
+                )
+        if is_overdue:
+            if policy_cfg.overdue_action == "BLOCK":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Đại lý '{dealer.name}' đang có khoản nợ quá hạn {max_debt_age} ngày (vượt quá {overdue_days_allowed} ngày cho phép). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
+                )
+            else:
+                requires_approval = True
+                approval_reasons.append(
+                    f"Đại lý có khoản nợ quá hạn ({max_debt_age} ngày > {overdue_days_allowed} ngày cho phép) - Chuyển sang phê duyệt theo chính sách công nợ"
+                )
 
     order_id = _allocate_order_id(db)
 
     order_code = f"ORD{order_id:05d}"
     now_str = datetime.now(timezone.utc).isoformat()
     # Nếu là Customer (Đại lý tự đặt) hoặc vi phạm chính sách công nợ / chiết khấu: PENDING_APPROVAL.
-    # Đơn hàng hợp lệ và không vi phạm: CONFIRMED.
-    is_admin = any(r.lower() == "admin" for r in user_roles) or (current_user.role and current_user.role.lower() == "admin")
-    if requires_approval or is_customer:
+    # Đơn hàng hợp lệ hoặc do Admin tạo: CONFIRMED.
+    if is_admin:
+        requires_approval = False
+        order_status = "CONFIRMED"
+    elif requires_approval or is_customer:
         order_status = "PENDING_APPROVAL"
     else:
         order_status = "CONFIRMED"
-    approval_reason = " | ".join(approval_reasons) if approval_reasons else None
+    approval_reason = " | ".join(approval_reasons) if (approval_reasons and not is_admin) else None
 
     delivery_point_str = data.delivery_point
     if selected_delivery_point_id and not delivery_point_str:
@@ -1876,8 +1893,13 @@ def create_sales_entry_order(
             detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh, Quản trị hệ thống và Đại lý."
         )
 
+    is_admin = any(r.lower() == "admin" for r in user_roles) or (current_user.role and current_user.role.lower() == "admin")
+    is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
+    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
+
     # AC 3: TIÊU CHÍ 3 (Hard Block) - Kiểm tra nợ quá hạn trước khi kiểm tra tổng hạn mức
-    debt_summary = validate_dealer_overdue_debt(dealer, ORDERS_DB, db=db)
+    # Ở trang admin tạo đơn: không bị chặn bởi cấu hình chính sách công nợ
+    debt_summary = validate_dealer_overdue_debt(dealer, ORDERS_DB, db=db, is_admin=is_admin, is_customer=is_customer, skip_policy_block=not is_customer)
     current_debt = debt_summary["current_debt"]
     credit_limit = debt_summary["credit_limit"]
     overdue_days_allowed = debt_summary["overdue_days_allowed"]
@@ -2084,24 +2106,41 @@ def create_sales_entry_order(
     from app.services.credit_policy_service import get_credit_policy_config
     policy_cfg = get_credit_policy_config(db)
     is_dealer_over_limit = (current_debt + final_total_amount) > credit_limit or (current_debt > credit_limit) or bool(getattr(dealer, 'is_over_credit_limit', False)) or (bool(getattr(dealer, 'credit_warning_flag', False)) and 'vượt hạn mức' in (getattr(dealer, 'credit_flag_reason', '') or '').lower())
-    if is_dealer_over_limit:
-        if policy_cfg.over_limit_action == "BLOCK":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Đại lý '{dealer.name}' vượt hạn mức công nợ cho phép (Tổng nợ sau đơn {current_debt + final_total_amount:,.0f} đ > hạn mức {credit_limit:,.0f} đ). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
-            )
-        else:
+    if is_admin:
+        # Trang admin: Admin tạo đơn không bị chặn bởi cấu hình chính sách công nợ
+        pass
+    elif is_customer:
+        # Trang đại lý: Áp dụng cấu hình chính sách công nợ
+        if is_dealer_over_limit:
+            if policy_cfg.over_limit_action == "BLOCK":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Đại lý '{dealer.name}' vượt hạn mức công nợ cho phép (Tổng nợ sau đơn {current_debt + final_total_amount:,.0f} đ > hạn mức {credit_limit:,.0f} đ). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
+                )
+            else:
+                requires_approval = True
+                approval_reasons.append(
+                    f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
+                )
+        if is_overdue:
+            if policy_cfg.overdue_action == "BLOCK":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Đại lý '{dealer.name}' đang có khoản nợ quá hạn {max_debt_age} ngày (vượt quá {overdue_days_allowed} ngày cho phép). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
+                )
+            else:
+                requires_approval = True
+                approval_reasons.append(
+                    f"Đại lý có khoản nợ quá hạn ({max_debt_age} ngày > {overdue_days_allowed} ngày cho phép) - Chuyển sang phê duyệt theo chính sách công nợ"
+                )
+    else:
+        # Nhân viên nội bộ tạo trên trang admin: Không bị chặn bởi cấu hình, chỉ chuyển cần duyệt nếu vượt/quá hạn
+        if is_dealer_over_limit:
             requires_approval = True
             approval_reasons.append(
                 f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
             )
-    if is_overdue:
-        if policy_cfg.overdue_action == "BLOCK":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Đại lý '{dealer.name}' đang có khoản nợ quá hạn {max_debt_age} ngày (vượt quá {overdue_days_allowed} ngày cho phép). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
-            )
-        else:
+        if is_overdue:
             requires_approval = True
             approval_reasons.append(
                 f"Đại lý có khoản nợ quá hạn ({max_debt_age} ngày > {overdue_days_allowed} ngày cho phép) - Chuyển sang phê duyệt theo chính sách công nợ"

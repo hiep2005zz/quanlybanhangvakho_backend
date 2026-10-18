@@ -322,15 +322,16 @@ def test_order_creation_blocked_or_require_approval_by_config(auth_headers_sales
     DEALERS_DB[dealer_id].credit_warning_flag = True
     DEALERS_DB[dealer_id].credit_flag_reason = "Vượt hạn mức tín dụng"
 
-    # Tạo đơn mới (kể cả Sales hay Admin) -> Bắt buộc bị HTTP 400 Chặn tạo đơn
+    # Tạo đơn mới (Sales khi cấu hình BLOCK) -> Bắt buộc bị HTTP 400 Chặn tạo đơn
     over_limit_res = client.post("/api/v1/orders", json=order_payload, headers=auth_headers_sales)
     assert over_limit_res.status_code == 400
     assert "vượt hạn mức" in over_limit_res.json()["detail"].lower()
     assert "chặn" in over_limit_res.json()["detail"].lower()
 
-    admin_block_res = client.post("/api/v1/orders", json=order_payload, headers=auth_headers_admin)
-    assert admin_block_res.status_code == 400
-    assert "vượt hạn mức" in admin_block_res.json()["detail"].lower()
+    # Ở trang admin: Admin được phép tạo đơn mà không bị chặn bởi cấu hình
+    admin_res = client.post("/api/v1/orders", json=order_payload, headers=auth_headers_admin)
+    assert admin_res.status_code == 201
+    assert admin_res.json()["status"] == "CONFIRMED"
 
     # Reset lại cấu hình mặc định an toàn
     client.put("/api/v1/dealers/credit-policy/config", json={
