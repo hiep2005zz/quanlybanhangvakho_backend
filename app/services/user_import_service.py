@@ -131,7 +131,7 @@ class UserBulkImportService:
             if not raw_role:
                 errors['role'] = "Bắt buộc nhập vai trò."
             elif role not in valid_roles:
-                errors['role'] = "Vai trò không hợp lệ. Vui lòng chọn một trong các vai trò: Nhân viên kinh doanh, Thủ kho, Quản lý kho, Kế toán, Đại lý, Quản trị hệ thống, Quản lý kinh doanh, Nhân viên mua hàng."
+                errors['role'] = "Vai trò không hợp lệ. Vui lòng chọn một trong các vai trò: Nhân viên kinh doanh, Thủ kho, Quản lý kho, Kế toán, Đại lý, Quản trị hệ thống, Quản lý kinh doanh."
 
             if not password:
                 errors['password'] = "Bắt buộc nhập mật khẩu."
@@ -249,7 +249,6 @@ class UserBulkImportService:
             ["Thủ kho", "warehouse", "BẮT BUỘC: Kho Tổng Hà Nội, Kho Chi Nhánh Đà Nẵng, Kho Chi Nhánh TP. Hồ Chí Minh"],
             ["Quản lý kho", "warehouse_manager", "BẮT BUỘC: Kho cụ thể"],
             ["Kế toán", "accountant", "Trụ sở chính hoặc chi nhánh"],
-            ["Nhân viên mua hàng", "purchasing", "Trụ sở chính"],
             ["Đại lý", "customer", "Khu vực hoạt động của đại lý"],
         ]
         for item in ref_data:
