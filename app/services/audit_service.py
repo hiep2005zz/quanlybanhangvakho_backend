@@ -51,7 +51,7 @@ SYSTEM_AUDIT_ACTION_TYPES = {
     "PRODUCT_UPDATE",
     # 3. Hạn mức công nợ
     "DEBT_LIMIT_CHANGE",
-    # 4. Hoá đơn / Đơn hàng
+    # 4. Hoá đơn / Đơn hàng / Công nợ
     "INVOICE_CREATE",
     "INVOICE_EDIT",
     "INVOICE_CANCEL",
@@ -59,6 +59,7 @@ SYSTEM_AUDIT_ACTION_TYPES = {
     "ORDER_APPROVE",
     "ORDER_REJECT",
     "ORDER_RETURN_FOR_EDIT",
+    "DEBT_ADJUSTMENT_CREATED",
 }
 
 # Danh sách tất cả các hành động nghiệp vụ hợp lệ được phép ghi log kiểm toán:
@@ -82,6 +83,7 @@ ALLOWED_ENTITY_TYPES = {
     "CustomerDebt",
     "DealerDebtLimit",
     "Dealer",
+    "DebtAdjustment",
     # 4. Hoá đơn / Đơn hàng
     "Invoice",
     "Order",

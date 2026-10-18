@@ -4,9 +4,96 @@ from __future__ import annotations
 Data model and in-memory store for Dealers/Customers.
 Stores assigned_sale_id pointing to users.id.
 """
-from typing import Optional, List, Union
-from datetime import datetime
+from typing import Optional, List, Union, Dict, Any, Tuple
+from datetime import datetime, timezone
 from pydantic import BaseModel
+
+def parse_tx_date(val: Any) -> datetime:
+    if isinstance(val, datetime):
+        return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+    if isinstance(val, str):
+        val_clean = val.replace("Z", "+00:00")
+        try:
+            dt_obj = datetime.fromisoformat(val_clean)
+            return dt_obj if dt_obj.tzinfo else dt_obj.replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt_obj = datetime.strptime(val[:19], fmt)
+                return dt_obj.replace(tzinfo=timezone.utc)
+            except Exception:
+                pass
+    return datetime.now(timezone.utc)
+
+
+def compute_dealer_unified_debt(
+    dealer_id: int,
+    dealer_orders: List[Dict[str, Any]],
+    payments_by_order: Dict[str, float],
+    unallocated_payments: float,
+    adjustments_by_order: Dict[str, float],
+    now: Optional[datetime] = None,
+) -> Tuple[float, int]:
+    """
+    Tính toán số dư công nợ thực tế và tuổi nợ tối đa của đại lý.
+    Khớp chính xác với Sổ chi tiết công nợ (S31-DN), Sổ phân tích tuổi nợ và CSDL SQL Server:
+    - Công nợ từng đơn = Tổng tiền - Đã thanh toán (phiếu thu + thu theo tuyến) - Giảm trừ do trả hàng
+    - Đơn có trạng thái PAID mà chưa có phiếu thu thì coi như đã tất toán
+    - Các khoản phiếu thu không gắn mã đơn được trừ lũy kế (FIFO) vào các đơn nợ cũ nhất
+    - Tuổi nợ chỉ tính trên các đơn hàng THỰC SỰ CÒN NỢ (> 0)
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    sorted_orders = sorted(
+        dealer_orders,
+        key=lambda x: x.get("dt_obj") or parse_tx_date(x.get("created_at"))
+    )
+    open_orders = []
+
+    for o in sorted_orders:
+        if o.get("status") in ("CANCELLED", "REJECTED", "DRAFT"):
+            continue
+        ord_code = o.get("order_code", "")
+        amt = float(o.get("total_amount", 0.0) or 0.0)
+        adj_offset = adjustments_by_order.get(ord_code, 0.0)
+        paid_offset = payments_by_order.get(ord_code, 0.0)
+
+        if o.get("status") == "PAID" and paid_offset == 0:
+            paid_offset = max(0.0, amt - adj_offset)
+
+        eff_rem = max(0.0, amt - paid_offset - adj_offset)
+        if eff_rem > 0:
+            dt_obj = o.get("dt_obj") or parse_tx_date(o.get("created_at"))
+            open_orders.append({
+                "order_code": ord_code,
+                "amount": eff_rem,
+                "dt_obj": dt_obj,
+            })
+
+    # Giảm trừ các khoản thanh toán chung (không gắn order_code cụ thể) theo FIFO
+    rem_unallocated = float(unallocated_payments or 0.0)
+    total_remaining = 0.0
+    max_age = 0
+
+    for item in open_orders:
+        if rem_unallocated > 0:
+            deduct = min(item["amount"], rem_unallocated)
+            item["amount"] -= deduct
+            rem_unallocated -= deduct
+
+        if item["amount"] > 0:
+            total_remaining += item["amount"]
+            order_dt = item["dt_obj"]
+            if order_dt.tzinfo is None:
+                order_dt = order_dt.replace(tzinfo=timezone.utc)
+            days_old = max(0, (now - order_dt).days)
+            if days_old > max_age:
+                max_age = days_old
+
+    return round(total_remaining, 2), max_age
+
 
 class Dealer(BaseModel):
     id: int
