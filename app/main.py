@@ -1,18 +1,30 @@
 # backend/app/main.py - Fresh Reset
+import asyncio
 import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.endpoints import auth, products, inventory, users, orders, categories, audit_logs, profile, suppliers, dealers, delivery_points
+from app.modules.payment_reminders.config import FEATURE_ENABLED
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from app.db.init_db import init_db
+from app.modules.payment_reminders.scheduler import run_daily_scheduler
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Khởi tạo bảng và dữ liệu mẫu trên SQL Server khi ứng dụng khởi động
     init_db()
-    yield
+    scheduler_task = None
+    if FEATURE_ENABLED:
+        scheduler_task = asyncio.create_task(run_daily_scheduler())
+    try:
+        yield
+    finally:
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await scheduler_task
 
 app = FastAPI(
     title="Quan Ly Ban Hang & Kho API",
@@ -98,3 +110,6 @@ def root():
         "message": "Backend API đang hoạt động bình thường",
         "docs_url": "/docs"
     }
+
+from app.api.v1.endpoints import payment_reminders
+app.include_router(payment_reminders.router, prefix="/api/v1/payment-reminders", tags=["Payment Reminders"])
