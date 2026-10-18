@@ -214,3 +214,44 @@ def test_turnover_report_excel_export_by_warehouse():
     wb_all = openpyxl.load_workbook(io.BytesIO(resp_all.content))
     ws1_all = wb_all["Chi Tiết SKU & Vòng Quay"]
     assert ws1_all["B4"].value == "Tất cả các kho"
+
+
+def test_turnover_report_rbac_only_admin_and_warehouse_manager():
+    """
+    Ràng buộc phân quyền: Chỉ Quản lý kho (warehouse_manager) và Quản trị hệ thống (admin)
+    mới có quyền xem và xuất báo cáo Vòng quay tồn kho.
+    Thủ kho ('kho'), Kế toán ('ketoan'), Nhân viên kinh doanh ('sales') đều bị chặn 403 Forbidden.
+    """
+    # 1. Quản lý kho (warehouse_mgr) -> Phải được phép truy cập (200 OK)
+    mgr_token = get_token("warehouse_mgr", "123")
+    mgr_headers = {"Authorization": f"Bearer {mgr_token}"}
+    resp_mgr = client.get("/api/v1/inventory/turnover-report", headers=mgr_headers)
+    assert resp_mgr.status_code == 200
+
+    resp_mgr_summary = client.get("/api/v1/inventory/turnover-report/summary", headers=mgr_headers)
+    assert resp_mgr_summary.status_code == 200
+
+    resp_mgr_exp = client.get("/api/v1/inventory/turnover-report/export", headers=mgr_headers)
+    assert resp_mgr_exp.status_code == 200
+
+    # 2. Thủ kho ('kho') -> Bị chặn 403 Forbidden
+    kho_token = get_token("kho", "123")
+    kho_headers = {"Authorization": f"Bearer {kho_token}"}
+    assert client.get("/api/v1/inventory/turnover-report", headers=kho_headers).status_code == 403
+    assert client.get("/api/v1/inventory/turnover-report/summary", headers=kho_headers).status_code == 403
+    assert client.get("/api/v1/inventory/turnover-report/export", headers=kho_headers).status_code == 403
+
+    # 3. Kế toán ('ketoan') -> Bị chặn 403 Forbidden
+    ketoan_token = get_token("ketoan", "123")
+    ketoan_headers = {"Authorization": f"Bearer {ketoan_token}"}
+    assert client.get("/api/v1/inventory/turnover-report", headers=ketoan_headers).status_code == 403
+    assert client.get("/api/v1/inventory/turnover-report/summary", headers=ketoan_headers).status_code == 403
+    assert client.get("/api/v1/inventory/turnover-report/export", headers=ketoan_headers).status_code == 403
+
+    # 4. Nhân viên kinh doanh ('sales') -> Bị chặn 403 Forbidden
+    sales_token = get_token("sales", "123")
+    sales_headers = {"Authorization": f"Bearer {sales_token}"}
+    assert client.get("/api/v1/inventory/turnover-report", headers=sales_headers).status_code == 403
+    assert client.get("/api/v1/inventory/turnover-report/summary", headers=sales_headers).status_code == 403
+    assert client.get("/api/v1/inventory/turnover-report/export", headers=sales_headers).status_code == 403
+

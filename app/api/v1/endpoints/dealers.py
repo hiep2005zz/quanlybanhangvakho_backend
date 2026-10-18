@@ -5,11 +5,14 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query, HTTPException, status, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.api.deps import require_roles, get_current_user
 from app.core.database import get_db
 from app.models.dealer import DEALERS_DB, Dealer, save_dealers_db, load_dealers_db
 from app.models.user import USERS_DB, load_users_db
+from app.models.entities import OrderEntity, DealerEntity
+from app.models.payment_collection import PaymentCollectionEntity
 from app.schemas.auth import UserResponse
 from app.services.audit_service import log_audit_event
 
@@ -82,6 +85,69 @@ class DealerCreditInfoResponse(BaseModel):
     last_credit_evaluated_at: Optional[Union[str, datetime]] = None
     over_limit_action: Optional[str] = "REQUIRE_APPROVAL"
     overdue_action: Optional[str] = "BLOCK"
+
+
+class DebtAgingItem(BaseModel):
+    dealer_id: int
+    dealer_code: str
+    dealer_name: str
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    region: Optional[str] = None
+    assigned_sale_id: Optional[int] = None
+    assigned_sale_name: Optional[str] = None
+    credit_limit: float
+    max_debt_days: int
+    current_debt: float
+    remaining_credit: float
+    max_debt_age: int
+    max_overdue_days: int
+    debt_current: float
+    debt_overdue_1_30: float
+    debt_overdue_31_60: float
+    debt_overdue_61_90: float
+    debt_overdue_over_90: float
+    total_overdue: float
+    overdue_invoices_count: int
+    total_invoices_count: int
+    risk_level: str
+    risk_level_label: str
+    risk_score: float
+
+
+class HighestRiskDealer(BaseModel):
+    dealer_id: int
+    dealer_code: str
+    dealer_name: str
+    phone: Optional[str] = None
+    assigned_sale_name: Optional[str] = None
+    credit_limit: float
+    current_debt: float
+    total_overdue: float
+    max_overdue_days: int
+    max_debt_age: int
+    debt_overdue_over_90: float
+    risk_level_label: str
+    reason: str
+
+
+class DebtAgingSummary(BaseModel):
+    total_debt: float
+    total_overdue: float
+    total_current: float
+    total_overdue_1_30: float
+    total_overdue_31_60: float
+    total_overdue_61_90: float
+    total_overdue_over_90: float
+    total_dealers_count: int
+    overdue_dealers_count: int
+    highest_risk_dealer: Optional[HighestRiskDealer] = None
+
+
+class DebtAgingReportResponse(BaseModel):
+    summary: DebtAgingSummary
+    items: List[DebtAgingItem]
+    sales_list: List[Dict[str, Any]]
 
 
 class CreateReceiptVoucherRequest(BaseModel):
@@ -189,9 +255,27 @@ def get_sale_name(assigned_sale_id: Optional[int]) -> Optional[str]:
     return None
 
 
+def normalize_region_name(raw: Optional[str]) -> str:
+    if not raw or not str(raw).strip():
+        return "Chưa xác định"
+    s = str(raw).strip()
+    low = s.lower()
+    if low in ["ha noi", "hanoi", "hn"]:
+        return "Hà Nội"
+    if low in ["tp hcm", "tp.hcm", "tphcm", "ho chi minh", "hcm", "tp. hcm", "sai gon", "saigon", "tp ho chi minh"]:
+        return "TP. HCM"
+    if low in ["da nang", "danang"]:
+        return "Đà Nẵng"
+    if low in ["hai phong", "haiphong"]:
+        return "Hải Phòng"
+    if low in ["can tho", "cantho"]:
+        return "Cần Thơ"
+    return s
+
+
 def get_region(address: Optional[str]) -> str:
     """
-    Lấy khu vực từ địa chỉ hiện có.
+    Lấy khu vực từ địa chỉ hiện có và chuẩn hóa tên khu vực.
     Ví dụ: '120 Cầu Giấy, Hà Nội' -> 'Hà Nội'
     """
     if not address:
@@ -199,7 +283,7 @@ def get_region(address: Optional[str]) -> str:
 
     parts = [part.strip() for part in address.split(",") if part.strip()]
     if parts:
-        return parts[-1]
+        return normalize_region_name(parts[-1])
 
     return "Chưa xác định"
 
@@ -367,6 +451,313 @@ def get_dealer_stats(
     return compute_dealer_stats(current_user)
 
 
+@router.get("/debt-aging-report", response_model=DebtAgingReportResponse)
+def get_debt_aging_report(
+    assigned_sale_id: Optional[int] = Query(None, description="Lọc theo nhân viên kinh doanh phụ trách"),
+    risk_level: Optional[str] = Query(None, description="Lọc theo mức độ rủi ro (CRITICAL, HIGH, WARNING, SAFE)"),
+    search: Optional[str] = Query(None, description="Tìm theo mã hoặc tên đại lý"),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(
+        require_roles(["admin", "sales_manager", "sales", "accountant"])
+    ),
+):
+    """
+    Báo cáo công nợ quá hạn theo tuổi nợ cho Kế toán công nợ:
+    - Tổng hợp theo 5 nhóm tuổi nợ: Trong hạn, Quá hạn 1-30, 31-60, 61-90, >90 ngày
+    - Tự động cấn trừ các khoản thu tiền đã khớp quỹ (PaymentCollection CONFIRMED) theo FIFO (First In First Out)
+    - Phân tích và chỉ ra đại lý có rủi ro cao nhất cần xử lý trước
+    - Lọc theo nhân viên phụ trách, mức độ rủi ro, tìm kiếm
+    """
+    from app.api.v1.endpoints.orders import ORDERS_DB
+    load_dealers_db()
+    load_users_db()
+    now = datetime.now(timezone.utc)
+
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    if "admin" not in user_roles and "sales_manager" not in user_roles and "accountant" not in user_roles:
+        # Sales thông thường chỉ xem đại lý của mình
+        assigned_sale_id = current_user.id
+
+    # Danh sách nhân viên phụ trách phục vụ bộ lọc
+    sales_list = []
+    seen_sale_ids = set()
+    for u in USERS_DB.values():
+        u_roles = getattr(u, 'roles', [getattr(u, 'role', '')])
+        if any(r in u_roles for r in ['sales', 'sales_manager', 'admin']):
+            if u.id not in seen_sale_ids:
+                seen_sale_ids.add(u.id)
+                sales_list.append({"id": u.id, "name": u.full_name})
+    sales_list.sort(key=lambda s: s["name"])
+
+    # Truy vấn tổng tiền đã thu được kế toán xác nhận (PaymentCollection CONFIRMED) theo từng đại lý
+    confirmed_payments_map: Dict[int, float] = {}
+    try:
+        rows = (
+            db.query(
+                PaymentCollectionEntity.dealer_id,
+                func.sum(PaymentCollectionEntity.amount)
+            )
+            .filter(PaymentCollectionEntity.status == "CONFIRMED")
+            .group_by(PaymentCollectionEntity.dealer_id)
+            .all()
+        )
+        for dealer_id, total_amt in rows:
+            if dealer_id:
+                confirmed_payments_map[dealer_id] = float(total_amt or 0.0)
+    except Exception as ex:
+        logger.warning(f"Error querying confirmed payments: {ex}")
+
+    # Tính toán công nợ cho từng đại lý
+    all_dealers_aging: List[DebtAgingItem] = []
+    total_system_debt = 0.0
+    total_system_overdue = 0.0
+    total_system_current = 0.0
+    total_system_1_30 = 0.0
+    total_system_31_60 = 0.0
+    total_system_61_90 = 0.0
+    total_system_over_90 = 0.0
+    system_overdue_dealers_count = 0
+
+    for d in DEALERS_DB.values():
+        credit_limit = float(getattr(d, "credit_limit", 50000000.0) or 50000000.0)
+        allowed_days = int(getattr(d, "overdue_days_allowed", getattr(d, "max_debt_days", 30)) or 30)
+        sale_name = get_sale_name(d.assigned_sale_id)
+        total_paid = confirmed_payments_map.get(d.id, 0.0)
+
+        # Quét và gom toàn bộ đơn hàng chưa thanh toán của đại lý này
+        seen_order_codes = set()
+        dealer_orders = []
+
+        try:
+            db_orders = db.query(OrderEntity).filter(OrderEntity.dealer_id == d.id).all()
+            for o_ent in db_orders:
+                st = (o_ent.status or "").upper()
+                if st not in ("PAID", "CANCELLED", "REJECTED"):
+                    c = o_ent.order_code
+                    if c and c not in seen_order_codes:
+                        seen_order_codes.add(c)
+                        dt = o_ent.created_at or now
+                        if isinstance(dt, datetime) and not dt.tzinfo:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        dealer_orders.append({
+                            "order_code": c,
+                            "amount": float(o_ent.total_amount or 0.0),
+                            "created_at": dt,
+                        })
+        except Exception:
+            pass
+
+        for o in ORDERS_DB.values():
+            if o.get("dealer_id") == d.id and str(o.get("status", "")).upper() not in ("PAID", "CANCELLED", "REJECTED"):
+                c = o.get("order_code")
+                if c and c not in seen_order_codes:
+                    seen_order_codes.add(c)
+                    created_at_val = o.get("created_at")
+                    order_date = now
+                    if created_at_val:
+                        try:
+                            if isinstance(created_at_val, str):
+                                order_date = datetime.fromisoformat(created_at_val.replace("Z", "+00:00"))
+                            elif isinstance(created_at_val, datetime):
+                                order_date = created_at_val
+                            if not order_date.tzinfo:
+                                order_date = order_date.replace(tzinfo=timezone.utc)
+                        except Exception:
+                            pass
+                    dealer_orders.append({
+                        "order_code": c,
+                        "amount": float(o.get("total_amount", 0.0) or 0.0),
+                        "created_at": order_date,
+                    })
+
+        # Sắp xếp các đơn theo thứ tự ngày tăng dần (đơn cũ nhất lên đầu để cấn trừ nợ trước theo FIFO)
+        dealer_orders.sort(key=lambda x: x["created_at"])
+
+        # Cấn trừ số tiền đã thu (PaymentCollection CONFIRMED) theo FIFO
+        remaining_payment = total_paid
+        for ord_item in dealer_orders:
+            if remaining_payment > 0:
+                deduct = min(ord_item["amount"], remaining_payment)
+                ord_item["amount"] -= deduct
+                remaining_payment -= deduct
+
+        debt_current = 0.0
+        debt_overdue_1_30 = 0.0
+        debt_overdue_31_60 = 0.0
+        debt_overdue_61_90 = 0.0
+        debt_overdue_over_90 = 0.0
+        max_debt_age = 0
+        max_overdue_days = 0
+        overdue_invoices_count = 0
+        total_invoices_count = 0
+
+        for ord_item in dealer_orders:
+            amt = ord_item["amount"]
+            if amt <= 0.0001:
+                continue
+
+            total_invoices_count += 1
+            days_old = max(0, (now - ord_item["created_at"]).days)
+            if days_old > max_debt_age:
+                max_debt_age = days_old
+
+            if days_old <= allowed_days:
+                debt_current += amt
+            else:
+                overdue_days = days_old - allowed_days
+                if overdue_days > max_overdue_days:
+                    max_overdue_days = overdue_days
+                overdue_invoices_count += 1
+
+                if 1 <= overdue_days <= 30:
+                    debt_overdue_1_30 += amt
+                elif 31 <= overdue_days <= 60:
+                    debt_overdue_31_60 += amt
+                elif 61 <= overdue_days <= 90:
+                    debt_overdue_61_90 += amt
+                else:
+                    debt_overdue_over_90 += amt
+
+        dealer_current_debt = debt_current + debt_overdue_1_30 + debt_overdue_31_60 + debt_overdue_61_90 + debt_overdue_over_90
+        dealer_total_overdue = debt_overdue_1_30 + debt_overdue_31_60 + debt_overdue_61_90 + debt_overdue_over_90
+        remaining_credit = max(0.0, credit_limit - dealer_current_debt)
+
+        if dealer_total_overdue > 0:
+            system_overdue_dealers_count += 1
+
+        total_system_debt += dealer_current_debt
+        total_system_overdue += dealer_total_overdue
+        total_system_current += debt_current
+        total_system_1_30 += debt_overdue_1_30
+        total_system_31_60 += debt_overdue_31_60
+        total_system_61_90 += debt_overdue_61_90
+        total_system_over_90 += debt_overdue_over_90
+
+        # Phân loại mức độ rủi ro & điểm rủi ro
+        risk_score = (
+            (debt_overdue_over_90 * 5.0) +
+            (debt_overdue_61_90 * 3.0) +
+            (debt_overdue_31_60 * 2.0) +
+            (debt_overdue_1_30 * 1.0)
+        )
+        if dealer_current_debt > credit_limit:
+            risk_score += (dealer_current_debt - credit_limit) * 2.0
+
+        if debt_overdue_over_90 > 0 or (credit_limit > 0 and dealer_current_debt > credit_limit * 1.5):
+            risk_level_code = "CRITICAL"
+            risk_level_label = "Báo động đỏ"
+        elif debt_overdue_61_90 > 0 or (credit_limit > 0 and dealer_current_debt > credit_limit):
+            risk_level_code = "HIGH"
+            risk_level_label = "Rủi ro cao"
+        elif dealer_total_overdue > 0:
+            risk_level_code = "WARNING"
+            risk_level_label = "Cảnh báo"
+        else:
+            risk_level_code = "SAFE"
+            risk_level_label = "An toàn"
+
+        item = DebtAgingItem(
+            dealer_id=d.id,
+            dealer_code=d.code,
+            dealer_name=d.name,
+            phone=d.phone,
+            address=d.address,
+            region=getattr(d, "region", None) or get_region(d.address),
+            assigned_sale_id=d.assigned_sale_id,
+            assigned_sale_name=sale_name,
+            credit_limit=credit_limit,
+            max_debt_days=allowed_days,
+            current_debt=dealer_current_debt,
+            remaining_credit=remaining_credit,
+            max_debt_age=max_debt_age,
+            max_overdue_days=max_overdue_days,
+            debt_current=debt_current,
+            debt_overdue_1_30=debt_overdue_1_30,
+            debt_overdue_31_60=debt_overdue_31_60,
+            debt_overdue_61_90=debt_overdue_61_90,
+            debt_overdue_over_90=debt_overdue_over_90,
+            total_overdue=dealer_total_overdue,
+            overdue_invoices_count=overdue_invoices_count,
+            total_invoices_count=total_invoices_count,
+            risk_level=risk_level_code,
+            risk_level_label=risk_level_label,
+            risk_score=risk_score,
+        )
+        all_dealers_aging.append(item)
+
+    # Tìm đại lý rủi ro cao nhất
+    overdue_dealers = [d for d in all_dealers_aging if d.total_overdue > 0]
+    highest_risk_dealer = None
+    if overdue_dealers:
+        sorted_by_risk = sorted(
+            overdue_dealers,
+            key=lambda x: (x.risk_score, x.max_overdue_days, x.total_overdue),
+            reverse=True
+        )
+        top = sorted_by_risk[0]
+        reasons = []
+        if top.debt_overdue_over_90 > 0:
+            reasons.append(f"Có {top.debt_overdue_over_90:,.0f} đ nợ quá hạn >90 ngày")
+        if top.max_overdue_days > 0:
+            reasons.append(f"Tuổi nợ quá hạn cao nhất {top.max_overdue_days} ngày")
+        if top.current_debt > top.credit_limit:
+            reasons.append(f"Vượt hạn mức tín dụng {(top.current_debt - top.credit_limit):,.0f} đ")
+
+        highest_risk_dealer = HighestRiskDealer(
+            dealer_id=top.dealer_id,
+            dealer_code=top.dealer_code,
+            dealer_name=top.dealer_name,
+            phone=top.phone,
+            assigned_sale_name=top.assigned_sale_name,
+            credit_limit=top.credit_limit,
+            current_debt=top.current_debt,
+            total_overdue=top.total_overdue,
+            max_overdue_days=top.max_overdue_days,
+            max_debt_age=top.max_debt_age,
+            debt_overdue_over_90=top.debt_overdue_over_90,
+            risk_level_label=top.risk_level_label,
+            reason="; ".join(reasons) if reasons else "Nợ quá hạn cần xử lý gấp"
+        )
+
+    # Áp dụng bộ lọc
+    filtered_items = all_dealers_aging
+    if assigned_sale_id is not None:
+        filtered_items = [it for it in filtered_items if it.assigned_sale_id == assigned_sale_id]
+    if risk_level and risk_level != "all":
+        filtered_items = [it for it in filtered_items if it.risk_level.lower() == risk_level.lower()]
+    if search and search.strip():
+        s = search.strip().lower()
+        filtered_items = [
+            it for it in filtered_items
+            if s in it.dealer_code.lower() or s in it.dealer_name.lower() or (it.phone and s in it.phone)
+        ]
+
+    # Sắp xếp mặc định: Đại lý rủi ro nhất lên trước
+    filtered_items.sort(
+        key=lambda x: (x.risk_score, x.max_overdue_days, x.total_overdue),
+        reverse=True
+    )
+
+    summary = DebtAgingSummary(
+        total_debt=total_system_debt,
+        total_overdue=total_system_overdue,
+        total_current=total_system_current,
+        total_overdue_1_30=total_system_1_30,
+        total_overdue_31_60=total_system_31_60,
+        total_overdue_61_90=total_system_61_90,
+        total_overdue_over_90=total_system_over_90,
+        total_dealers_count=len(all_dealers_aging),
+        overdue_dealers_count=system_overdue_dealers_count,
+        highest_risk_dealer=highest_risk_dealer,
+    )
+
+    return DebtAgingReportResponse(
+        summary=summary,
+        items=filtered_items,
+        sales_list=sales_list,
+    )
+
+
 @router.get("/search")
 def search_dealers(
     keyword: Optional[str] = Query(
@@ -407,6 +798,7 @@ def search_dealers(
         ge=1,
         description="Số lượng bản ghi mỗi trang"
     ),
+    db: Session = Depends(get_db),
     current_user: UserResponse = Depends(
         require_roles([
             "admin",
@@ -2027,6 +2419,7 @@ def get_dealer_debt_ledger_endpoint(
     assigned_sale_id: Optional[int] = Query(None, description="Lọc theo nhân viên phụ trách"),
     overdue_only: bool = Query(False, description="Lọc riêng các đại lý có nợ quá hạn"),
     search: Optional[str] = Query(None, description="Tìm kiếm theo mã, tên, SĐT đại lý"),
+    ageing_bucket: Optional[str] = Query(None, description="Lọc theo nhóm tuổi nợ (all, 0-30, 31-60, 61-90, over_90, has_debt, settled, overdue)"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "accountant"])),
 ):
@@ -2041,6 +2434,7 @@ def get_dealer_debt_ledger_endpoint(
         assigned_sale_id=assigned_sale_id,
         overdue_only=overdue_only,
         search=search,
+        ageing_bucket=ageing_bucket,
     )
 
 
@@ -2050,6 +2444,7 @@ def export_dealer_debt_ledger_endpoint(
     assigned_sale_id: Optional[int] = Query(None, description="Lọc theo nhân viên phụ trách"),
     overdue_only: bool = Query(False, description="Lọc riêng các đại lý có nợ quá hạn"),
     search: Optional[str] = Query(None, description="Tìm kiếm theo mã, tên, SĐT đại lý"),
+    ageing_bucket: Optional[str] = Query(None, description="Lọc theo nhóm tuổi nợ (all, 0-30, 31-60, 61-90, over_90, has_debt, settled, overdue)"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "accountant"])),
 ):
@@ -2065,6 +2460,7 @@ def export_dealer_debt_ledger_endpoint(
         assigned_sale_id=assigned_sale_id,
         overdue_only=overdue_only,
         search=search,
+        ageing_bucket=ageing_bucket,
     )
     excel_bytes = export_debt_ledger_excel(data)
 

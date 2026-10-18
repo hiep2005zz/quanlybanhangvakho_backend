@@ -519,3 +519,31 @@ def test_admin_can_approve_own_adjustment(client, admin_headers):
     assert data["status"] == "APPROVED"
     assert data["status_label"] == "Đã duyệt"
 
+
+def test_stock_adjustments_pagination_10_per_page(client, warehouse_mgr1_headers):
+    """Kiểm tra phân trang danh sách phiếu điều chỉnh: mặc định 10 phiếu/trang và chuyển trang mượt mà."""
+    # Lấy trang 1 với page=1, page_size=10
+    res_p1 = client.get("/api/v1/stock-adjustments?page=1&page_size=10", headers=warehouse_mgr1_headers)
+    assert res_p1.status_code == 200, f"Lỗi lấy danh sách trang 1: {res_p1.text}"
+    data_p1 = res_p1.json()
+    assert "items" in data_p1
+    assert "total" in data_p1
+    assert data_p1["page"] == 1
+    assert data_p1["page_size"] == 10
+    assert len(data_p1["items"]) <= 10
+
+    # Nếu tổng số phiếu > 10, kiểm tra trang 2
+    if data_p1["total"] > 10:
+        assert data_p1["total_pages"] >= 2
+        res_p2 = client.get("/api/v1/stock-adjustments?page=2&page_size=10", headers=warehouse_mgr1_headers)
+        assert res_p2.status_code == 200
+        data_p2 = res_p2.json()
+        assert data_p2["page"] == 2
+        assert data_p2["page_size"] == 10
+        assert len(data_p2["items"]) <= 10
+        # Các ID trang 2 không được trùng với trang 1
+        p1_ids = {item["id"] for item in data_p1["items"]}
+        for item in data_p2["items"]:
+            assert item["id"] not in p1_ids, f"ID {item['id']} bị lặp giữa trang 1 và trang 2"
+
+

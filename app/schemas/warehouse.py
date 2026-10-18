@@ -46,6 +46,22 @@ class WarehouseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class WarehouseKeeperItem(BaseModel):
+    id: int
+    username: str
+    full_name: str
+    role: str
+    roles: List[str] = Field(default_factory=list)
+    role_title: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    branch: Optional[str] = None
+    badge_color: Optional[str] = None
+    is_active: bool = True
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # --- WAREHOUSE LOCATIONS ---
 class WarehouseLocationCreate(BaseModel):
     location_code: str = Field(..., min_length=2, max_length=50, description="Mã vị trí / kệ / khu vực")

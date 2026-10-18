@@ -24,6 +24,8 @@ from app.schemas.inventory import (
     WarehouseThresholdItem,
     WarehouseThresholdPageResponse,
     UpdateThresholdRequest,
+    BulkApplyThresholdRequest,
+    BulkApplyThresholdResponse,
     LowStockAlertSummary,
     StockBookItem,
     StockBookSummary,
@@ -1258,6 +1260,78 @@ def update_inventory_threshold(
         min_stock=data.min_stock,
         is_low_stock=(actual <= data.min_stock),
         shortage_quantity=max(0, data.min_stock - actual),
+    )
+
+
+@router.post("/thresholds/bulk-apply", response_model=BulkApplyThresholdResponse)
+def bulk_apply_inventory_threshold(
+    data: BulkApplyThresholdRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value, Role.WAREHOUSE_MANAGER.value])),
+):
+    """
+    Áp dụng định mức tồn tối thiểu đồng loạt cho tất cả sản phẩm (theo kho hoặc toàn bộ các kho).
+    """
+    if data.min_stock < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Định mức tồn tối thiểu không thể là số âm."
+        )
+
+    # Đảm bảo các bản ghi kho đã tồn tại đầy đủ trước khi cập nhật
+    if db:
+        try:
+            sync_missing_warehouse_stocks(db)
+        except Exception:
+            pass
+
+    # 1. Cập nhật WarehouseStockEntity
+    q = db.query(WarehouseStockEntity)
+    wh_id = (data.warehouse_id or "ALL").strip()
+    if wh_id != "ALL" and wh_id != "all":
+        if wh_id not in DEFAULT_WAREHOUSES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Mã kho '{wh_id}' không hợp lệ trong hệ thống."
+            )
+        q = q.filter(WarehouseStockEntity.warehouse_id == wh_id)
+        wh_name = DEFAULT_WAREHOUSES.get(wh_id, wh_id)
+    else:
+        wh_name = "Tất cả các kho"
+
+    updated_ws_count = q.update({WarehouseStockEntity.min_stock: data.min_stock}, synchronize_session=False)
+
+    # 2. Cập nhật ProductEntity
+    if wh_id == "ALL" or wh_id == "all" or wh_id == "WH01":
+        db.query(ProductEntity).update({ProductEntity.min_stock: data.min_stock}, synchronize_session=False)
+
+    db.commit()
+
+    # Clear caches
+    _LOW_STOCK_CACHE.clear()
+    _STOCK_BOOK_CACHE.clear()
+    _THRESHOLDS_CACHE.clear()
+
+    # Ghi nhật ký kiểm toán (Audit Log)
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action_type="MIN_STOCK_BULK_UPDATE",
+        entity_type="WarehouseStock",
+        entity_id=wh_id,
+        old_val={},
+        new_val={"min_stock": data.min_stock, "warehouse_id": wh_id},
+        reason=f"Áp dụng định mức tồn tối thiểu ({data.min_stock}) đồng loạt cho {updated_ws_count} cấu hình mặt hàng tại {wh_name}",
+        request=request,
+    )
+
+    return BulkApplyThresholdResponse(
+        success=True,
+        message=f"Đã áp dụng định mức {data.min_stock} cho {updated_ws_count} cấu hình sản phẩm tại {wh_name} thành công.",
+        updated_count=updated_ws_count,
+        min_stock=data.min_stock,
+        warehouse_id=wh_id,
     )
 
 

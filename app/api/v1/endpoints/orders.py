@@ -12,7 +12,7 @@ from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEn
 from typing import List, Optional, Union
 from datetime import date, datetime, timezone, timedelta
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status, status as http_status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, status as http_status, Request, Response, Query
 from sqlalchemy import func, case, or_, and_
 from sqlalchemy.orm import Session
 from app.db.init_db import _ensure_legacy_columns
@@ -294,10 +294,10 @@ class DealerCreditInfoResponse(BaseModel):
 def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
     """
     Tính toán chi tiết công nợ hiện tại, tuổi nợ và trạng thái nợ quá hạn của đại lý.
+    Đồng bộ dữ liệu đơn hàng và cấn trừ các phiếu thu tiền (payment collections) đã xác nhận.
     """
-    current_debt = 0.0
-    max_debt_age = 0
-    # Tự động đồng bộ các đơn hàng từ SQL database vào orders_db nếu chưa có
+    now = datetime.now(timezone.utc)
+    # 1. Tự động đồng bộ các đơn hàng từ SQL database vào orders_db nếu chưa có
     try:
         from app.core.database import SessionLocal
         from app.models.entities import OrderEntity
@@ -316,11 +316,28 @@ def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
     except Exception:
         pass
 
-    now = datetime.now(timezone.utc)
+    # 2. Truy vấn tổng số tiền từ các phiếu thu tiền đã xác nhận (Payment collections)
+    extra_paid = 0.0
+    try:
+        from app.core.database import SessionLocal
+        from app.models.payment_collection import PaymentCollectionEntity
+        with SessionLocal() as db_session:
+            pcs = db_session.query(PaymentCollectionEntity).filter(
+                PaymentCollectionEntity.dealer_id == dealer.id,
+                PaymentCollectionEntity.status == "CONFIRMED"
+            ).all()
+            for pc in pcs:
+                extra_paid += float(getattr(pc, "amount", getattr(pc, "amount_collected", 0.0)) or 0.0)
+    except Exception:
+        pass
+
+    # 3. Thu thập danh sách các đơn hàng chưa thanh toán
+    unpaid_orders = []
     for o in orders_db.values():
-        if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
-            current_debt += float(o.get("total_amount", 0.0) or 0.0)
+        if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED", "REJECTED"):
+            amt = float(o.get("total_amount", 0.0) or 0.0)
             created_at_val = o.get("created_at")
+            order_date = now
             if created_at_val:
                 try:
                     if isinstance(created_at_val, str):
@@ -332,15 +349,36 @@ def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
                         order_date = created_at_val if created_at_val.tzinfo else created_at_val.replace(tzinfo=timezone.utc)
                     else:
                         order_date = now
-                    order_date_dt = order_date.date() if hasattr(order_date, 'date') else order_date
-                    now_dt = now.date() if hasattr(now, 'date') else now
-                    calendar_days = max(0, (now_dt - order_date_dt).days)
-                    time_days = max(0, (now - order_date).days)
-                    days_old = max(calendar_days, time_days)
-                    if days_old > max_debt_age:
-                        max_debt_age = days_old
                 except Exception:
                     pass
+            unpaid_orders.append({
+                "amount": amt,
+                "order_date": order_date
+            })
+
+    # 4. Sắp xếp đơn hàng theo thứ tự thời gian tăng dần (FIFO)
+    unpaid_orders.sort(key=lambda x: x["order_date"])
+
+    # 5. Cấn trừ số tiền đã thu (extra_paid) vào các đơn hàng cũ trước theo FIFO
+    rem_paid = extra_paid
+    for uo in unpaid_orders:
+        if rem_paid <= 0:
+            break
+        deduct = min(uo["amount"], rem_paid)
+        uo["amount"] -= deduct
+        rem_paid -= deduct
+
+    current_debt = sum(uo["amount"] for uo in unpaid_orders)
+    still_unpaid = [uo for uo in unpaid_orders if uo["amount"] > 0]
+    if still_unpaid:
+        first_date = still_unpaid[0]["order_date"]
+        first_date_dt = first_date.date() if hasattr(first_date, 'date') else first_date
+        now_dt = now.date() if hasattr(now, 'date') else now
+        cal_days = max(0, (now_dt - first_date_dt).days)
+        tim_days = max(0, (now - first_date).days)
+        max_debt_age = max(cal_days, tim_days)
+    else:
+        max_debt_age = 0
 
     credit_limit = float(getattr(dealer, "credit_limit", 50000000.0) or 50000000.0)
     allowed_days = int(getattr(dealer, "overdue_days_allowed", getattr(dealer, "max_debt_days", 30)) or 30)
@@ -490,9 +528,13 @@ def _get_customer_dealer(current_user: UserResponse):
 
 @router.get("/dealers")
 def get_order_dealers(
+    search: Optional[str] = Query(None, description="Tìm kiếm theo mã, tên, SĐT hoặc địa chỉ đại lý"),
+    page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
+    page_size: Optional[int] = Query(None, ge=1, le=100, description="Số lượng đại lý mỗi trang"),
+    response: Response = None,
     current_user: UserResponse = Depends(require_permission(Permission.ORDER_WRITE.value))
 ):
-    """Return dealers available for order entry, restricted to the assigned salesperson or customer."""
+    """Return dealers available for order entry, restricted to the assigned salesperson or customer, with search and pagination support."""
     load_dealers_db()
     dealers = list(DEALERS_DB.values())
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
@@ -510,8 +552,30 @@ def get_order_dealers(
             )
         dealers = [dealer for dealer in dealers if dealer.assigned_sale_id == assigned_user.id]
 
+    # Tìm kiếm theo search query nếu có
+    if search and search.strip():
+        q = search.strip().lower()
+        dealers = [
+            d for d in dealers
+            if (
+                q in (getattr(d, "name", "") or "").lower()
+                or q in (getattr(d, "code", "") or "").lower()
+                or q in (getattr(d, "phone", "") or "").lower()
+                or q in (getattr(d, "address", "") or "").lower()
+            )
+        ]
+
+    sorted_dealers = sorted(dealers, key=lambda item: (item.name or "").lower())
+    total_count = len(sorted_dealers)
+
+    if page is not None and page_size is not None:
+        offset = (page - 1) * page_size
+        paged_dealers = sorted_dealers[offset:offset + page_size]
+    else:
+        paged_dealers = sorted_dealers
+
     res = []
-    for dealer in sorted(dealers, key=lambda item: item.name.lower()):
+    for dealer in paged_dealers:
         debt_info = calculate_dealer_debt_summary(dealer, ORDERS_DB)
         res.append({
             "id": dealer.id,
@@ -535,6 +599,14 @@ def get_order_dealers(
             "credit_flag_reason": debt_info.get("credit_flag_reason", None),
             "last_credit_evaluated_at": debt_info.get("last_credit_evaluated_at", None),
         })
+
+    if response is not None:
+        response.headers["X-Total-Count"] = str(total_count)
+        if page is not None and page_size is not None:
+            response.headers["X-Page"] = str(page)
+            response.headers["X-Page-Size"] = str(page_size)
+            response.headers["X-Has-More"] = "true" if (page * page_size) < total_count else "false"
+
     return res
 
 @router.get("/dealers/{dealer_id}/credit-info", response_model=DealerCreditInfoResponse)

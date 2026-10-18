@@ -7,6 +7,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from app.models.entities import DealerEntity, OrderEntity, UserEntity
+from app.models.invoice import InvoiceEntity
 from app.schemas.debt_ledger import (
     AgeingBuckets,
     DealerDebtAgeingItem,
@@ -20,6 +21,7 @@ def compute_debt_ledger_data(
     assigned_sale_id: Optional[int] = None,
     overdue_only: bool = False,
     search: Optional[str] = None,
+    ageing_bucket: Optional[str] = None,
 ) -> DebtLedgerResponse:
     """
     Computes debt ledger per dealer with 4 ageing buckets:
@@ -27,7 +29,7 @@ def compute_debt_ledger_data(
     - 31-60 days
     - 61-90 days
     - > 90 days
-    Directly calculated from real database orders and dealers.
+    Directly calculated from real database orders, confirmed payment collections, and dealers.
     """
     # 1. Fetch dealers
     dealers_query = db.query(DealerEntity)
@@ -45,8 +47,7 @@ def compute_debt_ledger_data(
     # Cache users for sale staff names
     sales_users = {u.id: (u.full_name or u.username) for u in db.query(UserEntity).all()}
 
-    # 2. Fetch all relevant orders
-    # Active orders that count towards receivable: exclude CANCELLED, DRAFT, REJECTED
+    # 2. Fetch all relevant orders and invoices
     orders = db.query(OrderEntity).filter(
         ~OrderEntity.status.in_(["CANCELLED", "DRAFT", "REJECTED"])
     ).all()
@@ -58,11 +59,39 @@ def compute_debt_ledger_data(
             dealer_orders_map[o.dealer_id] = []
         dealer_orders_map[o.dealer_id].append(o)
 
+    # Map invoices by dealer_id
+    all_invoices = db.query(InvoiceEntity).all()
+    dealer_invoices_map = {}
+    for inv in all_invoices:
+        if inv.dealer_id not in dealer_invoices_map:
+            dealer_invoices_map[inv.dealer_id] = []
+        dealer_invoices_map[inv.dealer_id].append(inv)
+
+    # 3. Fetch confirmed payment collections (if any)
+    dealer_payments_map = {}
+    try:
+        from app.models.payment_collection import PaymentCollectionEntity
+        payment_collections = (
+            db.query(PaymentCollectionEntity)
+            .filter(PaymentCollectionEntity.status == "CONFIRMED")
+            .all()
+        )
+        for pc in payment_collections:
+            if pc.dealer_id:
+                amt = float(getattr(pc, "amount", getattr(pc, "amount_collected", 0.0)) or 0.0)
+                dealer_payments_map[pc.dealer_id] = (
+                    dealer_payments_map.get(pc.dealer_id, 0.0) + amt
+                )
+    except Exception:
+        dealer_payments_map = {}
+
     now = datetime.now(timezone.utc)
     items: List[DealerDebtAgeingItem] = []
 
     for d in dealers:
+        d_invoices = dealer_invoices_map.get(d.id, [])
         d_orders = dealer_orders_map.get(d.id, [])
+
         total_receivable = 0.0
         total_paid = 0.0
         remaining_debt = 0.0
@@ -73,50 +102,132 @@ def compute_debt_ledger_data(
         b_over_90 = 0.0
         oldest_days = 0
 
-        for o in d_orders:
-            amt = float(o.total_amount or 0.0)
-            total_receivable += amt
+        if d_invoices:
+            # Ưu tiên tính trực tiếp từ dữ liệu hoá đơn đã đồng bộ và đối trừ
+            for inv in d_invoices:
+                tot = float(inv.total_amount or 0.0)
+                paid = float(inv.paid_amount or 0.0)
+                rem = max(0.0, float(inv.remaining_debt or (tot - paid)))
 
-            if o.status == "PAID":
-                total_paid += amt
-            else:
-                # Outstanding debt order
-                remaining_debt += amt
-                # Calculate age in days from order created_at (or due date)
-                created_dt = o.created_at
-                if created_dt:
-                    if created_dt.tzinfo is None:
-                        created_dt = created_dt.replace(tzinfo=timezone.utc)
-                    created_date = created_dt.date() if hasattr(created_dt, "date") else created_dt
-                    now_date = now.date() if hasattr(now, "date") else now
-                    calendar_days = max(0, (now_date - created_date).days)
-                    time_days = max(0, (now - created_dt).days)
-                    age_days = max(calendar_days, time_days)
+                total_receivable += tot
+                total_paid += paid
+                remaining_debt += rem
+
+                if rem > 0:
+                    created_dt = inv.issue_date or inv.created_at
+                    if created_dt:
+                        if created_dt.tzinfo is None:
+                            created_dt = created_dt.replace(tzinfo=timezone.utc)
+                        created_date = created_dt.date() if hasattr(created_dt, "date") else created_dt
+                        now_date = now.date() if hasattr(now, "date") else now
+                        calendar_days = max(0, (now_date - created_date).days)
+                        time_days = max(0, (now - created_dt).days)
+                        age_days = max(calendar_days, time_days)
+                    else:
+                        age_days = 0
+
+                    if age_days > oldest_days:
+                        oldest_days = age_days
+
+                    if age_days <= 30:
+                        b_0_30 += rem
+                    elif age_days <= 60:
+                        b_31_60 += rem
+                    elif age_days <= 90:
+                        b_61_90 += rem
+                    else:
+                        b_over_90 += rem
+        else:
+            unpaid_orders = []
+            for o in d_orders:
+                amt = float(o.total_amount or 0.0)
+                total_receivable += amt
+
+                if o.status == "PAID":
+                    total_paid += amt
                 else:
-                    age_days = 0
+                    created_dt = o.created_at
+                    if created_dt:
+                        if created_dt.tzinfo is None:
+                            created_dt = created_dt.replace(tzinfo=timezone.utc)
+                        created_date = created_dt.date() if hasattr(created_dt, "date") else created_dt
+                        now_date = now.date() if hasattr(now, "date") else now
+                        calendar_days = max(0, (now_date - created_date).days)
+                        time_days = max(0, (now - created_dt).days)
+                        age_days = max(calendar_days, time_days)
+                    else:
+                        age_days = 0
+                    unpaid_orders.append({
+                        "amount": amt,
+                        "age_days": age_days,
+                        "created_at": created_dt,
+                    })
 
-                if age_days > oldest_days:
-                    oldest_days = age_days
+            # Deduct confirmed collections from route collections
+            extra_paid = dealer_payments_map.get(d.id, 0.0)
+            total_paid += extra_paid
 
-                # Ageing bucket placement
-                if age_days <= 30:
-                    b_0_30 += amt
-                elif age_days <= 60:
-                    b_31_60 += amt
-                elif age_days <= 90:
-                    b_61_90 += amt
-                else:
-                    b_over_90 += amt
+            # Cấn trừ số tiền thu theo tuyến (extra_paid) vào các đơn chưa thanh toán theo FIFO (đơn cũ trước)
+            unpaid_orders.sort(key=lambda x: x["created_at"] or datetime.min.replace(tzinfo=timezone.utc))
 
-        # Overdue condition:
-        # If dealer has debt that reached/exceeded allowed credit terms (max_debt_days)
-        # Or has debt past 30 days
-        allowed_grace = d.max_debt_days or 30
-        is_overdue = (remaining_debt > 0 and oldest_days >= allowed_grace) or ((b_31_60 + b_61_90 + b_over_90) > 0)
+            rem_pay = extra_paid
+            for ord_it in unpaid_orders:
+                amt = ord_it["amount"]
+                if rem_pay > 0:
+                    ded = min(amt, rem_pay)
+                    amt -= ded
+                    rem_pay -= ded
+
+                if amt > 0.0001:
+                    remaining_debt += amt
+                    age_days = ord_it["age_days"]
+                    if age_days > oldest_days:
+                        oldest_days = age_days
+
+                    if age_days <= 30:
+                        b_0_30 += amt
+                    elif age_days <= 60:
+                        b_31_60 += amt
+                    elif age_days <= 90:
+                        b_61_90 += amt
+                    else:
+                        b_over_90 += amt
+
+        if remaining_debt <= 0:
+            remaining_debt = 0.0
+            oldest_days = 0
+            b_0_30 = 0.0
+            b_31_60 = 0.0
+            b_61_90 = 0.0
+            b_over_90 = 0.0
+            is_overdue = False
+        else:
+            # Overdue condition:
+            # If dealer has debt that reached/exceeded allowed credit terms (max_debt_days)
+            # Or has debt past 30 days
+            allowed_grace = d.max_debt_days or 30
+            is_overdue = (oldest_days >= allowed_grace) or ((b_31_60 + b_61_90 + b_over_90) > 0)
 
         # Apply overdue_only filter if requested
         if overdue_only and not is_overdue:
             continue
+
+        # Apply ageing_bucket filter if requested
+        if ageing_bucket and ageing_bucket not in ["", "all"]:
+            if ageing_bucket == "0-30" and b_0_30 <= 0:
+                continue
+            elif ageing_bucket == "31-60" and b_31_60 <= 0:
+                continue
+            elif ageing_bucket == "61-90" and b_61_90 <= 0:
+                continue
+            elif ageing_bucket == "over_90" and b_over_90 <= 0:
+                continue
+            elif ageing_bucket == "has_debt" and remaining_debt <= 0:
+                continue
+            elif ageing_bucket == "settled" and remaining_debt > 0:
+                continue
+            elif ageing_bucket == "overdue" and not is_overdue:
+                continue
 
         sale_name = sales_users.get(d.assigned_sale_id, "Chưa phân công") if d.assigned_sale_id else "Chưa phân công"
 

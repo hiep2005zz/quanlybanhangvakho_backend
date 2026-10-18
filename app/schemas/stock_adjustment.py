@@ -90,6 +90,9 @@ class StockAdjustmentResponse(BaseModel):
 class StockAdjustmentListResponse(BaseModel):
     items: List[StockAdjustmentResponse]
     total: int
+    page: int = 1
+    page_size: int = 10
+    total_pages: int = 1
     pending_count: int = 0
     approved_count: int = 0
     rejected_count: int = 0
