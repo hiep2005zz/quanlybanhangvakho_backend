@@ -190,14 +190,14 @@ def evaluate_dealer_credit_flags(
     allowed_days = int(debt_info.get("overdue_days_allowed", getattr(dealer, "max_debt_days", 30)) or 30)
 
     is_over_limit = current_debt > credit_limit
-    is_overdue = max_debt_age > allowed_days
+    is_overdue = (current_debt > 0 and max_debt_age >= allowed_days) if (allowed_days is not None and allowed_days > 0) else (current_debt > 0)
     has_flag = is_over_limit or is_overdue
 
     reasons: list[str] = []
     if is_over_limit:
         reasons.append(f"Vượt hạn mức công nợ: {current_debt:,.0f} đ > {credit_limit:,.0f} đ")
     if is_overdue:
-        reasons.append(f"Quá hạn thanh toán: khoản nợ {max_debt_age} ngày > {allowed_days} ngày cho phép")
+        reasons.append(f"Quá hạn thanh toán: khoản nợ {max_debt_age} ngày >= {allowed_days} ngày cho phép")
     flag_reason = " | ".join(reasons) if reasons else None
 
     old_flag = bool(getattr(dealer, "credit_warning_flag", False))

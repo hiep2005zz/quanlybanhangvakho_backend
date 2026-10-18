@@ -332,7 +332,11 @@ def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
                         order_date = created_at_val if created_at_val.tzinfo else created_at_val.replace(tzinfo=timezone.utc)
                     else:
                         order_date = now
-                    days_old = max(0, (now - order_date).days)
+                    order_date_dt = order_date.date() if hasattr(order_date, 'date') else order_date
+                    now_dt = now.date() if hasattr(now, 'date') else now
+                    calendar_days = max(0, (now_dt - order_date_dt).days)
+                    time_days = max(0, (now - order_date).days)
+                    days_old = max(calendar_days, time_days)
                     if days_old > max_debt_age:
                         max_debt_age = days_old
                 except Exception:
@@ -341,14 +345,14 @@ def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
     credit_limit = float(getattr(dealer, "credit_limit", 50000000.0) or 50000000.0)
     allowed_days = int(getattr(dealer, "overdue_days_allowed", getattr(dealer, "max_debt_days", 30)) or 30)
     remaining_credit = max(0.0, credit_limit - current_debt)
-    is_overdue = max_debt_age > allowed_days
+    is_overdue = (current_debt > 0 and max_debt_age >= allowed_days) if (allowed_days is not None and allowed_days > 0) else (current_debt > 0)
     is_over_limit = current_debt > credit_limit
     has_warning_flag = is_over_limit or is_overdue or bool(getattr(dealer, "credit_warning_flag", False))
     reasons = []
     if is_over_limit:
         reasons.append(f"Vượt hạn mức ({current_debt:,.0f} đ > {credit_limit:,.0f} đ)")
     if is_overdue:
-        reasons.append(f"Quá hạn thanh toán ({max_debt_age} ngày > {allowed_days} ngày)")
+        reasons.append(f"Quá hạn thanh toán ({max_debt_age} ngày >= {allowed_days} ngày)")
     warning_reason = " | ".join(reasons) if reasons else getattr(dealer, "credit_flag_reason", None)
 
     dealer.is_over_credit_limit = is_over_limit

@@ -87,7 +87,11 @@ def compute_debt_ledger_data(
                 if created_dt:
                     if created_dt.tzinfo is None:
                         created_dt = created_dt.replace(tzinfo=timezone.utc)
-                    age_days = max(0, (now - created_dt).days)
+                    created_date = created_dt.date() if hasattr(created_dt, "date") else created_dt
+                    now_date = now.date() if hasattr(now, "date") else now
+                    calendar_days = max(0, (now_date - created_date).days)
+                    time_days = max(0, (now - created_dt).days)
+                    age_days = max(calendar_days, time_days)
                 else:
                     age_days = 0
 
@@ -105,10 +109,10 @@ def compute_debt_ledger_data(
                     b_over_90 += amt
 
         # Overdue condition:
-        # If dealer has debt that exceeded allowed credit terms (max_debt_days or overdue_days_allowed)
+        # If dealer has debt that reached/exceeded allowed credit terms (max_debt_days)
         # Or has debt past 30 days
-        allowed_grace = (d.max_debt_days or 30) + (d.overdue_days_allowed or 0)
-        is_overdue = (remaining_debt > 0 and oldest_days > allowed_grace) or ((b_31_60 + b_61_90 + b_over_90) > 0)
+        allowed_grace = d.max_debt_days or 30
+        is_overdue = (remaining_debt > 0 and oldest_days >= allowed_grace) or ((b_31_60 + b_61_90 + b_over_90) > 0)
 
         # Apply overdue_only filter if requested
         if overdue_only and not is_overdue:

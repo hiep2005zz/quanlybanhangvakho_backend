@@ -531,11 +531,11 @@ def search_dealers(
         has_flag = bool(debt_info.get("credit_warning_flag", False))
         flag_reason = debt_info.get("credit_flag_reason")
 
-        if current_debt > c_limit and max_debt_age > c_days:
+        if is_over_l and is_over_d:
             debt_status = "Vượt hạn mức & Quá hạn"
-        elif current_debt > c_limit:
+        elif is_over_l:
             debt_status = "Vượt hạn mức"
-        elif max_debt_age > c_days:
+        elif is_over_d:
             debt_status = "Quá hạn thanh toán"
         else:
             debt_status = "Trong hạn mức" 
@@ -627,14 +627,14 @@ def search_dealers(
         # ==========================================
         # Tự động tính toán theo công nợ thực tế thay vì phụ thuộc cờ lưu tĩnh
         is_over_l = bool(current_debt > c_limit) if (c_limit is not None and c_limit > 0) else False
-        is_over_d = bool(max_debt_age > c_days) if (c_days is not None and c_days > 0) else False
+        is_over_d = bool(current_debt > 0 and max_debt_age >= c_days) if (c_days is not None and c_days > 0) else (current_debt > 0 if c_days == 0 else False)
         has_flag = is_over_l or is_over_d or bool(getattr(dealer, "credit_warning_flag", False))
 
         reasons = []
         if is_over_l:
             reasons.append(f"Vượt hạn mức ({current_debt:,.0f} đ > {c_limit:,.0f} đ)")
         if is_over_d:
-            reasons.append(f"Quá hạn thanh toán ({max_debt_age} ngày > {c_days} ngày)")
+            reasons.append(f"Quá hạn thanh toán ({max_debt_age} ngày >= {c_days} ngày)")
         flag_reason = " | ".join(reasons) if reasons else getattr(dealer, "credit_flag_reason", None)
         last_eval = getattr(dealer, "last_credit_evaluated_at", None)
 
@@ -647,6 +647,19 @@ def search_dealers(
             dealer.credit_warning_flag = has_flag
             dealer.credit_flag_reason = flag_reason
             dealers_data_changed = True
+            try:
+                from app.core.database import SessionLocal
+                from app.models.entities import DealerEntity
+                with SessionLocal() as db_session:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.id == dealer.id).first()
+                    if db_d:
+                        db_d.is_over_credit_limit = is_over_l
+                        db_d.is_overdue = is_over_d
+                        db_d.credit_warning_flag = has_flag
+                        db_d.credit_flag_reason = flag_reason
+                        db_session.commit()
+            except Exception:
+                pass
 
         if credit_status:
             cs = credit_status.lower().strip()
