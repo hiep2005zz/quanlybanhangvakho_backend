@@ -14,86 +14,178 @@ def get_utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def sync_dealer_invoices_from_orders(dealer: DealerEntity, db: Session) -> None:
+from sqlalchemy import text
+
+
+def resync_all_debts_sql(db: Session) -> Dict[str, Any]:
     """
-    Tự động đồng bộ các đơn hàng đã phát hành của đại lý vào bảng invoices nếu chưa tồn tại.
+    Đồng bộ dữ liệu công nợ toàn diện trên CSDL SQL Server:
+    - Nếu là SQL Server (mssql): ưu tiên gọi Stored Procedure sp_sync_all_dealer_debt.
+    - Đồng thời kiểm tra cập nhật các bảng invoices, orders, receipt_vouchers, payment_collections, debt_adjustments.
     """
+    is_mssql = False
+    try:
+        bind = db.get_bind()
+        is_mssql = (bind.dialect.name == "mssql")
+    except Exception:
+        pass
+
+    if is_mssql:
+        try:
+            db.execute(text("EXEC sp_sync_all_dealer_debt;"))
+            db.commit()
+            return {"status": "ok", "engine": "sqlserver", "message": "Đã thực thi sp_sync_all_dealer_debt trên SQL Server thành công."}
+        except Exception:
+            db.rollback()
+
+    # Thuật toán chuẩn hóa công nợ trên cơ sở dữ liệu
     now = get_utc_now()
-    allowed_days = int(getattr(dealer, "overdue_days_allowed", getattr(dealer, "max_debt_days", 30)) or 30)
+    try:
+        from app.models.receipt_voucher import ReceiptVoucherEntity
+    except Exception:
+        ReceiptVoucherEntity = None
+    try:
+        from app.models.payment_collection import PaymentCollectionEntity
+    except Exception:
+        PaymentCollectionEntity = None
+    try:
+        from app.models.debt_adjustment import DebtAdjustmentEntity
+    except Exception:
+        DebtAdjustmentEntity = None
 
-    # Lấy các đơn hàng không bị hủy của đại lý
-    orders = db.query(OrderEntity).filter(
-        OrderEntity.dealer_id == dealer.id,
-        OrderEntity.status != "CANCELLED",
-    ).all()
+    dealers = db.query(DealerEntity).all()
+    for dealer in dealers:
+        allowed_days = int(getattr(dealer, "overdue_days_allowed", getattr(dealer, "max_debt_days", 30)) or 30)
+        orders = db.query(OrderEntity).filter(
+            OrderEntity.dealer_id == dealer.id,
+            ~OrderEntity.status.in_(["CANCELLED", "REJECTED", "DRAFT"]),
+        ).all()
 
-    for ord in orders:
-        inv_code = f"HD-{ord.order_code}"
-        existing = db.query(InvoiceEntity).filter(InvoiceEntity.invoice_code == inv_code).first()
-        if not existing:
-            # Xác định ngày phát hành & hạn thanh toán
+        for ord in orders:
+            inv_code = f"HD-{ord.order_code}"
+            inv = db.query(InvoiceEntity).filter(InvoiceEntity.invoice_code == inv_code).first()
             order_created = ord.created_at or now
             if order_created.tzinfo is None:
                 order_created = order_created.replace(tzinfo=timezone.utc)
-            
             due_date = order_created + timedelta(days=allowed_days)
             total = float(ord.total_amount or 0.0)
 
-            # Đơn hàng PAID thì paid_amount = total, còn lại là UNPAID
-            if ord.status == "PAID":
-                paid = total
-                status = "PAID"
-            elif ord.status in ("DRAFT", "PENDING_APPROVAL"):
-                # Đơn chờ duyệt/nháp chưa phát hành hóa đơn chính thức
-                continue
-            else:
-                paid = 0.0
-                if due_date < now:
-                    status = "OVERDUE"
-                else:
-                    status = "UNPAID"
-
-            remaining = max(0.0, total - paid)
-
-            # Lấy items
-            items_data = []
-            if ord.items_json:
+            # 1. Thu thập tiền thu từ receipt_vouchers trong SQL
+            rv_sum = 0.0
+            if ReceiptVoucherEntity:
                 try:
-                    raw_items = json.loads(ord.items_json)
-                    if isinstance(raw_items, list):
-                        items_data = raw_items
+                    rv_records = db.query(ReceiptVoucherEntity).filter(
+                        ReceiptVoucherEntity.order_code == ord.order_code
+                    ).all()
+                    rv_sum = sum(float(r.amount or 0.0) for r in rv_records)
                 except Exception:
                     pass
 
-            if not items_data:
-                db_items = db.query(OrderItemEntity).filter(OrderItemEntity.order_id == ord.id).all()
-                for it in db_items:
-                    items_data.append({
-                        "product_id": it.product_id,
-                        "product_name": it.product_name or f"Sản phẩm #{it.product_id}",
-                        "quantity": it.quantity,
-                        "unit_name": it.unit_name or "Cái",
-                        "price": it.unit_price,
-                        "total": it.quantity * it.unit_price,
-                    })
+            # 2. Thu thập tiền thu từ payment_collections đã xác nhận
+            pc_sum = 0.0
+            if PaymentCollectionEntity:
+                try:
+                    pc_records = db.query(PaymentCollectionEntity).filter(
+                        PaymentCollectionEntity.order_code == ord.order_code,
+                        PaymentCollectionEntity.status == "CONFIRMED"
+                    ).all()
+                    pc_sum = sum(float(p.amount or 0.0) for p in pc_records)
+                except Exception:
+                    pass
 
-            new_invoice = InvoiceEntity(
-                invoice_code=inv_code,
-                order_id=ord.id,
-                order_code=ord.order_code,
-                dealer_id=dealer.id,
-                dealer_name=dealer.name,
-                issue_date=order_created,
-                due_date=due_date,
-                total_amount=total,
-                paid_amount=paid,
-                remaining_debt=remaining,
-                status=status,
-                items_json=json.dumps(items_data, ensure_ascii=False),
-                note=ord.note or f"Hóa đơn bán hàng theo đơn {ord.order_code}",
-            )
-            db.add(new_invoice)
+            # 3. Thu thập giảm trừ nợ từ debt_adjustments
+            adj_sum = 0.0
+            if DebtAdjustmentEntity:
+                try:
+                    adj_records = db.query(DebtAdjustmentEntity).filter(
+                        DebtAdjustmentEntity.original_invoice_code.in_([inv_code, ord.order_code]),
+                        DebtAdjustmentEntity.status == "POSTED"
+                    ).all()
+                    adj_sum = sum(float(a.total_adjusted_amount or 0.0) for a in adj_records)
+                except Exception:
+                    pass
+
+            total_paid = rv_sum + pc_sum
+            if ord.status == "PAID" and total_paid == 0:
+                total_paid = total
+
+            remaining = max(0.0, total - total_paid - adj_sum)
+
+            if remaining <= 0:
+                inv_status = "PAID"
+                ord.status = "PAID"
+            elif due_date < now:
+                inv_status = "OVERDUE"
+            elif total_paid > 0 or adj_sum > 0:
+                inv_status = "PARTIAL"
+            else:
+                inv_status = "UNPAID"
+
+            if not inv:
+                items_data = []
+                if ord.items_json:
+                    try:
+                        raw_items = json.loads(ord.items_json)
+                        if isinstance(raw_items, list):
+                            items_data = raw_items
+                    except Exception:
+                        pass
+                if not items_data:
+                    db_items = db.query(OrderItemEntity).filter(OrderItemEntity.order_id == ord.id).all()
+                    for it in db_items:
+                        items_data.append({
+                            "product_id": it.product_id,
+                            "product_name": it.product_name or f"Sản phẩm #{it.product_id}",
+                            "quantity": it.quantity,
+                            "unit_name": it.unit_name or "Cái",
+                            "price": it.unit_price,
+                            "total": it.quantity * it.unit_price,
+                        })
+                inv = InvoiceEntity(
+                    invoice_code=inv_code,
+                    order_id=ord.id,
+                    order_code=ord.order_code,
+                    dealer_id=dealer.id,
+                    dealer_name=dealer.name,
+                    issue_date=order_created,
+                    due_date=due_date,
+                    total_amount=total,
+                    paid_amount=total_paid,
+                    remaining_debt=remaining,
+                    status=inv_status,
+                    items_json=json.dumps(items_data, ensure_ascii=False),
+                    note=ord.note or f"Hóa đơn bán hàng theo đơn {ord.order_code}",
+                )
+                db.add(inv)
+            else:
+                inv.total_amount = total
+                inv.paid_amount = total_paid
+                inv.remaining_debt = remaining
+                inv.status = inv_status
+                inv.due_date = due_date
+
+        # Xử lý các hóa đơn có đơn bị hủy
+        cancelled_orders = db.query(OrderEntity).filter(
+            OrderEntity.dealer_id == dealer.id,
+            OrderEntity.status.in_(["CANCELLED", "REJECTED"]),
+        ).all()
+        for c_ord in cancelled_orders:
+            inv = db.query(InvoiceEntity).filter(InvoiceEntity.order_code == c_ord.order_code).first()
+            if inv:
+                inv.remaining_debt = 0.0
+                inv.status = "CANCELLED"
+
     db.commit()
+    return {"status": "ok", "message": "Đã đồng bộ công nợ thành công."}
+
+
+def sync_dealer_invoices_from_orders(dealer: DealerEntity, db: Session) -> None:
+    """
+    Tự động đồng bộ các đơn hàng đã phát hành của đại lý vào bảng invoices.
+    Đồng thời cập nhật tiền thanh toán thực tế và giảm trừ nợ từ SQL Server.
+    """
+    resync_all_debts_sql(db)
+
 
 
 def calculate_agency_debt_summary(dealer: DealerEntity, db: Session) -> Dict[str, Any]:
@@ -114,6 +206,21 @@ def calculate_agency_debt_summary(dealer: DealerEntity, db: Session) -> Dict[str
     nearest_due_invoice_code: Optional[str] = None
     nearest_due_date_str: Optional[str] = None
 
+    adj_map = {}
+    try:
+        from app.models.debt_adjustment import DebtAdjustmentEntity
+        for a in db.query(DebtAdjustmentEntity).filter(
+            DebtAdjustmentEntity.dealer_id == dealer.id,
+            DebtAdjustmentEntity.status == "POSTED"
+        ).all():
+            if a.original_invoice_code:
+                c = a.original_invoice_code.strip()
+                adj_map[c] = adj_map.get(c, 0.0) + float(a.total_adjusted_amount or 0.0)
+                raw_c = c.replace("HD-", "").strip()
+                adj_map[raw_c] = adj_map.get(raw_c, 0.0) + float(a.total_adjusted_amount or 0.0)
+    except Exception:
+        pass
+
     open_invoices = []
     for inv in invoices:
         due = inv.due_date
@@ -121,7 +228,8 @@ def calculate_agency_debt_summary(dealer: DealerEntity, db: Session) -> Dict[str
             due = due.replace(tzinfo=timezone.utc)
 
         # Cập nhật trạng thái tức thời
-        rem = max(0.0, float(inv.total_amount or 0.0) - float(inv.paid_amount or 0.0))
+        adj_val = adj_map.get(inv.invoice_code, 0.0) or adj_map.get(inv.order_code, 0.0)
+        rem = max(0.0, float(inv.total_amount or 0.0) - float(inv.paid_amount or 0.0) - adj_val)
         inv.remaining_debt = rem
         if rem <= 0:
             inv.status = "PAID"
@@ -131,7 +239,7 @@ def calculate_agency_debt_summary(dealer: DealerEntity, db: Session) -> Dict[str
             total_debt += rem
             open_invoices.append((inv, due, rem))
         else:
-            if float(inv.paid_amount or 0.0) > 0:
+            if float(inv.paid_amount or 0.0) > 0 or adj_val > 0:
                 inv.status = "PARTIAL"
             else:
                 inv.status = "UNPAID"

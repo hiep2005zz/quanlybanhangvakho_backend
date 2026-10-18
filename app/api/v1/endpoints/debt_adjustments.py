@@ -28,6 +28,7 @@ from app.services.debt_adjustment_service import (
     get_pending_returns,
     preview_debt_adjustment_from_return,
     create_debt_adjustment,
+    get_original_order_and_invoice,
 )
 
 router = APIRouter()
@@ -281,6 +282,47 @@ def export_debt_adjustment_pdf(
     }
 
 
+def _format_return_order_response(ro: ReturnOrderEntity, db: Session) -> Dict[str, Any]:
+    invoice, _ = get_original_order_and_invoice(ro, db)
+    inv_code = invoice.invoice_code if invoice else (ro.original_invoice_code or f"HD-{ro.order_code}")
+    inv_id = invoice.id if invoice else ro.original_invoice_id
+
+    items_list = []
+    for it in ro.items:
+        items_list.append({
+            "id": it.id,
+            "product_id": it.product_id,
+            "product_code": it.product_code,
+            "product_name": it.product_name,
+            "unit_name": it.unit_name or "Cái",
+            "quantity": it.quantity,
+            "unit_price": float(it.unit_price or 0.0),
+            "line_total": float(it.line_total or 0.0),
+            "reason": it.reason,
+        })
+    total_qty = sum(it.quantity for it in ro.items)
+    return {
+        "id": ro.id,
+        "return_code": ro.return_code,
+        "order_id": ro.order_id,
+        "order_code": ro.order_code,
+        "original_invoice_id": inv_id,
+        "original_invoice_code": inv_code,
+        "dealer_id": ro.dealer_id,
+        "dealer_name": ro.dealer_name,
+        "status": ro.status,
+        "reason": ro.reason,
+        "note": ro.note,
+        "subtotal_amount": float(ro.subtotal_amount or 0.0),
+        "tax_amount": float(ro.tax_amount or 0.0),
+        "total_amount": float(ro.total_amount or 0.0),
+        "total_items_count": total_qty,
+        "confirmed_at": ro.confirmed_at,
+        "created_at": ro.created_at,
+        "items": items_list,
+    }
+
+
 @router.post("/mock-return", response_model=PendingReturnOrderResponse, status_code=status.HTTP_201_CREATED)
 def create_mock_confirmed_return(
     order_id: Optional[int] = None,
@@ -292,15 +334,38 @@ def create_mock_confirmed_return(
     dựa trên một Đơn hàng / Hóa đơn thực tế trong hệ thống để Kế toán lập giảm nợ ngay.
     """
     now = datetime.now(timezone.utc)
-    if order_id:
-        order = db.query(OrderEntity).filter(OrderEntity.id == order_id).first()
-    else:
-        # Lấy đơn hàng gần nhất có trạng thái không bị hủy
-        order = db.query(OrderEntity).filter(~OrderEntity.status.in_(["CANCELLED", "DRAFT", "REJECTED"])).order_by(desc(OrderEntity.id)).first()
+    target_order = None
 
-    if not order:
+    if order_id:
+        target_order = db.query(OrderEntity).filter(OrderEntity.id == order_id).first()
+    else:
+        # Lấy danh sách các đơn hàng hợp lệ
+        valid_orders = db.query(OrderEntity).filter(
+            ~OrderEntity.status.in_(["CANCELLED", "DRAFT", "REJECTED"])
+        ).order_by(desc(OrderEntity.id)).all()
+
+        for cand in valid_orders:
+            # Kiểm tra xem đơn này đã có phiếu trả hàng chưa lập giảm nợ hay không
+            cand_returns = db.query(ReturnOrderEntity).filter(ReturnOrderEntity.order_id == cand.id).all()
+            if not cand_returns:
+                target_order = cand
+                break
+            # Nếu có phiếu trả hàng nhưng CHƯA lập debt_adjustment thì dùng lại
+            unadjusted = [
+                r for r in cand_returns
+                if not db.query(DebtAdjustmentEntity).filter(DebtAdjustmentEntity.return_order_id == r.id).first()
+            ]
+            if unadjusted:
+                return _format_return_order_response(unadjusted[0], db)
+
+        # Nếu tất cả đơn hiện tại đều đã được trả và lập giảm nợ, lấy đơn mới nhất để tạo thêm phiếu trả
+        if not target_order and valid_orders:
+            target_order = valid_orders[0]
+
+    if not target_order:
         raise HTTPException(status_code=400, detail="Chưa có đơn hàng nào trong hệ thống để tạo phiếu trả hàng.")
 
+    order = target_order
     dealer = db.query(DealerEntity).filter(DealerEntity.id == order.dealer_id).first()
     if not dealer:
         dealer = DealerEntity(code=f"DL{order.dealer_id}", name=order.dealer_name)
@@ -312,11 +377,9 @@ def create_mock_confirmed_return(
     invoice = db.query(InvoiceEntity).filter(InvoiceEntity.invoice_code == inv_code).first()
 
     today_str = now.strftime("%Y%m%d")
-    ret_code = f"TH-{today_str}-{order.id:03d}"
-
-    existing_ro = db.query(ReturnOrderEntity).filter(ReturnOrderEntity.return_code == ret_code).first()
-    if existing_ro:
-        return existing_ro
+    import uuid
+    uid_suffix = uuid.uuid4().hex[:4].upper()
+    ret_code = f"TH-{today_str}-{order.id:03d}-{uid_suffix}"
 
     # Lấy mặt hàng của đơn
     from app.services.debt_adjustment_service import extract_original_sold_items_map
@@ -368,4 +431,5 @@ def create_mock_confirmed_return(
     db.add(ro)
     db.commit()
     db.refresh(ro)
-    return ro
+    return _format_return_order_response(ro, db)
+

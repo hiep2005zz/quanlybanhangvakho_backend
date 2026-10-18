@@ -39,4 +39,5 @@ from app.models.debt_adjustment import (
     ReturnOrderEntity,
     ReturnOrderItemEntity,
 )
+from app.models.receipt_voucher import ReceiptVoucherEntity
 

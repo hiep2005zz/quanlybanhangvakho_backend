@@ -45,6 +45,7 @@ from app.models.debt_adjustment import (
     ReturnOrderEntity,
     ReturnOrderItemEntity,
 )
+from app.models.receipt_voucher import ReceiptVoucherEntity
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 
@@ -1051,6 +1052,49 @@ def init_db():
                         print(f"Sample return order {ret_order.return_code} seeded successfully.")
         except Exception as ro_err:
             print(f"Notice: Return order seed skipped: {ro_err}")
+
+        # 12. Seed Receipt Vouchers (Phiếu thu tiền đại lý) trên SQL Server nếu chưa có
+        try:
+            if db.query(ReceiptVoucherEntity).count() == 0:
+                print("Seeding initial receipt vouchers into SQL Server...")
+                from app.models.dealer import RECEIPT_VOUCHERS_JSON_PATH
+                if os.path.exists(RECEIPT_VOUCHERS_JSON_PATH):
+                    with open(RECEIPT_VOUCHERS_JSON_PATH, "r", encoding="utf-8") as rf:
+                        v_data = json.load(rf)
+                        for r_code, v in v_data.items():
+                            c_dt_str = v.get("created_at")
+                            c_dt = datetime.fromisoformat(c_dt_str.replace("Z", "+00:00")) if c_dt_str else datetime.now(timezone.utc)
+                            db.add(ReceiptVoucherEntity(
+                                receipt_code=r_code,
+                                dealer_id=v.get("dealer_id", 1),
+                                dealer_code=v.get("dealer_code", "DL001"),
+                                dealer_name=v.get("dealer_name", ""),
+                                dealer_address=v.get("dealer_address"),
+                                dealer_phone=v.get("dealer_phone"),
+                                dealer_tax_code=v.get("dealer_tax_code"),
+                                order_code=v.get("order_code"),
+                                amount=float(v.get("amount", 0.0) or 0.0),
+                                amount_in_words=v.get("amount_in_words"),
+                                payment_method=v.get("payment_method", "Tiền mặt"),
+                                reason=v.get("reason"),
+                                payer_name=v.get("payer_name"),
+                                collector_name=v.get("collector_name"),
+                                collector_role=v.get("collector_role"),
+                                created_at=c_dt,
+                                note=v.get("note"),
+                            ))
+                        db.commit()
+                        print("Initial receipt vouchers seeded into SQL Server successfully.")
+        except Exception as rv_err:
+            print(f"Notice: Receipt vouchers seed notice: {rv_err}")
+
+        # 13. Tự động đồng bộ chuẩn hóa dữ liệu công nợ trên SQL Server
+        try:
+            from app.services.invoice_service import resync_all_debts_sql
+            resync_all_debts_sql(db)
+            print("All debt data synchronized on SQL Server successfully.")
+        except Exception as sync_err:
+            print(f"Notice: SQL Server debt resync notice: {sync_err}")
 
         print("Database initialization completed successfully.")
     except Exception as e:

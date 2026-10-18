@@ -21,7 +21,7 @@ from app.core.database import get_db
 from app.core.rbac import Permission, Role
 from app.schemas.auth import UserResponse
 from app.api.v1.endpoints.products import RAW_PRODUCTS
-from app.models.dealer import DEALERS_DB, save_dealers_db, load_dealers_db
+from app.models.dealer import DEALERS_DB, save_dealers_db, load_dealers_db, compute_dealer_unified_debt, parse_tx_date
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 
 from app.models.user import USERS_DB
@@ -289,71 +289,123 @@ class DealerCreditInfoResponse(BaseModel):
 def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
     """
     Tính toán chi tiết công nợ hiện tại, tuổi nợ và trạng thái nợ quá hạn của đại lý.
+    Đồng bộ chuẩn xác với Sổ chi tiết công nợ (S31-DN), hóa đơn và phiếu thu.
     """
-    current_debt = 0.0
-    max_debt_age = 0
-    # Tự động đồng bộ các đơn hàng từ SQL database vào orders_db nếu chưa có
+    now = datetime.now(timezone.utc)
+    payments_by_order: dict[str, float] = {}
+    unallocated_payments: float = 0.0
+    adj_by_order: dict[str, float] = {}
+    seen_receipt_codes = set()
+
     try:
         from app.core.database import SessionLocal
         from app.models.entities import OrderEntity
-        with SessionLocal() as db_session:
-            for db_order in db_session.query(OrderEntity).filter(OrderEntity.dealer_id == dealer.id).all():
-                if db_order.id not in orders_db:
-                    orders_db[db_order.id] = {
-                        "id": db_order.id,
-                        "order_code": db_order.order_code,
-                        "dealer_id": db_order.dealer_id,
-                        "dealer_name": db_order.dealer_name,
-                        "total_amount": db_order.total_amount,
-                        "status": db_order.status,
-                        "created_at": db_order.created_at.isoformat() if db_order.created_at else now.isoformat(),
-                    }
-    except Exception:
-        pass
-
-    adj_by_order: dict[str, float] = {}
-    try:
+        from app.models.receipt_voucher import ReceiptVoucherEntity
+        from app.models.payment_collection import PaymentCollectionEntity
         from app.models.debt_adjustment import DebtAdjustmentEntity
+        from app.models.invoice import InvoiceEntity
+
         with SessionLocal() as db_session:
-            for adj in db_session.query(DebtAdjustmentEntity).filter(
-                DebtAdjustmentEntity.dealer_id == dealer.id,
-                DebtAdjustmentEntity.status == "POSTED",
-            ).all():
-                ord_c = adj.original_invoice_code.replace("HD-", "").strip()
-                adj_by_order[ord_c] = adj_by_order.get(ord_c, 0.0) + float(adj.total_adjusted_amount or 0.0)
+            # 1. Tự động đồng bộ các đơn hàng từ SQL database vào orders_db nếu chưa có
+            for db_order in db_session.query(OrderEntity).filter(OrderEntity.dealer_id == dealer.id).all():
+                orders_db[db_order.id] = {
+                    "id": db_order.id,
+                    "order_code": db_order.order_code,
+                    "dealer_id": db_order.dealer_id,
+                    "dealer_name": db_order.dealer_name,
+                    "total_amount": float(db_order.total_amount or 0.0),
+                    "status": db_order.status,
+                    "created_at": db_order.created_at.isoformat() if db_order.created_at else now.isoformat(),
+                    "dt_obj": parse_tx_date(db_order.created_at),
+                }
+
+            # 2. Toàn bộ phiếu thu từ ReceiptVoucherEntity
+            try:
+                sql_vouchers = db_session.query(ReceiptVoucherEntity).filter(ReceiptVoucherEntity.dealer_id == dealer.id).all()
+                for v in sql_vouchers:
+                    seen_receipt_codes.add(v.receipt_code)
+                    amt = float(v.amount or 0.0)
+                    if v.order_code and v.order_code.strip():
+                        oc = v.order_code.strip()
+                        payments_by_order[oc] = payments_by_order.get(oc, 0.0) + amt
+                    else:
+                        unallocated_payments += amt
+            except Exception:
+                pass
+
+            # 3. Thu tiền theo tuyến từ PaymentCollectionEntity
+            try:
+                sql_pcols = db_session.query(PaymentCollectionEntity).filter(
+                    PaymentCollectionEntity.dealer_id == dealer.id,
+                    PaymentCollectionEntity.status == "CONFIRMED"
+                ).all()
+                for pc in sql_pcols:
+                    amt = float(pc.amount or 0.0)
+                    if pc.order_code and pc.order_code.strip():
+                        oc = pc.order_code.strip()
+                        payments_by_order[oc] = payments_by_order.get(oc, 0.0) + amt
+                    else:
+                        unallocated_payments += amt
+            except Exception:
+                pass
+
+            # 4. Giảm trừ công nợ do trả hàng từ DebtAdjustmentEntity
+            try:
+                adjustments = db_session.query(DebtAdjustmentEntity).filter(
+                    DebtAdjustmentEntity.dealer_id == dealer.id,
+                    DebtAdjustmentEntity.status == "POSTED",
+                ).all()
+                for adj in adjustments:
+                    ord_c = (adj.original_invoice_code or "").replace("HD-", "").strip()
+                    adj_by_order[ord_c] = adj_by_order.get(ord_c, 0.0) + float(adj.total_adjusted_amount or 0.0)
+            except Exception:
+                pass
+
+            # 5. Đồng bộ trạng thái đã thanh toán từ hóa đơn SQL Server nếu có
+            try:
+                invoices = db_session.query(InvoiceEntity).filter(InvoiceEntity.dealer_id == dealer.id).all()
+                for inv in invoices:
+                    if inv.order_id and inv.order_id in orders_db:
+                        if inv.remaining_debt <= 0:
+                            orders_db[inv.order_id]["status"] = "PAID"
+            except Exception:
+                pass
     except Exception:
         pass
 
-    now = datetime.now(timezone.utc)
-    for o in orders_db.values():
-        if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
-            ord_c = o.get("order_code", "")
-            adj_offset = adj_by_order.get(ord_c, 0.0)
-            eff_debt = max(0.0, float(o.get("total_amount", 0.0) or 0.0) - adj_offset)
-            current_debt += eff_debt
-            if eff_debt > 0:
-                created_at_val = o.get("created_at")
-                if created_at_val:
-                    try:
-                        if isinstance(created_at_val, str):
-                            s = created_at_val.replace("Z", "+00:00")
-                            order_date = datetime.fromisoformat(s)
-                            if not order_date.tzinfo:
-                                order_date = order_date.replace(tzinfo=timezone.utc)
-                        elif isinstance(created_at_val, datetime):
-                            order_date = created_at_val if created_at_val.tzinfo else created_at_val.replace(tzinfo=timezone.utc)
-                        else:
-                            order_date = now
-                        days_old = max(0, (now - order_date).days)
-                        if days_old > max_debt_age:
-                            max_debt_age = days_old
-                    except Exception:
-                        pass
+    # 6. Đồng bộ thêm từ RECEIPT_VOUCHERS_DB in-memory / JSON
+    try:
+        from app.models.dealer import RECEIPT_VOUCHERS_DB, load_receipt_vouchers_db
+        load_receipt_vouchers_db()
+        for v_code, v in RECEIPT_VOUCHERS_DB.items():
+            if v.get("dealer_id") == dealer.id and v_code not in seen_receipt_codes:
+                amt = float(v.get("amount", 0.0) or 0.0)
+                oc = v.get("order_code")
+                if oc and oc.strip():
+                    oc_clean = oc.strip()
+                    payments_by_order[oc_clean] = payments_by_order.get(oc_clean, 0.0) + amt
+                else:
+                    unallocated_payments += amt
+    except Exception:
+        pass
+
+    # 7. Thu thập toàn bộ đơn hàng của đại lý này
+    dealer_orders = [o for o in orders_db.values() if o.get("dealer_id") == dealer.id]
+
+    # 8. Tính toán số dư công nợ và tuổi nợ thực tế
+    current_debt, max_debt_age = compute_dealer_unified_debt(
+        dealer.id,
+        dealer_orders,
+        payments_by_order,
+        unallocated_payments,
+        adj_by_order,
+        now,
+    )
 
     credit_limit = float(getattr(dealer, "credit_limit", 50000000.0) or 50000000.0)
     allowed_days = int(getattr(dealer, "overdue_days_allowed", getattr(dealer, "max_debt_days", 30)) or 30)
     remaining_credit = max(0.0, credit_limit - current_debt)
-    is_overdue = max_debt_age > allowed_days
+    is_overdue = (current_debt > 0) and (max_debt_age > allowed_days)
     is_over_limit = current_debt > credit_limit
 
     return {

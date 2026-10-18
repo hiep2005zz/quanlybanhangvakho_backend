@@ -86,43 +86,64 @@ def compute_debt_ledger_data(
         except Exception:
             pass
 
+        # Map các khoản thanh toán thực tế từ SQL Server (receipt_vouchers & payment_collections)
+        d_payments: dict[str, float] = {}
+        try:
+            from app.models.receipt_voucher import ReceiptVoucherEntity
+            for rv in db.query(ReceiptVoucherEntity).filter(ReceiptVoucherEntity.dealer_id == d.id).all():
+                if rv.order_code:
+                    d_payments[rv.order_code] = d_payments.get(rv.order_code, 0.0) + float(rv.amount or 0.0)
+        except Exception:
+            pass
+        try:
+            from app.models.payment_collection import PaymentCollectionEntity
+            for pc in db.query(PaymentCollectionEntity).filter(
+                PaymentCollectionEntity.dealer_id == d.id,
+                PaymentCollectionEntity.status == "CONFIRMED"
+            ).all():
+                if pc.order_code:
+                    d_payments[pc.order_code] = d_payments.get(pc.order_code, 0.0) + float(pc.amount or 0.0)
+        except Exception:
+            pass
+
         for o in d_orders:
             amt = float(o.total_amount or 0.0)
             total_receivable += amt
 
+            paid_offset = d_payments.get(o.order_code, 0.0)
             adj_offset = d_adjustments.get(o.order_code, 0.0)
-            if o.status == "PAID":
-                total_paid += amt
+            if o.status == "PAID" and paid_offset == 0:
+                paid_offset = max(0.0, amt - adj_offset)
+
+            # Outstanding debt order sau khi trừ thanh toán và giảm nợ từ trả hàng
+            effective_rem = max(0.0, amt - paid_offset - adj_offset)
+            total_paid += min(amt, paid_offset + adj_offset)
+            remaining_debt += effective_rem
+
+            if effective_rem <= 0:
+                continue
+
+            # Calculate age in days from order created_at (or due date)
+            created_dt = o.created_at
+            if created_dt:
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=timezone.utc)
+                age_days = max(0, (now - created_dt).days)
             else:
-                # Outstanding debt order sau khi trừ giảm nợ từ trả hàng
-                effective_rem = max(0.0, amt - adj_offset)
-                total_paid += min(amt, adj_offset)
-                remaining_debt += effective_rem
+                age_days = 0
 
-                if effective_rem <= 0:
-                    continue
+            if age_days > oldest_days:
+                oldest_days = age_days
 
-                # Calculate age in days from order created_at (or due date)
-                created_dt = o.created_at
-                if created_dt:
-                    if created_dt.tzinfo is None:
-                        created_dt = created_dt.replace(tzinfo=timezone.utc)
-                    age_days = max(0, (now - created_dt).days)
-                else:
-                    age_days = 0
-
-                if age_days > oldest_days:
-                    oldest_days = age_days
-
-                # Ageing bucket placement (áp dụng số tiền nợ thực tế sau giảm trừ)
-                if age_days <= 30:
-                    b_0_30 += effective_rem
-                elif age_days <= 60:
-                    b_31_60 += effective_rem
-                elif age_days <= 90:
-                    b_61_90 += effective_rem
-                else:
-                    b_over_90 += effective_rem
+            # Ageing bucket placement (áp dụng số tiền nợ thực tế sau giảm trừ)
+            if age_days <= 30:
+                b_0_30 += effective_rem
+            elif age_days <= 60:
+                b_31_60 += effective_rem
+            elif age_days <= 90:
+                b_61_90 += effective_rem
+            else:
+                b_over_90 += effective_rem
 
         # Overdue condition:
         # If dealer has debt that exceeded allowed credit terms (max_debt_days or overdue_days_allowed)

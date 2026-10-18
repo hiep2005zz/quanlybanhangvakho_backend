@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles, get_current_user
 from app.core.database import get_db
-from app.models.dealer import DEALERS_DB, Dealer, save_dealers_db, load_dealers_db
+from app.models.dealer import DEALERS_DB, Dealer, save_dealers_db, load_dealers_db, compute_dealer_unified_debt, parse_tx_date
 from app.models.user import USERS_DB, load_users_db
 from app.schemas.auth import UserResponse
 from app.services.audit_service import log_audit_event
@@ -424,6 +424,83 @@ def get_dealer_stats(
     return compute_dealer_stats(current_user)
 
 
+def prefetch_dealer_debt_context(db: Optional[Session] = None):
+    """
+    Prefetch SQL orders, receipts/payments, adjustments for accurate dealer debt calculation.
+    """
+    sql_orders_by_dealer = {}
+    payments_by_dealer = {}  # {dealer_id: {"by_order": {order_code: amount}, "unallocated": amount}}
+    adjustments_by_dealer = {}  # {dealer_id: {order_code: amount}}
+    seen_receipt_codes = set()
+
+    load_receipt_vouchers_db()
+
+    if db:
+        try:
+            from app.models.entities import OrderEntity
+            for ord_ent in db.query(OrderEntity).all():
+                sql_orders_by_dealer.setdefault(ord_ent.dealer_id, []).append(ord_ent)
+        except Exception as e:
+            logger.warning(f"Error prefetching OrderEntity: {e}")
+
+        try:
+            from app.models.receipt_voucher import ReceiptVoucherEntity
+            for rv in db.query(ReceiptVoucherEntity).all():
+                seen_receipt_codes.add(rv.receipt_code)
+                amt = float(rv.amount or 0.0)
+                d_entry = payments_by_dealer.setdefault(rv.dealer_id, {"by_order": {}, "unallocated": 0.0})
+                if rv.order_code and rv.order_code.strip():
+                    oc = rv.order_code.strip()
+                    d_entry["by_order"][oc] = d_entry["by_order"].get(oc, 0.0) + amt
+                else:
+                    d_entry["unallocated"] += amt
+        except Exception as e:
+            logger.warning(f"Error prefetching ReceiptVoucherEntity: {e}")
+
+        try:
+            from app.models.payment_collection import PaymentCollectionEntity
+            for pc in db.query(PaymentCollectionEntity).filter(PaymentCollectionEntity.status == "CONFIRMED").all():
+                amt = float(pc.amount or 0.0)
+                d_entry = payments_by_dealer.setdefault(pc.dealer_id, {"by_order": {}, "unallocated": 0.0})
+                if pc.order_code and pc.order_code.strip():
+                    oc = pc.order_code.strip()
+                    d_entry["by_order"][oc] = d_entry["by_order"].get(oc, 0.0) + amt
+                else:
+                    d_entry["unallocated"] += amt
+        except Exception as e:
+            logger.warning(f"Error prefetching PaymentCollectionEntity: {e}")
+
+        try:
+            from app.models.debt_adjustment import DebtAdjustmentEntity
+            for adj in db.query(DebtAdjustmentEntity).filter(DebtAdjustmentEntity.status == "POSTED").all():
+                amt = float(adj.total_adjusted_amount or 0.0)
+                ord_c = (adj.original_invoice_code or "").replace("HD-", "").strip()
+                d_adj = adjustments_by_dealer.setdefault(adj.dealer_id, {})
+                d_adj[ord_c] = d_adj.get(ord_c, 0.0) + amt
+        except Exception as e:
+            logger.warning(f"Error prefetching DebtAdjustmentEntity: {e}")
+
+    # Đồng bộ thêm các phiếu thu từ RECEIPT_VOUCHERS_DB in-memory/JSON (nếu chưa có trong SQL)
+    for v_code, v in RECEIPT_VOUCHERS_DB.items():
+        if v_code in seen_receipt_codes:
+            continue
+        d_id = v.get("dealer_id")
+        if not d_id:
+            continue
+        amt = float(v.get("amount", 0.0) or 0.0)
+        d_entry = payments_by_dealer.setdefault(d_id, {"by_order": {}, "unallocated": 0.0})
+        oc = v.get("order_code")
+        if oc and oc.strip():
+            oc_clean = oc.strip()
+            d_entry["by_order"][oc_clean] = d_entry["by_order"].get(oc_clean, 0.0) + amt
+        else:
+            d_entry["unallocated"] += amt
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    return sql_orders_by_dealer, payments_by_dealer, adjustments_by_dealer, now
+
+
 @router.get("/search")
 def search_dealers(
     keyword: Optional[str] = Query(
@@ -494,14 +571,7 @@ def search_dealers(
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
     is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
 
-    sql_orders_by_dealer = {}
-    if db:
-        try:
-            from app.models.entities import OrderEntity
-            for ord_ent in db.query(OrderEntity).all():
-                sql_orders_by_dealer.setdefault(ord_ent.dealer_id, []).append(ord_ent)
-        except Exception as e:
-            logger.warning(f"Error prefetching OrderEntity: {e}")
+    sql_orders_by_dealer, payments_by_dealer, adjustments_by_dealer, now = prefetch_dealer_debt_context(db)
 
     if is_customer:
         customer_dealer = DEALERS_DB.get(current_user.id)
@@ -534,11 +604,24 @@ def search_dealers(
             db=db,
             preloaded_sql_orders=sql_orders_by_dealer.get(customer_dealer.id)
         )
-        current_debt = sum(o["total_amount"] for o in cust_orders if o.get("status") not in ("PAID", "CANCELLED", "REJECTED"))
+        d_pay = payments_by_dealer.get(customer_dealer.id, {"by_order": {}, "unallocated": 0.0})
+        d_adj = adjustments_by_dealer.get(customer_dealer.id, {})
+        current_debt, max_debt_age = compute_dealer_unified_debt(
+            customer_dealer.id,
+            cust_orders,
+            d_pay["by_order"],
+            d_pay["unallocated"],
+            d_adj,
+            now,
+        )
 
         debt_status = "Bình thường"
         if current_debt > c_limit:
             debt_status = "Vượt hạn mức"
+        elif current_debt > 0 and max_debt_age > c_days:
+            debt_status = "Quá hạn thanh toán"
+        elif current_debt > 0:
+            debt_status = "Trong hạn mức"
 
         applied_pb = get_applied_price_book_info(getattr(customer_dealer, "customer_group", "Đại lý cấp 1"))
         single_item = {
@@ -588,30 +671,24 @@ def search_dealers(
 
     results = []
 
-    from app.api.v1.endpoints.orders import ORDERS_DB
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc)
-
     for dealer in DEALERS_DB.values():
-        # Tính toán công nợ hiện tại và tuổi nợ từ toàn bộ đơn hàng chuẩn hóa (SQL + In-memory)
+        # Tính toán công nợ hiện tại và tuổi nợ từ toàn bộ đơn hàng chuẩn hóa (SQL + In-memory + Phiếu thu + Giảm trừ nợ)
         dealer_orders = get_dealer_unified_orders(
             dealer.id,
             dealer=dealer,
             db=db,
             preloaded_sql_orders=sql_orders_by_dealer.get(dealer.id)
         )
-        current_debt = sum(
-            o["total_amount"]
-            for o in dealer_orders
-            if o.get("status") not in ("PAID", "CANCELLED", "REJECTED")
+        d_pay = payments_by_dealer.get(dealer.id, {"by_order": {}, "unallocated": 0.0})
+        d_adj = adjustments_by_dealer.get(dealer.id, {})
+        current_debt, max_debt_age = compute_dealer_unified_debt(
+            dealer.id,
+            dealer_orders,
+            d_pay["by_order"],
+            d_pay["unallocated"],
+            d_adj,
+            now,
         )
-        max_debt_age = 0
-        for o in dealer_orders:
-            if o.get("status") not in ("PAID", "CANCELLED", "REJECTED"):
-                dt = o.get("dt_obj") or parse_tx_date(o.get("created_at"))
-                days_old = max(0, (now - dt).days)
-                if days_old > max_debt_age:
-                    max_debt_age = days_old
         
         c_limit = getattr(dealer, "credit_limit", 50000000.0)
         c_days = getattr(dealer, "max_debt_days", 30)
@@ -619,10 +696,12 @@ def search_dealers(
             debt_status = "Vượt hạn mức & Quá hạn"
         elif current_debt > c_limit:
             debt_status = "Vượt hạn mức"
-        elif max_debt_age > c_days:
+        elif current_debt > 0 and max_debt_age > c_days:
             debt_status = "Quá hạn thanh toán"
-        else:
+        elif current_debt > 0:
             debt_status = "Trong hạn mức" 
+        else:
+            debt_status = "Bình thường" 
 
         # ==========================================
         # 1. TÌM KIẾM NHANH THEO MÃ / TÊN / MST / SĐT
@@ -839,35 +918,6 @@ def get_dealer_unified_orders(
     except Exception as e:
         logger.warning(f"Error reading ORDERS_DB for dealer {dealer_id}: {e}")
 
-    # 3. Bổ sung các đơn mô phỏng nếu transaction_count được cấu hình lớn hơn
-    manual_tx = getattr(dealer, "transaction_count", 0) or 0
-    if len(orders) < manual_tx:
-        needed = manual_tx - len(orders)
-        base_amounts = [18500000.0, 9200000.0, 31400000.0, 14200000.0, 7800000.0]
-        base_statuses = ["PAID", "PENDING_PAYMENT", "PENDING_PAYMENT"]
-        sale_name = get_sale_name(dealer.assigned_sale_id) if dealer else "Trần Bán Hàng"
-        for i in range(needed):
-            idx = i + 1
-            code = f"DH-{dealer.code}-{idx:02d}" if dealer else f"DH-MOCK-{idx:02d}"
-            if code in orders_seen:
-                continue
-            orders_seen.add(code)
-            amt = base_amounts[i % len(base_amounts)]
-            st = base_statuses[i % len(base_statuses)]
-            day_str = f"2026-03-{10 + (i % 15):02d}T09:30:00Z"
-            dt = parse_tx_date(day_str)
-            orders.append({
-                "id": 1000 + (dealer.id if dealer else 0) * 100 + idx,
-                "order_code": code,
-                "created_at": dt.isoformat(),
-                "dt_obj": dt,
-                "total_amount": amt,
-                "status": st,
-                "created_by": sale_name,
-                "items_count": 3 + (i % 4),
-                "assigned_sale_name": sale_name,
-            })
-
     orders.sort(key=lambda x: x["dt_obj"], reverse=True)
     return orders
 
@@ -987,6 +1037,37 @@ def create_dealer_receipt_voucher(
     RECEIPT_VOUCHERS_DB[receipt_code] = voucher_data
     save_receipt_vouchers_db()
 
+    # 1. Lưu bản ghi vào SQL Server (ReceiptVoucherEntity)
+    try:
+        from app.models.receipt_voucher import ReceiptVoucherEntity
+        rv_entity = ReceiptVoucherEntity(
+            receipt_code=receipt_code,
+            dealer_id=dealer.id,
+            dealer_code=dealer.code,
+            dealer_name=dealer.name,
+            dealer_address=dealer.address,
+            dealer_phone=dealer.phone,
+            dealer_tax_code=dealer.tax_code,
+            order_code=payload.order_code.strip() if payload.order_code else None,
+            amount=float(payload.amount),
+            amount_in_words=words,
+            payment_method=payload.payment_method or "Tiền mặt",
+            reason=voucher_data["reason"],
+            payer_name=payer,
+            collector_name=collector,
+            collector_role=collector_role_name,
+            created_at=now,
+            note=voucher_data["note"],
+        )
+        db.add(rv_entity)
+        db.commit()
+
+        # 2. Tự động đồng bộ số dư công nợ trên SQL Server
+        from app.services.invoice_service import resync_all_debts_sql
+        resync_all_debts_sql(db)
+    except Exception as dberr:
+        logger.warning(f"Notice: SQL Server receipt voucher save notice: {dberr}")
+
     # Ghi Audit Log vết thao tác
     log_audit_event(
         db=db,
@@ -1013,6 +1094,7 @@ def create_dealer_receipt_voucher(
 @router.get("/{dealer_id}/receipt-vouchers", response_model=List[ReceiptVoucherResponse])
 def get_dealer_receipt_vouchers(
     dealer_id: int,
+    db: Session = Depends(get_db),
     current_user: UserResponse = Depends(
         require_roles([
             "admin",
@@ -1023,7 +1105,39 @@ def get_dealer_receipt_vouchers(
         ])
     ),
 ):
-    """Lấy danh sách các phiếu thu đã ghi nhận của đại lý."""
+    """Lấy danh sách các phiếu thu đã ghi nhận của đại lý từ SQL Server."""
+    try:
+        from app.models.receipt_voucher import ReceiptVoucherEntity
+        sql_vouchers = db.query(ReceiptVoucherEntity).filter(
+            ReceiptVoucherEntity.dealer_id == dealer_id
+        ).order_by(ReceiptVoucherEntity.created_at.desc()).all()
+        if sql_vouchers:
+            return [
+                {
+                    "id": v.id,
+                    "receipt_code": v.receipt_code,
+                    "dealer_id": v.dealer_id,
+                    "dealer_code": v.dealer_code,
+                    "dealer_name": v.dealer_name,
+                    "dealer_address": v.dealer_address or "—",
+                    "dealer_phone": v.dealer_phone or "—",
+                    "dealer_tax_code": v.dealer_tax_code or "—",
+                    "order_code": v.order_code,
+                    "amount": float(v.amount),
+                    "amount_in_words": v.amount_in_words or "",
+                    "payment_method": v.payment_method or "Tiền mặt",
+                    "reason": v.reason or "",
+                    "payer_name": v.payer_name or "",
+                    "collector_name": v.collector_name or "",
+                    "collector_role": v.collector_role or "",
+                    "created_at": v.created_at.isoformat() if v.created_at else "",
+                    "note": v.note,
+                }
+                for v in sql_vouchers
+            ]
+    except Exception:
+        pass
+
     res = [v for v in RECEIPT_VOUCHERS_DB.values() if v.get("dealer_id") == dealer_id]
     res.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
     return res
@@ -1908,6 +2022,7 @@ def get_dealers(
     page_size: Optional[int] = Query(default=None, ge=1, description="Số lượng mỗi trang (mặc định 10)"),
     limit: Optional[int] = Query(default=None, ge=1, description="Số lượng bản ghi (tương đương page_size)"),
     skip: Optional[int] = Query(default=None, ge=0, description="Bỏ qua số bản ghi"),
+    db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "accountant", "customer", "warehouse_manager", "warehouse"]))
 ):
     """Lấy danh sách đại lý (hỗ trợ tìm kiếm, phân trang cuộn vô tận hoặc trả về toàn bộ nếu không truyền param)."""
@@ -1917,6 +2032,8 @@ def get_dealers(
 
     search_query = (search or keyword or "").strip()
     is_paginated = page is not None or page_size is not None or limit is not None or skip is not None
+
+    sql_orders_by_dealer, payments_by_dealer, adjustments_by_dealer, now = prefetch_dealer_debt_context(db)
 
     if is_customer:
         customer_dealer = DEALERS_DB.get(current_user.id)
@@ -1932,6 +2049,35 @@ def get_dealers(
             if is_paginated:
                 return {"items": [], "dealers": [], "total": 0, "page": page or 1, "page_size": page_size or 10, "has_more": False}
             return []
+
+        dealer_region = customer_dealer.region or get_region(customer_dealer.address)
+        c_limit = float(getattr(customer_dealer, "credit_limit", 50000000.0) or 50000000.0)
+        c_days = int(getattr(customer_dealer, "max_debt_days", 30) or 30)
+
+        cust_orders = get_dealer_unified_orders(
+            customer_dealer.id,
+            dealer=customer_dealer,
+            db=db,
+            preloaded_sql_orders=sql_orders_by_dealer.get(customer_dealer.id)
+        )
+        d_pay = payments_by_dealer.get(customer_dealer.id, {"by_order": {}, "unallocated": 0.0})
+        d_adj = adjustments_by_dealer.get(customer_dealer.id, {})
+        current_debt, max_debt_age = compute_dealer_unified_debt(
+            customer_dealer.id,
+            cust_orders,
+            d_pay["by_order"],
+            d_pay["unallocated"],
+            d_adj,
+            now,
+        )
+
+        debt_status = "Bình thường"
+        if current_debt > c_limit:
+            debt_status = "Vượt hạn mức"
+        elif current_debt > 0 and max_debt_age > c_days:
+            debt_status = "Quá hạn thanh toán"
+        elif current_debt > 0:
+            debt_status = "Trong hạn mức"
         
         single_item = {
             "id": customer_dealer.id,
@@ -1940,18 +2086,20 @@ def get_dealers(
             "phone": customer_dealer.phone,
             "email": customer_dealer.email,
             "address": customer_dealer.address,
-            "region": getattr(customer_dealer, "region", None) or get_region(customer_dealer.address),
+            "region": dealer_region,
             "assigned_sale_id": customer_dealer.assigned_sale_id,
             "assigned_sale_name": get_sale_name(customer_dealer.assigned_sale_id),
-            "credit_limit": getattr(customer_dealer, "credit_limit", 50000000.0),
-            "max_debt_days": getattr(customer_dealer, "max_debt_days", 30),
+            "credit_limit": c_limit,
+            "max_debt_days": c_days,
+            "current_debt": current_debt,
+            "debt_status": debt_status,
             "customer_group": getattr(customer_dealer, "customer_group", "Đại lý cấp 1"),
             "status": getattr(customer_dealer, "status", "Đang hoạt động"),
             "lock_reason": None,
             "locked_at": None,
             "locked_by": None,
-            "transaction_count": 0,
-            "has_transactions": False,
+            "transaction_count": len(cust_orders),
+            "has_transactions": len(cust_orders) > 0,
             "applied_price_book": get_applied_price_book_info(getattr(customer_dealer, "customer_group", "Đại lý cấp 1")),
             "warehouse_id": getattr(customer_dealer, "warehouse_id", None),
             "warehouse_name": getattr(customer_dealer, "warehouse_name", None),
@@ -1971,10 +2119,39 @@ def get_dealers(
             return {"items": [single_item], "dealers": [single_item], "total": 1, "page": page or 1, "page_size": page_size or 10, "has_more": False}
         return [single_item]
 
-    from app.api.v1.endpoints.orders import ORDERS_DB
     res = []
     for d in DEALERS_DB.values():
-        tx_count = sum(1 for o in ORDERS_DB.values() if o.get("dealer_id") == d.id)
+        dealer_orders = get_dealer_unified_orders(
+            d.id,
+            dealer=d,
+            db=db,
+            preloaded_sql_orders=sql_orders_by_dealer.get(d.id)
+        )
+        d_pay = payments_by_dealer.get(d.id, {"by_order": {}, "unallocated": 0.0})
+        d_adj = adjustments_by_dealer.get(d.id, {})
+        current_debt, max_debt_age = compute_dealer_unified_debt(
+            d.id,
+            dealer_orders,
+            d_pay["by_order"],
+            d_pay["unallocated"],
+            d_adj,
+            now,
+        )
+
+        c_limit = getattr(d, "credit_limit", 50000000.0)
+        c_days = getattr(d, "max_debt_days", 30)
+        if current_debt > c_limit and max_debt_age > c_days:
+            debt_status = "Vượt hạn mức & Quá hạn"
+        elif current_debt > c_limit:
+            debt_status = "Vượt hạn mức"
+        elif current_debt > 0 and max_debt_age > c_days:
+            debt_status = "Quá hạn thanh toán"
+        elif current_debt > 0:
+            debt_status = "Trong hạn mức"
+        else:
+            debt_status = "Bình thường"
+
+        tx_count = len(dealer_orders)
         applied_pb = get_applied_price_book_info(getattr(d, "customer_group", "Đại lý cấp 1"))
         res.append({
             "id": d.id,
@@ -1989,6 +2166,8 @@ def get_dealers(
             "assigned_sale_name": get_sale_name(d.assigned_sale_id),
             "credit_limit": getattr(d, "credit_limit", 50000000.0),
             "max_debt_days": getattr(d, "max_debt_days", 30),
+            "current_debt": current_debt,
+            "debt_status": debt_status,
             "customer_group": getattr(d, "customer_group", "Đại lý cấp 1"),
             "status": getattr(d, "status", "Đang hoạt động"),
             "lock_reason": getattr(d, "lock_reason", None),
@@ -2123,9 +2302,35 @@ def calculate_debt_statement(
     - Liệt kê theo thứ tự thời gian tăng dần trong kỳ kèm số dư nợ lũy kế
     - Tính tổng phát sinh và Số dư cuối kỳ
     """
+    now = datetime.now(timezone.utc)
     load_dealers_db()
     load_receipt_vouchers_db()
-    dealer = DEALERS_DB.get(dealer_id)
+    dealer = DEALERS_DB.get(dealer_id) or (DEALERS_DB.get(int(dealer_id)) if str(dealer_id).isdigit() else None)
+    if not dealer and db:
+        try:
+            from app.models.entities import DealerEntity
+            ent = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+            if ent:
+                dealer = Dealer(
+                    id=ent.id,
+                    code=ent.code,
+                    name=ent.name,
+                    tax_code=getattr(ent, "tax_code", None),
+                    phone=ent.phone,
+                    email=ent.email,
+                    address=ent.address,
+                    region=getattr(ent, "region", None),
+                    assigned_sale_id=ent.assigned_sale_id,
+                    credit_limit=float(ent.credit_limit) if getattr(ent, "credit_limit", None) is not None else 50000000.0,
+                    max_debt_days=int(ent.max_debt_days) if getattr(ent, "max_debt_days", None) is not None else 30,
+                    overdue_days_allowed=int(getattr(ent, "overdue_days_allowed", None) or getattr(ent, "max_debt_days", None) or 30),
+                    customer_group=getattr(ent, "customer_group", "Đại lý cấp 1"),
+                    status=getattr(ent, "status", "Đang hoạt động"),
+                )
+                DEALERS_DB[ent.id] = dealer
+        except Exception as e:
+            logger.warning(f"Error querying fallback DealerEntity: {e}")
+
     if not dealer:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2172,30 +2377,94 @@ def calculate_debt_statement(
             "note": None,
         })
 
-    # 2. Toàn bộ Phiếu thu tiền thực tế từ RECEIPT_VOUCHERS_DB
+    # 2. Toàn bộ Phiếu thu tiền thực tế từ SQL Server (ReceiptVoucherEntity + PaymentCollectionEntity)
     existing_receipt_order_codes = set()
-    for v_code, v in RECEIPT_VOUCHERS_DB.items():
-        if v.get("dealer_id") == dealer_id:
-            dt = parse_tx_date(v.get("created_at"))
-            amt = float(v.get("amount", 0.0) or 0.0)
-            oc = v.get("order_code")
-            if oc:
-                existing_receipt_order_codes.add(oc.strip())
-            all_raw_txs.append({
-                "id": f"VOUCHER-{v_code}",
-                "date": dt.isoformat(),
-                "dt_obj": dt,
-                "doc_code": v.get("receipt_code") or v_code,
-                "doc_type": "RECEIPT_VOUCHER",
-                "doc_type_label": "Phiếu thu tiền",
-                "description": v.get("reason") or f"Thu tiền thanh toán công nợ theo phiếu {v_code}",
-                "increase_amount": 0.0,
-                "decrease_amount": amt,
-                "payment_method": v.get("payment_method") or "Tiền mặt",
-                "status": "Đã thu tiền",
-                "created_by": v.get("collector_name") or "Kế toán công nợ",
-                "note": v.get("note") or (f"Người nộp: {v.get('payer_name')}" if v.get('payer_name') else None),
-            })
+    loaded_from_sql = False
+    if db:
+        try:
+            from app.models.receipt_voucher import ReceiptVoucherEntity
+            sql_vouchers = db.query(ReceiptVoucherEntity).filter(ReceiptVoucherEntity.dealer_id == dealer_id).all()
+            for v in sql_vouchers:
+                loaded_from_sql = True
+                dt = parse_tx_date(v.created_at or now)
+                amt = float(v.amount or 0.0)
+                oc = v.order_code
+                if oc:
+                    existing_receipt_order_codes.add(oc.strip())
+                all_raw_txs.append({
+                    "id": f"VOUCHER-{v.receipt_code}",
+                    "date": dt.isoformat(),
+                    "dt_obj": dt,
+                    "doc_code": v.receipt_code,
+                    "doc_type": "RECEIPT_VOUCHER",
+                    "doc_type_label": "Phiếu thu tiền",
+                    "description": v.reason or f"Thu tiền thanh toán công nợ theo phiếu {v.receipt_code}",
+                    "increase_amount": 0.0,
+                    "decrease_amount": amt,
+                    "payment_method": v.payment_method or "Tiền mặt",
+                    "status": "Đã thu tiền",
+                    "created_by": v.collector_name or "Kế toán công nợ",
+                    "note": v.note or (f"Người nộp: {v.payer_name}" if v.payer_name else None),
+                })
+        except Exception as e:
+            logger.warning(f"Error querying ReceiptVoucherEntity: {e}")
+
+    if not loaded_from_sql:
+        for v_code, v in RECEIPT_VOUCHERS_DB.items():
+            if v.get("dealer_id") == dealer_id:
+                dt = parse_tx_date(v.get("created_at") or now)
+                amt = float(v.get("amount", 0.0) or 0.0)
+                oc = v.get("order_code")
+                if oc:
+                    existing_receipt_order_codes.add(oc.strip())
+                all_raw_txs.append({
+                    "id": f"VOUCHER-{v_code}",
+                    "date": dt.isoformat(),
+                    "dt_obj": dt,
+                    "doc_code": v.get("receipt_code") or v_code,
+                    "doc_type": "RECEIPT_VOUCHER",
+                    "doc_type_label": "Phiếu thu tiền",
+                    "description": v.get("reason") or f"Thu tiền thanh toán công nợ theo phiếu {v_code}",
+                    "increase_amount": 0.0,
+                    "decrease_amount": amt,
+                    "payment_method": v.get("payment_method") or "Tiền mặt",
+                    "status": "Đã thu tiền",
+                    "created_by": v.get("collector_name") or "Kế toán công nợ",
+                    "note": v.get("note") or (f"Người nộp: {v.get('payer_name')}" if v.get('payer_name') else None),
+                })
+
+    # 2.1 Bổ sung khoản thu từ PaymentCollectionEntity đã xác nhận (Thu tiền theo tuyến)
+    if db:
+        try:
+            from app.models.payment_collection import PaymentCollectionEntity
+            confirmed_pcols = db.query(PaymentCollectionEntity).filter(
+                PaymentCollectionEntity.dealer_id == dealer_id,
+                PaymentCollectionEntity.status == "CONFIRMED"
+            ).all()
+            for pc in confirmed_pcols:
+                if pc.order_code and pc.order_code.strip() in existing_receipt_order_codes:
+                    continue
+                dt = parse_tx_date(pc.collection_date or now)
+                amt = float(pc.amount or 0.0)
+                if pc.order_code:
+                    existing_receipt_order_codes.add(pc.order_code.strip())
+                all_raw_txs.append({
+                    "id": f"PC-{pc.code}",
+                    "date": dt.isoformat(),
+                    "dt_obj": dt,
+                    "doc_code": pc.code,
+                    "doc_type": "RECEIPT_VOUCHER",
+                    "doc_type_label": "Thu tiền theo tuyến",
+                    "description": f"Thu tiền nộp về công ty ({pc.order_code or 'Thanh toán nợ'})",
+                    "increase_amount": 0.0,
+                    "decrease_amount": amt,
+                    "payment_method": pc.payment_method or "Tiền mặt",
+                    "status": "Đã thu tiền",
+                    "created_by": pc.confirmed_by or pc.sales_name or "Kế toán công nợ",
+                    "note": pc.note,
+                })
+        except Exception:
+            pass
 
     # 3. Thu thập toàn bộ Chứng từ điều chỉnh giảm công nợ do trả hàng (DEBT_ADJUSTMENT)
     adjusted_by_order: Dict[str, float] = {}
@@ -2207,16 +2476,12 @@ def calculate_debt_statement(
                 DebtAdjustmentEntity.status == "POSTED",
             ).all()
             for adj in adjustments:
-                adj_dt = adj.adjustment_date
-                if adj_dt:
-                    if adj_dt.tzinfo is None:
-                        adj_dt = adj_dt.replace(tzinfo=timezone.utc)
-                else:
-                    adj_dt = now
+                adj_dt = parse_tx_date(adj.adjustment_date or now)
                 adj_amt = float(adj.total_adjusted_amount or 0.0)
                 # Map với order code nếu có
-                ord_c = adj.original_invoice_code.replace("HD-", "").strip()
-                adjusted_by_order[ord_c] = adjusted_by_order.get(ord_c, 0.0) + adj_amt
+                ord_c = (adj.original_invoice_code or "").replace("HD-", "").strip()
+                if ord_c:
+                    adjusted_by_order[ord_c] = adjusted_by_order.get(ord_c, 0.0) + adj_amt
 
                 all_raw_txs.append({
                     "id": f"ADJ-{adj.id}",
@@ -2225,7 +2490,7 @@ def calculate_debt_statement(
                     "doc_code": adj.adjustment_code,
                     "doc_type": "DEBT_ADJUSTMENT",
                     "doc_type_label": "Giảm trừ công nợ",
-                    "description": f"Giảm trừ công nợ do trả hàng theo Phiếu trả {adj.return_order_code} (HĐ gốc: {adj.original_invoice_code})",
+                    "description": f"Giảm trừ công nợ do trả hàng theo Phiếu trả {adj.return_order_code or ''} (HĐ gốc: {adj.original_invoice_code or ''})",
                     "increase_amount": 0.0,
                     "decrease_amount": adj_amt,
                     "payment_method": "Giảm trừ trả hàng",
@@ -2364,7 +2629,11 @@ def generate_debt_statement_excel(statement_data: dict) -> io.BytesIO:
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 0
+    ws.page_setup.fitToHeight = None
+
+    # Chiều cao các dòng tiêu đề
+    ws.row_dimensions[4].height = 28
+    ws.row_dimensions[11].height = 26
 
     # Bảng màu
     color_teal = "0F766E"       # Xanh ngọc đậm header
@@ -2431,27 +2700,33 @@ def generate_debt_statement_excel(statement_data: dict) -> io.BytesIO:
     ws["A7"].font = font_bold
     ws["B7"] = f"{dealer.get('name', '')} (Mã: {dealer.get('code', '')})"
     ws["B7"].font = font_bold
+    ws.merge_cells("B7:E7")
 
     ws["F7"] = "Mã số thuế:"
     ws["F7"].font = font_bold
     ws["G7"] = dealer.get('tax_code') or "—"
+    ws.merge_cells("G7:I7")
 
     ws["A8"] = "Địa chỉ liên hệ:"
     ws["A8"].font = font_regular
     ws["B8"] = dealer.get('address') or "—"
+    ws.merge_cells("B8:E8")
 
     ws["F8"] = "Số điện thoại:"
     ws["F8"].font = font_regular
     ws["G8"] = dealer.get('phone') or "—"
+    ws.merge_cells("G8:I8")
 
     ws["A9"] = "Hạn mức tín dụng:"
     ws["A9"].font = font_regular
     credit_limit = dealer.get('credit_limit', 0.0) or 0.0
     ws["B9"] = f"{credit_limit:,.0f} đ"
+    ws.merge_cells("B9:E9")
 
     ws["F9"] = "Thời hạn nợ cho phép:"
     ws["F9"].font = font_regular
     ws["G9"] = f"{dealer.get('overdue_days_allowed') or 30} ngày"
+    ws.merge_cells("G9:I9")
 
     # 4. Tiêu đề các cột dữ liệu
     headers = [
@@ -2598,22 +2873,36 @@ def generate_debt_statement_excel(statement_data: dict) -> io.BytesIO:
     row_idx += 2
     ws.cell(row=row_idx, column=1, value="NGƯỜI LẬP BIỂU").alignment = Alignment(horizontal="center")
     ws.cell(row=row_idx, column=1).font = font_bold
+    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=2)
+
     ws.cell(row=row_idx, column=3, value="KẾ TOÁN CÔNG NỢ").alignment = Alignment(horizontal="center")
     ws.cell(row=row_idx, column=3).font = font_bold
+    ws.merge_cells(start_row=row_idx, start_column=3, end_row=row_idx, end_column=5)
+
     ws.cell(row=row_idx, column=6, value="GIÁM ĐỐC / KTT").alignment = Alignment(horizontal="center")
     ws.cell(row=row_idx, column=6).font = font_bold
+    ws.merge_cells(start_row=row_idx, start_column=6, end_row=row_idx, end_column=7)
+
     ws.cell(row=row_idx, column=8, value="ĐẠI DIỆN ĐẠI LÝ").alignment = Alignment(horizontal="center")
     ws.cell(row=row_idx, column=8).font = font_bold
+    ws.merge_cells(start_row=row_idx, start_column=8, end_row=row_idx, end_column=9)
 
     row_idx += 1
     ws.cell(row=row_idx, column=1, value="(Ký, ghi rõ họ tên)").alignment = Alignment(horizontal="center")
     ws.cell(row=row_idx, column=1).font = font_sub
+    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=2)
+
     ws.cell(row=row_idx, column=3, value="(Ký, ghi rõ họ tên)").alignment = Alignment(horizontal="center")
     ws.cell(row=row_idx, column=3).font = font_sub
+    ws.merge_cells(start_row=row_idx, start_column=3, end_row=row_idx, end_column=5)
+
     ws.cell(row=row_idx, column=6, value="(Ký, họ tên, đóng dấu)").alignment = Alignment(horizontal="center")
     ws.cell(row=row_idx, column=6).font = font_sub
+    ws.merge_cells(start_row=row_idx, start_column=6, end_row=row_idx, end_column=7)
+
     ws.cell(row=row_idx, column=8, value="(Ký, họ tên, đóng dấu)").alignment = Alignment(horizontal="center")
     ws.cell(row=row_idx, column=8).font = font_sub
+    ws.merge_cells(start_row=row_idx, start_column=8, end_row=row_idx, end_column=9)
 
     stream = io.BytesIO()
     wb.save(stream)
@@ -2645,7 +2934,32 @@ def get_dealer_debt_statement(
     is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
 
     load_dealers_db()
-    dealer = DEALERS_DB.get(dealer_id)
+    dealer = DEALERS_DB.get(dealer_id) or (DEALERS_DB.get(int(dealer_id)) if str(dealer_id).isdigit() else None)
+    if not dealer and db:
+        try:
+            from app.models.entities import DealerEntity
+            ent = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+            if ent:
+                dealer = Dealer(
+                    id=ent.id,
+                    code=ent.code,
+                    name=ent.name,
+                    tax_code=getattr(ent, "tax_code", None),
+                    phone=ent.phone,
+                    email=ent.email,
+                    address=ent.address,
+                    region=getattr(ent, "region", None),
+                    assigned_sale_id=ent.assigned_sale_id,
+                    credit_limit=float(ent.credit_limit) if getattr(ent, "credit_limit", None) is not None else 50000000.0,
+                    max_debt_days=int(ent.max_debt_days) if getattr(ent, "max_debt_days", None) is not None else 30,
+                    overdue_days_allowed=int(getattr(ent, "overdue_days_allowed", None) or getattr(ent, "max_debt_days", None) or 30),
+                    customer_group=getattr(ent, "customer_group", "Đại lý cấp 1"),
+                    status=getattr(ent, "status", "Đang hoạt động"),
+                )
+                DEALERS_DB[ent.id] = dealer
+        except Exception as e:
+            logger.warning(f"Error querying fallback DealerEntity: {e}")
+
     if not dealer:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2699,7 +3013,32 @@ def export_dealer_debt_statement_excel(
     is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
 
     load_dealers_db()
-    dealer = DEALERS_DB.get(dealer_id)
+    dealer = DEALERS_DB.get(dealer_id) or (DEALERS_DB.get(int(dealer_id)) if str(dealer_id).isdigit() else None)
+    if not dealer and db:
+        try:
+            from app.models.entities import DealerEntity
+            ent = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+            if ent:
+                dealer = Dealer(
+                    id=ent.id,
+                    code=ent.code,
+                    name=ent.name,
+                    tax_code=getattr(ent, "tax_code", None),
+                    phone=ent.phone,
+                    email=ent.email,
+                    address=ent.address,
+                    region=getattr(ent, "region", None),
+                    assigned_sale_id=ent.assigned_sale_id,
+                    credit_limit=float(ent.credit_limit) if getattr(ent, "credit_limit", None) is not None else 50000000.0,
+                    max_debt_days=int(ent.max_debt_days) if getattr(ent, "max_debt_days", None) is not None else 30,
+                    overdue_days_allowed=int(getattr(ent, "overdue_days_allowed", None) or getattr(ent, "max_debt_days", None) or 30),
+                    customer_group=getattr(ent, "customer_group", "Đại lý cấp 1"),
+                    status=getattr(ent, "status", "Đang hoạt động"),
+                )
+                DEALERS_DB[ent.id] = dealer
+        except Exception as e:
+            logger.warning(f"Error querying fallback DealerEntity: {e}")
+
     if not dealer:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2753,5 +3092,31 @@ def export_dealer_debt_statement_excel(
             "Access-Control-Expose-Headers": "Content-Disposition",
         },
     )
+
+
+@router.post("/sync-debt")
+@router.post("/{dealer_id}/sync-debt")
+def sync_dealer_debt_endpoint(
+    dealer_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(
+        require_roles([
+            "admin",
+            "sales_manager",
+            "accountant",
+        ])
+    ),
+):
+    """
+    Kế toán công nợ / Admin: Yêu cầu đồng bộ lại toàn bộ dữ liệu công nợ trên SQL Server.
+    Gọi trực tiếp Stored Procedure / logic đồng bộ SQL Server chuẩn hóa hóa đơn, phiếu thu, nợ còn lại.
+    """
+    from app.services.invoice_service import resync_all_debts_sql
+    result = resync_all_debts_sql(db)
+    return {
+        "status": "success",
+        "message": "Đã đồng bộ lại toàn bộ dữ liệu công nợ thành công trên SQL Server.",
+        "details": result,
+    }
 
 
