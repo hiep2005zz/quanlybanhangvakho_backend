@@ -1,6 +1,7 @@
 # backend/app/main.py - Fresh Reset
 import asyncio
 import os
+import asyncio
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,9 +12,29 @@ from contextlib import asynccontextmanager, suppress
 from app.db.init_db import init_db
 from app.modules.payment_reminders.scheduler import run_daily_scheduler
 
+async def daily_credit_policy_evaluation():
+    """
+    AC3: Scheduled Task chạy tự động đánh giá lại công nợ toàn bộ đại lý mỗi ngày 1 lần.
+    """
+    # Đợi 10 giây sau khi server khởi động xong trước khi chạy lần đầu
+    await asyncio.sleep(10)
+    while True:
+        try:
+            from app.core.database import SessionLocal
+            from app.services.credit_policy_service import evaluate_all_dealers_credit_flags, get_credit_policy_config
+            with SessionLocal() as db_session:
+                cfg = get_credit_policy_config(db_session)
+                if getattr(cfg, "auto_eval_enabled", True):
+                    evaluate_all_dealers_credit_flags(db_session)
+                    print("[Scheduled Job] Đã hoàn thành đánh giá tự động công nợ đại lý hàng ngày (S7-04).")
+        except Exception as e:
+            print(f"Error in daily credit policy evaluation cron: {e}")
+        # Chạy lại sau mỗi 24 giờ
+        await asyncio.sleep(86400)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Khởi tạo bảng và dữ liệu mẫu trên SQL Server khi ứng dụng khởi động
+    # Khởi tạo bảng và dữ liệu mẫu khi ứng dụng khởi động
     init_db()
     scheduler_task = None
     if FEATURE_ENABLED:
@@ -25,6 +46,11 @@ async def lifespan(app: FastAPI):
             scheduler_task.cancel()
             with suppress(asyncio.CancelledError):
                 await scheduler_task
+    cron_task = asyncio.create_task(daily_credit_policy_evaluation())
+    try:
+        yield
+    finally:
+        cron_task.cancel()
 
 app = FastAPI(
     title="Quan Ly Ban Hang & Kho API",
