@@ -182,25 +182,44 @@ def test_scheduler_status_reports_enabled_state_and_next_run():
     assert status["last_run_at"] is None
 
 
-def test_application_lifespan_starts_and_stops_reminder_scheduler(monkeypatch):
+def test_application_lifespan_starts_and_stops_background_tasks(monkeypatch):
     events = []
 
-    async def fake_scheduler():
-        events.append("started")
+    async def fake_task(name):
+        events.append(f"{name}-started")
         try:
             await asyncio.Event().wait()
         finally:
-            events.append("stopped")
+            events.append(f"{name}-stopped")
 
     monkeypatch.setattr(main, "init_db", lambda: events.append("database"))
-    monkeypatch.setattr(main, "run_daily_scheduler", fake_scheduler)
+    monkeypatch.setattr(
+        main,
+        "run_daily_scheduler",
+        lambda: fake_task("reminders"),
+    )
+    monkeypatch.setattr(
+        main,
+        "daily_credit_policy_evaluation",
+        lambda: fake_task("credit-policy"),
+    )
     monkeypatch.setattr(main, "FEATURE_ENABLED", True)
 
     async def verify_lifespan():
         async with main.lifespan(main.app):
             await asyncio.sleep(0)
-            assert events == ["database", "started"]
-        assert events == ["database", "started", "stopped"]
+            assert events == [
+                "database",
+                "reminders-started",
+                "credit-policy-started",
+            ]
+        assert events == [
+            "database",
+            "reminders-started",
+            "credit-policy-started",
+            "reminders-stopped",
+            "credit-policy-stopped",
+        ]
 
     asyncio.run(verify_lifespan())
 
