@@ -217,3 +217,31 @@ def test_excel_export_generation(db_session):
     assert isinstance(excel_bytes, bytes)
     assert len(excel_bytes) > 1000  # Valid non-empty workbook
     assert excel_bytes.startswith(b"PK")  # Standard zip/xlsx magic bytes
+
+
+def test_ageing_bucket_filter(db_session):
+    """
+    Test filtering by ageing_bucket (0-30, 31-60, 61-90, over_90, has_debt, settled, overdue).
+    """
+    # 0-30: cả 2 đại lý đều có nợ 0-30 ngày (DL1 có 10M, DL2 có 5M)
+    res_0_30 = compute_debt_ledger_data(db=db_session, ageing_bucket="0-30")
+    assert len(res_0_30.items) == 2
+
+    # 31-60: chỉ DL1 có (20M)
+    res_31_60 = compute_debt_ledger_data(db=db_session, ageing_bucket="31-60")
+    assert len(res_31_60.items) == 1
+    assert res_31_60.items[0].dealer_code == "DL001"
+
+    # >90: chỉ DL1 có (5M)
+    res_over_90 = compute_debt_ledger_data(db=db_session, ageing_bucket="over_90")
+    assert len(res_over_90.items) == 1
+    assert res_over_90.items[0].dealer_code == "DL001"
+
+    # settled: không có đại lý nào đã tất toán (cả 2 đều còn nợ)
+    res_settled = compute_debt_ledger_data(db=db_session, ageing_bucket="settled")
+    assert len(res_settled.items) == 0
+
+    # has_debt: cả 2 đều còn nợ
+    res_has_debt = compute_debt_ledger_data(db=db_session, ageing_bucket="has_debt")
+    assert len(res_has_debt.items) == 2
+

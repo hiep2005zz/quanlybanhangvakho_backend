@@ -54,7 +54,11 @@ app.include_router(suppliers.router, prefix="/api/v1/suppliers", tags=["Supplier
 app.include_router(dealers.router, prefix="/api/v1/dealers", tags=["Dealers"])
 app.include_router(delivery_points.dealers_router, prefix="/api/v1/dealers", tags=["Dealers"])
 app.include_router(delivery_points.router, prefix="/api/v1/dealers", tags=["Delivery Points"])
-from app.api.v1.endpoints import price_books, discounts, goods_receipts, warehouses, stock_audits, pricing, batches, inventory_reports, deliveries, stock_adjustments, payment_collections
+from app.api.v1.endpoints import (
+    price_books, discounts, goods_receipts, warehouses, stock_audits, pricing, batches,
+    executive_dashboard, sales_reports, sales_targets,
+    inventory_reports, deliveries, stock_adjustments, payment_collections
+)
 app.include_router(price_books.router, prefix="/api/v1/price-books", tags=["PriceBooks"])
 app.include_router(discounts.router, prefix="/api/v1/discounts", tags=["Discounts"])
 app.include_router(pricing.router, prefix="/api/v1/pricing", tags=["Pricing"])
@@ -63,17 +67,21 @@ app.include_router(goods_receipts.router, prefix="/api/v1/goods-receipts", tags=
 app.include_router(goods_receipts.router, prefix="/goods-receipts", tags=["Goods Receipts"])
 app.include_router(warehouses.router, prefix="/api/v1/warehouses", tags=["Warehouses"])
 app.include_router(stock_audits.router, prefix="/api/v1/stock-audits", tags=["Stock Audits"])
-from app.api.v1.endpoints import delivery_trips
+from app.api.v1.endpoints import delivery_trips, agency_debts, debt_payments
 app.include_router(delivery_trips.router, prefix="/api/v1/delivery-trips", tags=["Delivery Trips"])
-from app.api.v1.endpoints import agency_debts
 app.include_router(agency_debts.router, prefix="/api/v1/agency-debts", tags=["Agency Debts"])
+app.include_router(debt_payments.router, prefix="/api/v1/debt-payments", tags=["Debt Payments"])
 app.include_router(batches.router, prefix="/api/v1/batches", tags=["Batches"])
+app.include_router(executive_dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
+app.include_router(sales_reports.router, prefix="/api/v1/reports", tags=["Reports"])
+app.include_router(sales_targets.router, prefix="/api/v1/sales-targets", tags=["Sales Targets"])
 app.include_router(inventory_reports.router, prefix="/api/v1/inventory", tags=["Inventory Reports"])
 app.include_router(deliveries.router, prefix="/api/v1/deliveries", tags=["Deliveries"])
 app.include_router(stock_adjustments.router, prefix="/api/v1/stock-adjustments", tags=["Stock Adjustments"])
 app.include_router(payment_collections.router, prefix="/api/v1/payment-collections", tags=["Payment Collections"])
-from app.api.v1.endpoints import sales_invoices
+from app.api.v1.endpoints import sales_invoices, debt_reconciliations
 app.include_router(sales_invoices.router, prefix="/api/v1/sales-invoices", tags=["Sales Invoices"])
+app.include_router(debt_reconciliations.router, prefix="/api/v1/debt-reconciliations", tags=["Debt Reconciliations"])
 
 # Mount static folder for user avatars / media uploads
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")

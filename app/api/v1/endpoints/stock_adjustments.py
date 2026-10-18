@@ -12,6 +12,7 @@ Nghiệp vụ cốt lõi:
 """
 from datetime import datetime, timezone
 import json
+import math
 import uuid
 from typing import List, Optional
 
@@ -365,12 +366,14 @@ def get_stock_adjustments(
     status_filter: Optional[str] = Query(None, alias="status", description="Lọc theo trạng thái: PENDING | APPROVED | REJECTED"),
     reason_type: Optional[str] = Query(None, description="Lọc theo lý do: damaged | lost | expired | other"),
     search: Optional[str] = Query(None, description="Tìm kiếm theo mã phiếu, ghi chú, người lập"),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    limit: Optional[int] = Query(None, ge=1, le=200, description="Số lượng bản ghi mỗi trang (legacy)"),
+    offset: Optional[int] = Query(None, ge=0, description="Vị trí bắt đầu (legacy)"),
+    page: Optional[int] = Query(None, ge=1, description="Số trang (1-based, mặc định 1)"),
+    page_size: Optional[int] = Query(None, ge=1, le=100, description="Kích thước trang (mặc định 10)"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.INVENTORY_READ.value))
 ):
-    """Lấy danh sách các phiếu điều chỉnh tồn kho."""
+    """Lấy danh sách các phiếu điều chỉnh tồn kho có phân trang (10 phiếu/trang)."""
     query = db.query(StockAdjustmentEntity)
 
     if warehouse_id and warehouse_id != "all":
@@ -394,7 +397,22 @@ def get_stock_adjustments(
         )
 
     total = query.count()
-    records = query.order_by(desc(StockAdjustmentEntity.id)).offset(offset).limit(limit).all()
+
+    # Phân trang: Hỗ trợ cả page/page_size và limit/offset để tương thích ngược 100%
+    effective_page_size = page_size or limit or 10
+    if page is not None and page >= 1:
+        effective_page = page
+        effective_offset = (page - 1) * effective_page_size
+    elif offset is not None:
+        effective_offset = offset
+        effective_page = (offset // effective_page_size) + 1
+    else:
+        effective_page = 1
+        effective_offset = 0
+
+    total_pages = max(1, math.ceil(total / effective_page_size)) if total > 0 else 1
+
+    records = query.order_by(desc(StockAdjustmentEntity.id)).offset(effective_offset).limit(effective_page_size).all()
 
     # Thống kê nhanh
     base_stat = db.query(StockAdjustmentEntity)
@@ -415,6 +433,9 @@ def get_stock_adjustments(
     return StockAdjustmentListResponse(
         items=items,
         total=total,
+        page=effective_page,
+        page_size=effective_page_size,
+        total_pages=total_pages,
         pending_count=pending_count,
         approved_count=approved_count,
         rejected_count=rejected_count,

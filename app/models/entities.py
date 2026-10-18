@@ -115,7 +115,7 @@ class CategoryEntity(Base):
     __tablename__ = "categories"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    code = Column(String(50), unique=True, index=True, nullable=True)
+    code = Column(String(50), index=True, nullable=True)
     name = Column(Unicode(100), nullable=False)
     parent_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
     description = Column(Unicode(255), nullable=True)

@@ -1,7 +1,11 @@
 import pyodbc
 import os
+import sys
 from dotenv import load_dotenv
 from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # Load .env
 BASE_DIR = Path(__file__).resolve().parent

@@ -13,7 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     UniqueConstraint,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, synonym
 from app.core.database import Base
 
 
@@ -35,7 +35,8 @@ class InvoiceEntity(Base):
     total_amount = Column(Float, default=0.0, nullable=False)
     paid_amount = Column(Float, default=0.0, nullable=False)
     remaining_debt = Column(Float, default=0.0, nullable=False)
-    status = Column(String(50), default="UNPAID", nullable=False)  # UNPAID, PARTIAL, PAID, OVERDUE
+    remaining_amount = synonym("remaining_debt")
+    status = Column(String(50), default="UNPAID", nullable=False)  # UNPAID, PARTIAL, PARTIALLY_PAID, PAID, OVERDUE
     items_json = Column(UnicodeText, nullable=True)
     note = Column(UnicodeText, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
