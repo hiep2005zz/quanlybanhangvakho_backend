@@ -55,6 +55,7 @@ class InvoiceEntity(Base):
 
     delivery_notes = relationship("InvoiceDeliveryNoteEntity", backref="invoice", cascade="all, delete-orphan")
     invoice_items = relationship("InvoiceItemEntity", backref="invoice", cascade="all, delete-orphan")
+    adjustments = relationship("InvoiceAdjustmentEntity", backref="invoice", cascade="all, delete-orphan")
 
     @property
     def items(self):
@@ -105,3 +106,22 @@ class InvoiceItemEntity(Base):
     vat_amount = Column(Float, default=0.0, nullable=False)  # Tiền thuế
     total_amount = Column(Float, default=0.0, nullable=False)  # Tổng tiền sau thuế
     created_at = Column(DateTime, default=get_utc_now)
+
+
+class InvoiceAdjustmentEntity(Base):
+    """Bảng lưu chứng từ điều chỉnh hóa đơn đã phát hành (Bất biến hóa đơn gốc)"""
+    __tablename__ = "invoice_adjustments"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    adjustment_code = Column(String(50), unique=True, index=True, nullable=False)  # DC-202610-0001
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False, index=True)
+    invoice_code = Column(String(50), nullable=False, index=True)
+    adjustment_type = Column(String(30), nullable=False)  # 'INCREASE' (Tăng) | 'DECREASE' (Giảm) | 'INFO' (Thông tin)
+    reason = Column(Unicode(500), nullable=False)
+    difference_subtotal = Column(Float, default=0.0, nullable=False)  # Chênh lệch tiền trước thuế
+    difference_vat = Column(Float, default=0.0, nullable=False)       # Chênh lệch tiền thuế
+    difference_total = Column(Float, default=0.0, nullable=False)     # Tổng chênh lệch thanh toán
+    details_json = Column(UnicodeText, nullable=True)
+    created_by = Column(Unicode(100), nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+

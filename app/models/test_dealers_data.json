@@ -39,7 +39,7 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0,
+    "transaction_count": 1,
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -105,7 +105,7 @@
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
-    "transaction_count": 0,
+    "transaction_count": 1,
     "warehouse_id": null,
     "warehouse_name": null
   }

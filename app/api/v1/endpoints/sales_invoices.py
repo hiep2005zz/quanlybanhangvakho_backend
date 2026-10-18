@@ -26,6 +26,7 @@ from app.models.invoice import (
     InvoiceEntity,
     InvoiceDeliveryNoteEntity,
     InvoiceItemEntity,
+    InvoiceAdjustmentEntity,
 )
 from app.services.audit_service import log_audit_event
 
@@ -153,8 +154,26 @@ def _extract_dispatch_items_data(db: Session, dispatch: OrderDispatchEntity, ord
         prod_name = it.get("product_name") or f"Sản phẩm #{prod_id}"
         unit_name = it.get("unit_name") or it.get("unit") or "Cái"
         
-        # Số lượng thực giao: ưu tiên delivered_quantity nếu có, nếu không lấy quantity/dispatched_quantity
-        delivered_qty = float(it.get("delivered_quantity", it.get("quantity", it.get("dispatched_quantity", 0))) or 0.0)
+        # Số lượng thực giao: hỗ trợ delivered_quantity, dispatched_this_round, total_delivered, actual_quantity, quantity, dispatched_quantity, ordered_quantity
+        raw_qty = (
+            it.get("delivered_quantity")
+            if it.get("delivered_quantity") is not None
+            else it.get("dispatched_this_round")
+            if it.get("dispatched_this_round") is not None
+            else it.get("total_delivered")
+            if it.get("total_delivered") is not None
+            else it.get("actual_quantity")
+            if it.get("actual_quantity") is not None
+            else it.get("quantity")
+            if it.get("quantity") is not None
+            else it.get("dispatched_quantity")
+            if it.get("dispatched_quantity") is not None
+            else it.get("ordered_quantity", 0)
+        )
+        try:
+            delivered_qty = float(raw_qty or 0.0)
+        except Exception:
+            delivered_qty = 0.0
         
         # Đơn giá bán lịch sử
         unit_price = float(it.get("price", it.get("unit_price", 0.0)) or 0.0)
@@ -242,7 +261,12 @@ def get_deliveries_for_invoicing(
     if dealer_name:
         query = query.filter(OrderEntity.dealer_name.ilike(f"%{dealer_name.strip()}%"))
     if warehouse_id:
-        query = query.filter(OrderDispatchEntity.warehouse_id == warehouse_id)
+        query = query.filter(
+            or_(
+                OrderDispatchEntity.warehouse_id == warehouse_id,
+                OrderDispatchEntity.warehouse_name.ilike(f"%{warehouse_id.strip()}%"),
+            )
+        )
 
     all_dispatches = query.order_by(desc(OrderDispatchEntity.created_at)).all()
 
@@ -267,15 +291,17 @@ def get_deliveries_for_invoicing(
         # Trạng thái giao hàng
         # Kiểm tra qua chuyến giao hàng liên kết
         trip_disp = trip_disp_map.get(disp.id)
-        if trip_disp:
+        if trip_disp and trip_disp.status.upper() in ["DELIVERED", "COMPLETED", "SUCCESS"]:
+            del_status = "DELIVERED"
+            del_date = trip_disp.created_at
+        elif ord_entity and ord_entity.status in ["DELIVERED", "COMPLETED", "SHIPPED"]:
+            del_status = "DELIVERED"
+            del_date = disp.created_at
+        elif trip_disp:
             del_status = trip_disp.status.upper()
             del_date = trip_disp.created_at
         else:
-            # Nếu chưa có chuyến giao hàng gán, kiểm tra đơn hàng đã hoàn thành chưa
-            if ord_entity and ord_entity.status in ["DELIVERED", "COMPLETED", "SHIPPED"]:
-                del_status = "DELIVERED"
-            else:
-                del_status = "DELIVERED"  # Mặc định phiếu xuất đã giao kho
+            del_status = "DELIVERED"  # Mặc định phiếu xuất kho đã lập thành công
             del_date = disp.created_at
 
         # Trạng thái hóa đơn
@@ -319,8 +345,8 @@ def get_deliveries_for_invoicing(
             except Exception:
                 pass
 
-        # Điều kiện đủ điều kiện xuất hóa đơn
-        is_eligible = (del_status == "DELIVERED") and (not is_invoiced) and (ord_entity is not None and ord_entity.dealer_id is not None) and (total_qty > 0)
+        # Điều kiện đủ điều kiện xuất hóa đơn: chưa xuất HĐ, có đại lý, có SL thực > 0 và không phải chuyến thất bại
+        is_eligible = (not is_invoiced) and (ord_entity is not None and ord_entity.dealer_id is not None) and (total_qty > 0) and (del_status != "FAILED")
 
         invoice_info = None
         if is_invoiced and invoiced_record:
@@ -952,6 +978,7 @@ def get_sales_invoice_detail(
             "product_name": it.product_name,
             "unit_name": it.unit_name,
             "quantity": it.quantity,
+            "delivered_quantity": it.quantity,
             "unit_price": it.unit_price,
             "discount_amount": it.discount_amount,
             "subtotal": it.subtotal,
@@ -996,6 +1023,18 @@ def get_sales_invoice_detail(
                 "amount_in_words": amount_in_words,
             },
             "note": inv.note,
+            "adjustments": [
+                {
+                    "id": a.id,
+                    "adjustment_code": a.adjustment_code,
+                    "adjustment_type": a.adjustment_type,
+                    "reason": a.reason,
+                    "difference_total": a.difference_total,
+                    "created_by": a.created_by,
+                    "created_at": a.created_at.strftime("%d/%m/%Y %H:%M") if a.created_at else "",
+                }
+                for a in db.query(InvoiceAdjustmentEntity).filter(InvoiceAdjustmentEntity.invoice_id == inv.id).order_by(desc(InvoiceAdjustmentEntity.created_at)).all()
+            ],
         },
     }
 
@@ -1223,3 +1262,137 @@ def prevent_delete_invoice(invoice_id: int):
         status_code=status.HTTP_400_BAD_REQUEST,
         detail="Hóa đơn đã phát hành có tính bất biến theo chuẩn mực kế toán. Không cho phép xóa hóa đơn!",
     )
+
+
+class CreateAdjustmentRequest(BaseModel):
+    adjustment_type: str = Field(..., description="INCREASE (Điều chỉnh tăng) | DECREASE (Điều chỉnh giảm) | INFO (Điều chỉnh thông tin)")
+    reason: str = Field(..., min_length=3, description="Lý do điều chỉnh hóa đơn")
+    difference_subtotal: float = Field(0.0, description="Số tiền chênh lệch trước thuế")
+    difference_vat: float = Field(0.0, description="Tiền thuế GTGT chênh lệch")
+    difference_total: float = Field(0.0, description="Tổng tiền thanh toán chênh lệch")
+    details_json: Optional[str] = Field(None, description="Chi tiết các dòng điều chỉnh (JSON)")
+
+
+@router.post("/{invoice_id}/adjustments")
+def create_invoice_adjustment(
+    invoice_id: int,
+    payload: CreateAdjustmentRequest,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Lập chứng từ điều chỉnh cho hóa đơn đã phát hành (Bảo toàn tính bất biến của hóa đơn gốc)."""
+    _require_accountant_or_admin(current_user)
+
+    inv = db.query(InvoiceEntity).filter(InvoiceEntity.id == invoice_id).first()
+    if not inv:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy hóa đơn cần điều chỉnh.")
+
+    # Cấp mã chứng từ điều chỉnh tuần tự DC-YYYYMM-XXXX
+    now = get_utc_now()
+    year_month = now.strftime("%Y%m")
+    prefix = f"DC-{year_month}-"
+    latest_adj = db.query(InvoiceAdjustmentEntity).filter(
+        InvoiceAdjustmentEntity.adjustment_code.like(f"{prefix}%")
+    ).order_by(desc(InvoiceAdjustmentEntity.id)).first()
+
+    next_seq = 1
+    if latest_adj and latest_adj.adjustment_code:
+        try:
+            seq_str = latest_adj.adjustment_code.replace(prefix, "")
+            next_seq = int(seq_str) + 1
+        except Exception:
+            next_seq = 1
+
+    adj_code = f"{prefix}{next_seq:04d}"
+
+    diff_total = payload.difference_total
+    if diff_total == 0 and (payload.difference_subtotal != 0 or payload.difference_vat != 0):
+        diff_total = payload.difference_subtotal + payload.difference_vat
+
+    adj = InvoiceAdjustmentEntity(
+        adjustment_code=adj_code,
+        invoice_id=inv.id,
+        invoice_code=inv.invoice_code,
+        adjustment_type=payload.adjustment_type.upper(),
+        reason=payload.reason.strip(),
+        difference_subtotal=payload.difference_subtotal,
+        difference_vat=payload.difference_vat,
+        difference_total=diff_total,
+        details_json=payload.details_json,
+        created_by=current_user.full_name or current_user.username,
+        created_at=now,
+    )
+    db.add(adj)
+
+    # Đánh dấu hóa đơn đã có chứng từ điều chỉnh (nhưng không sửa số liệu gốc)
+    inv.issue_status = "ADJUSTED"
+    db.commit()
+    db.refresh(adj)
+
+    # Ghi nhận nhật ký kiểm toán
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action_type="INVOICE_ADJUSTMENT_CREATED",
+        entity_type="InvoiceAdjustment",
+        entity_id=adj.id,
+        new_val={
+            "adjustment_code": adj.adjustment_code,
+            "invoice_code": inv.invoice_code,
+            "type": adj.adjustment_type,
+            "difference_total": adj.difference_total,
+            "reason": adj.reason,
+        },
+        reason=f"Lập chứng từ điều chỉnh {adj.adjustment_code} cho hóa đơn {inv.invoice_code}: {adj.reason}",
+    )
+
+    return {
+        "status": "success",
+        "message": f"Đã lập thành công chứng từ điều chỉnh {adj.adjustment_code} cho hóa đơn {inv.invoice_code}.",
+        "data": {
+            "id": adj.id,
+            "adjustment_code": adj.adjustment_code,
+            "invoice_id": adj.invoice_id,
+            "invoice_code": adj.invoice_code,
+            "adjustment_type": adj.adjustment_type,
+            "reason": adj.reason,
+            "difference_total": adj.difference_total,
+            "created_by": adj.created_by,
+            "created_at": adj.created_at.strftime("%d/%m/%Y %H:%M"),
+        }
+    }
+
+
+@router.get("/{invoice_id}/adjustments")
+def get_invoice_adjustments(
+    invoice_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Lấy danh sách các chứng từ điều chỉnh của hóa đơn."""
+    _require_accountant_or_admin(current_user)
+
+    adjs = db.query(InvoiceAdjustmentEntity).filter(
+        InvoiceAdjustmentEntity.invoice_id == invoice_id
+    ).order_by(desc(InvoiceAdjustmentEntity.created_at)).all()
+
+    return {
+        "status": "success",
+        "data": [
+            {
+                "id": a.id,
+                "adjustment_code": a.adjustment_code,
+                "invoice_id": a.invoice_id,
+                "invoice_code": a.invoice_code,
+                "adjustment_type": a.adjustment_type,
+                "reason": a.reason,
+                "difference_subtotal": a.difference_subtotal,
+                "difference_vat": a.difference_vat,
+                "difference_total": a.difference_total,
+                "details_json": a.details_json,
+                "created_by": a.created_by,
+                "created_at": a.created_at.strftime("%d/%m/%Y %H:%M") if a.created_at else "",
+            }
+            for a in adjs
+        ]
+    }
