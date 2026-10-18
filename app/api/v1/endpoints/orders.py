@@ -1433,9 +1433,11 @@ def create_order(
     load_dealers_db()
 
     # TIÊU CHÍ CHẤP NHẬN 3: BLOCK LOGIC ĐỘC LẬP CHO ROLE CUSTOMER
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    raw_user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (getattr(current_user, "roles", None) or ([current_user.role] if current_user.role else []))
+    user_roles = [str(r).lower() for r in raw_user_roles]
+    is_admin = ("admin" in user_roles) or (bool(current_user.role) and current_user.role.lower() == "admin")
     is_customer = current_user.role == "customer" or current_user.role == "Customer" or (
-        "customer" in [r.lower() for r in user_roles] and not any(r.lower() in ["admin", "sales_manager", "sales", "accountant"] for r in user_roles)
+        "customer" in user_roles and not any(r in ["admin", "sales_manager", "sales", "accountant"] for r in user_roles)
     )
 
     if current_user.role == 'Customer' or current_user.role == 'customer' or is_customer:
@@ -1515,8 +1517,7 @@ def create_order(
         )
 
     # 3. TIÊU CHÍ 3 (Hard Block): Kiểm tra nợ quá hạn trước khi kiểm tra tổng hạn mức công nợ (Tiêu chí 2)
-    is_admin = any(r.lower() == "admin" for r in user_roles) or (current_user.role and current_user.role.lower() == "admin")
-    debt_summary = validate_dealer_overdue_debt(dealer, ORDERS_DB, db=db, is_admin=is_admin, is_customer=is_customer)
+    debt_summary = validate_dealer_overdue_debt(dealer, ORDERS_DB, db=db, is_admin=is_admin, is_customer=is_customer, skip_policy_block=is_admin)
     current_debt = debt_summary["current_debt"]
     credit_limit = debt_summary["credit_limit"]
     overdue_days_allowed = debt_summary["overdue_days_allowed"]
@@ -1610,7 +1611,7 @@ def create_order(
     requires_approval = False
     approval_reasons = []
     now_dt = datetime.now(timezone.utc)
-    if db:
+    if not is_admin and db:
         # 1. Tìm và khóa các bảng giá đang hiệu lực của nhóm khách hàng
         active_pbs = db.query(PriceBookEntity).filter(
             PriceBookEntity.customer_group.in_(aliases),
@@ -1675,7 +1676,6 @@ def create_order(
     )
     best_pct = float(best_disc["discount_percent"])
 
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
     is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
     is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
 
@@ -1688,7 +1688,7 @@ def create_order(
         effective_pct = best_pct
     else:
         effective_pct = req_discount
-        if effective_pct > best_pct:
+        if not is_admin and effective_pct > best_pct:
             requires_approval = True
             pol_code = best_disc.get('applied_policy_code')
             pol_desc = f"{pol_code} ({best_pct}%)" if (pol_code and best_pct > 0) else f"({best_pct}%)"
@@ -1708,8 +1708,11 @@ def create_order(
     policy_cfg = get_credit_policy_config(db)
     is_dealer_over_limit = (current_debt + final_total_amount) > credit_limit or over_limit or (current_debt > credit_limit) or bool(getattr(dealer, 'is_over_credit_limit', False)) or (bool(getattr(dealer, 'credit_warning_flag', False)) and 'vượt hạn mức' in (getattr(dealer, 'credit_flag_reason', '') or '').lower())
     if is_admin:
-        # Trang admin: Admin tạo đơn không bị chặn bởi cấu hình và không cần duyệt do nợ
-        pass
+        # Trang admin: Admin tạo đơn không bao giờ cần duyệt hay bị chặn, tạo là thành công luôn
+        requires_approval = False
+        approval_reasons = []
+        approval_reason = None
+        order_status = "CONFIRMED"
     else:
         if is_dealer_over_limit:
             if policy_cfg.over_limit_action == "BLOCK":
@@ -1739,15 +1742,18 @@ def create_order(
     order_code = f"ORD{order_id:05d}"
     now_str = datetime.now(timezone.utc).isoformat()
     # Nếu là Customer (Đại lý tự đặt) hoặc vi phạm chính sách công nợ / chiết khấu: PENDING_APPROVAL.
-    # Đơn hàng hợp lệ hoặc do Admin tạo: CONFIRMED.
+    # Đơn hàng do Admin tạo: CONFIRMED (thành công ngay).
     if is_admin:
         requires_approval = False
+        approval_reasons = []
+        approval_reason = None
         order_status = "CONFIRMED"
     elif requires_approval or is_customer:
         order_status = "PENDING_APPROVAL"
+        approval_reason = " | ".join(approval_reasons) if approval_reasons else None
     else:
         order_status = "CONFIRMED"
-    approval_reason = " | ".join(approval_reasons) if (approval_reasons and not is_admin) else None
+        approval_reason = None
 
     delivery_point_str = data.delivery_point
     if selected_delivery_point_id and not delivery_point_str:
@@ -1908,7 +1914,9 @@ def create_sales_entry_order(
         )
 
     # Lỗi tạo đơn chéo / tài khoản đại lý bị khóa:
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    raw_user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (getattr(current_user, "roles", None) or ([current_user.role] if current_user.role else []))
+    user_roles = [str(r).lower() for r in raw_user_roles]
+    is_admin = ("admin" in user_roles) or (bool(current_user.role) and current_user.role.lower() == "admin")
     is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
     if is_customer or current_user.role == "customer":
         customer_dealer = _get_customer_dealer(current_user)
@@ -1957,7 +1965,6 @@ def create_sales_entry_order(
         )
 
     # AC 4: Kiểm tra phân quyền truy cập tính năng tạo đơn bán hàng
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
     ALLOWED_ORDER_CREATORS = ["admin", "sales_manager", "sales", "customer", "agent"]
     if not any(r.lower() in ALLOWED_ORDER_CREATORS for r in user_roles):
         raise HTTPException(
@@ -1965,13 +1972,12 @@ def create_sales_entry_order(
             detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh, Quản trị hệ thống và Đại lý."
         )
 
-    is_admin = any(r.lower() == "admin" for r in user_roles) or (current_user.role and current_user.role.lower() == "admin")
     is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
     is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
 
     # AC 3: TIÊU CHÍ 3 (Hard Block) - Kiểm tra nợ quá hạn trước khi kiểm tra tổng hạn mức
     # Ở trang admin tạo đơn: không bị chặn bởi cấu hình chính sách công nợ
-    debt_summary = validate_dealer_overdue_debt(dealer, ORDERS_DB, db=db, is_admin=is_admin, is_customer=is_customer, skip_policy_block=not is_customer)
+    debt_summary = validate_dealer_overdue_debt(dealer, ORDERS_DB, db=db, is_admin=is_admin, is_customer=is_customer, skip_policy_block=is_admin or not is_customer)
     current_debt = debt_summary["current_debt"]
     credit_limit = debt_summary["credit_limit"]
     overdue_days_allowed = debt_summary["overdue_days_allowed"]
@@ -2097,7 +2103,7 @@ def create_sales_entry_order(
         aliases = ["khach_le", "Khach_le", "RETAIL", "Khách lẻ"]
 
     now_dt = datetime.now(timezone.utc)
-    if db:
+    if not is_admin and db:
         active_pbs = db.query(PriceBookEntity).filter(
             PriceBookEntity.customer_group.in_(aliases),
             PriceBookEntity.status == "ACTIVE",
@@ -2155,7 +2161,7 @@ def create_sales_entry_order(
         effective_pct = best_pct
     else:
         effective_pct = req_discount
-        if effective_pct > best_pct:
+        if not is_admin and effective_pct > best_pct:
             requires_approval = True
             pol_code = best_disc.get('applied_policy_code')
             pol_desc = f"{pol_code} ({best_pct}%)" if (pol_code and best_pct > 0) else f"({best_pct}%)"
@@ -2163,8 +2169,6 @@ def create_sales_entry_order(
                 f"Chiết khấu ({effective_pct}%) vượt mức chính sách {pol_desc} cần quản lý duyệt"
             )
 
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_admin = any(r.lower() == "admin" for r in user_roles) or (current_user.role and current_user.role.lower() == "admin")
     is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
     is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
     if is_customer:
@@ -2179,8 +2183,11 @@ def create_sales_entry_order(
     policy_cfg = get_credit_policy_config(db)
     is_dealer_over_limit = (current_debt + final_total_amount) > credit_limit or (current_debt > credit_limit) or bool(getattr(dealer, 'is_over_credit_limit', False)) or (bool(getattr(dealer, 'credit_warning_flag', False)) and 'vượt hạn mức' in (getattr(dealer, 'credit_flag_reason', '') or '').lower())
     if is_admin:
-        # Trang admin: Admin tạo đơn không bị chặn bởi cấu hình chính sách công nợ
-        pass
+        # Trang admin: Admin tạo đơn không bao giờ cần duyệt hay bị chặn, tạo là thành công luôn
+        requires_approval = False
+        approval_reasons = []
+        approval_reason = None
+        order_status = "CONFIRMED"
     elif is_customer:
         # Trang đại lý: Áp dụng cấu hình chính sách công nợ
         if is_dealer_over_limit:
@@ -2220,12 +2227,15 @@ def create_sales_entry_order(
 
     if is_admin:
         requires_approval = False
+        approval_reasons = []
+        approval_reason = None
         order_status = "CONFIRMED"
     elif requires_approval or is_customer:
         order_status = "PENDING_APPROVAL"
+        approval_reason = " | ".join(approval_reasons) if approval_reasons else None
     else:
         order_status = "CONFIRMED"
-    approval_reason = " | ".join(approval_reasons) if (approval_reasons and not is_admin) else None
+        approval_reason = None
 
     created_at = datetime.now(timezone.utc)
     db_order = OrderEntity(
