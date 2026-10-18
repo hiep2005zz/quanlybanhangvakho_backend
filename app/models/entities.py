@@ -199,6 +199,12 @@ class DealerEntity(Base):
     lock_reason = Column(Unicode(500), nullable=True)
     locked_at = Column(DateTime, nullable=True)
     locked_by = Column(String(50), nullable=True)
+    # Cờ cảnh báo tín dụng tự động (S7-04)
+    is_over_credit_limit = Column(Boolean, default=False, nullable=False)
+    is_overdue = Column(Boolean, default=False, nullable=False)
+    credit_warning_flag = Column(Boolean, default=False, nullable=False)
+    credit_flag_reason = Column(UnicodeText, nullable=True)
+    last_credit_evaluated_at = Column(DateTime, nullable=True)
     warehouse_id = Column(String(50), nullable=True)
     warehouse_name = Column(Unicode(255), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
@@ -439,6 +445,41 @@ class StockTransferEntity(Base):
     cancelled_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+
+class CreditPolicyConfigEntity(Base):
+    """
+    Cấu hình chính sách cảnh báo và khóa bán tự động khi đại lý vượt hạn mức hoặc quá hạn (S7-04).
+    over_limit_action: 'BLOCK' (Chặn tạo đơn) | 'REQUIRE_APPROVAL' (Chuyển sang Cần duyệt)
+    overdue_action: 'BLOCK' (Chặn tạo đơn) | 'REQUIRE_APPROVAL' (Chuyển sang Cần duyệt)
+    """
+    __tablename__ = "credit_policy_configs"
+
+    id = Column(Integer, primary_key=True, default=1)
+    over_limit_action = Column(String(50), default="REQUIRE_APPROVAL", nullable=False)
+    overdue_action = Column(String(50), default="BLOCK", nullable=False)
+    auto_eval_enabled = Column(Boolean, default=True, nullable=False)
+    last_run_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+    updated_by = Column(Unicode(100), nullable=True)
+
+
+class DealerPaymentEntity(Base):
+    """
+    Ghi nhận thanh toán & đối trừ công nợ đại lý (S7-02, hỗ trợ S7-04 kích hoạt đánh giá lại).
+    """
+    __tablename__ = "dealer_payments"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    payment_code = Column(String(50), unique=True, index=True, nullable=False)
+    dealer_id = Column(Integer, ForeignKey("dealers.id"), nullable=False, index=True)
+    dealer_name = Column(Unicode(255), nullable=False)
+    amount = Column(Float, nullable=False)
+    payment_method = Column(Unicode(50), default="Chuyển khoản")  # Chuyển khoản | Tiền mặt
+    reference_code = Column(String(100), nullable=True)           # Mã giao dịch / UNC
+    note = Column(UnicodeText, nullable=True)
+    recorded_by = Column(Unicode(100), nullable=False)
+    recorded_at = Column(DateTime, default=get_utc_now)
 
 
 class DeliveryTripEntity(Base):

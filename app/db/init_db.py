@@ -16,6 +16,8 @@ from app.models.entities import (
     WarehouseStockEntity,
     StockAuditEntity,
     StockTransferEntity,
+    CreditPolicyConfigEntity,
+    DealerPaymentEntity,
     DeliveryTripEntity,
     DeliveryStopEntity,
     StockAdjustmentEntity,
@@ -80,6 +82,7 @@ def _ensure_legacy_columns(bind=engine):
             "status": ("VARCHAR(50) DEFAULT 'active'", "NVARCHAR(50) DEFAULT 'active'"),
             "is_batch_managed": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
             "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
+            "category_id": ("INTEGER", "INT NULL"),
         },
         "warehouse_stocks": {
             "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
@@ -92,6 +95,11 @@ def _ensure_legacy_columns(bind=engine):
             "transaction_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
             "warehouse_id": ("VARCHAR(50)", "NVARCHAR(50)"),
             "warehouse_name": ("VARCHAR(255)", "NVARCHAR(255)"),
+            "is_over_credit_limit": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
+            "is_overdue": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
+            "credit_warning_flag": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
+            "credit_flag_reason": ("TEXT", "NVARCHAR(MAX)"),
+            "last_credit_evaluated_at": ("DATETIME", "DATETIME"),
         },
         "inventory_transactions": {
             "unit_name": ("VARCHAR(50) DEFAULT 'Cái'", "NVARCHAR(50) DEFAULT N'Cái'"),
@@ -188,16 +196,18 @@ def _ensure_legacy_columns(bind=engine):
                 )
 
 
-def init_db():
-    print(f"Initializing database tables using {engine.dialect.name}...")
+def init_db(bind=None):
+    from app.core.database import engine as default_engine
+    target_engine = bind if bind is not None else default_engine
+    print(f"Initializing database tables using {target_engine.dialect.name}...")
     # Tạo các bảng nếu chưa có
-    Base.metadata.create_all(bind=engine)
-    _ensure_dealer_credit_limit_column(engine)
-    _ensure_legacy_columns(engine)
+    Base.metadata.create_all(bind=target_engine)
+    _ensure_dealer_credit_limit_column(target_engine)
+    _ensure_legacy_columns(target_engine)
     print("Tables created successfully.")
     # Tự động migrate thêm cột nếu bảng đã tồn tại từ trước
-    is_sqlite = engine.url.drivername.startswith("sqlite")
-    with engine.connect() as conn:
+    is_sqlite = target_engine.url.drivername.startswith("sqlite")
+    with target_engine.connect() as conn:
         if is_sqlite:
             # Kiểm tra và thêm cột cho SQLite
             user_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(users)")).fetchall()]
@@ -306,6 +316,36 @@ def init_db():
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (dealers.max_debt_days): {ex}")
+            if "is_over_credit_limit" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN is_over_credit_limit BOOLEAN DEFAULT 0;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (dealers.is_over_credit_limit): {ex}")
+            if "is_overdue" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN is_overdue BOOLEAN DEFAULT 0;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (dealers.is_overdue): {ex}")
+            if "credit_warning_flag" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN credit_warning_flag BOOLEAN DEFAULT 0;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (dealers.credit_warning_flag): {ex}")
+            if "credit_flag_reason" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN credit_flag_reason TEXT;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (dealers.credit_flag_reason): {ex}")
+            if "last_credit_evaluated_at" not in dealer_cols:
+                try:
+                    conn.execute(text("ALTER TABLE dealers ADD COLUMN last_credit_evaluated_at DATETIME;"))
+                    conn.commit()
+                except Exception as ex:
+                    print(f"SQLite migration notice (dealers.last_credit_evaluated_at): {ex}")
 
             tx_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(inventory_transactions)")).fetchall()]
             if "unit_name" not in tx_cols:
@@ -939,6 +979,22 @@ def init_db():
             print("Product stocks synchronized from warehouses successfully.")
         except Exception as sync_err:
             print(f"Error syncing product stocks from warehouses: {sync_err}")
+
+        # Seed Credit Policy Config (S7-04)
+        try:
+            if db.query(CreditPolicyConfigEntity).count() == 0:
+                default_policy = CreditPolicyConfigEntity(
+                    id=1,
+                    over_limit_action="REQUIRE_APPROVAL",
+                    overdue_action="BLOCK",
+                    auto_eval_enabled=True,
+                    updated_by="Hệ thống",
+                )
+                db.add(default_policy)
+                db.commit()
+                print("Credit policy configuration seeded successfully.")
+        except Exception as policy_err:
+            print(f"Error seeding credit policy: {policy_err}")
 
         # S7-02: Tự động đồng bộ hoá đơn từ đơn hàng và công nợ CSDL hiện có
         try:

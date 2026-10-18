@@ -8,6 +8,7 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def setup_customer_account():
+    from app.models.dealer import DEALERS_DB, save_dealers_db
     USERS_DB["test_portal_cust"] = UserInDB(
         id=101,
         username="test_portal_cust",
@@ -20,9 +21,25 @@ def setup_customer_account():
         branch="Đại lý phân phối",
     )
     save_users_db()
+
+    orig_dealer_1 = None
+    if 1 in DEALERS_DB:
+        orig_dealer_1 = DEALERS_DB[1].copy() if hasattr(DEALERS_DB[1], "copy") else DEALERS_DB[1]
+        DEALERS_DB[1].max_debt_days = 60
+        DEALERS_DB[1].overdue_days_allowed = 60
+        DEALERS_DB[1].credit_limit = 100000000.0
+        DEALERS_DB[1].is_overdue = False
+        DEALERS_DB[1].is_over_credit_limit = False
+        DEALERS_DB[1].credit_warning_flag = False
+        DEALERS_DB[1].credit_flag_reason = None
+        save_dealers_db()
+
     yield
     USERS_DB.pop("test_portal_cust", None)
     save_users_db()
+    if orig_dealer_1 and 1 in DEALERS_DB:
+        DEALERS_DB[1] = orig_dealer_1
+        save_dealers_db()
 
 def test_full_customer_ordering_workflow():
     # 1. Login tài khoản test_portal_cust (role: customer, liên kết Dealer 1)
