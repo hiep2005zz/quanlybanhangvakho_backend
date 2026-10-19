@@ -49,6 +49,7 @@ from app.models.debt_payment import (
     PaymentAdjustmentEntity,
 )
 from app.models.debt_reconciliation import DebtReconciliationEntity
+from app.modules.payment_reminders.models import PaymentReminderLog, PaymentReminderNotification
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 

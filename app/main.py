@@ -1,12 +1,18 @@
-import os
+# backend/app/main.py - Fresh Reset
 import asyncio
+import os
+import logging
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.endpoints import auth, products, inventory, users, orders, categories, audit_logs, profile, suppliers, dealers, delivery_points
+from app.modules.payment_reminders.config import FEATURE_ENABLED
 
 from contextlib import asynccontextmanager
 from app.db.init_db import init_db
+from app.modules.payment_reminders.scheduler import run_daily_scheduler
+
+logger = logging.getLogger(__name__)
 
 async def daily_credit_policy_evaluation():
     """
@@ -32,11 +38,32 @@ async def daily_credit_policy_evaluation():
 async def lifespan(app: FastAPI):
     # Khởi tạo bảng và dữ liệu mẫu khi ứng dụng khởi động
     init_db()
-    cron_task = asyncio.create_task(daily_credit_policy_evaluation())
+    background_tasks = []
+    if FEATURE_ENABLED:
+        background_tasks.append(
+            asyncio.create_task(run_daily_scheduler(), name="payment-reminder-scheduler")
+        )
+    background_tasks.append(
+        asyncio.create_task(
+            daily_credit_policy_evaluation(),
+            name="daily-credit-policy-evaluation",
+        )
+    )
     try:
         yield
     finally:
-        cron_task.cancel()
+        for task in background_tasks:
+            task.cancel()
+        results = await asyncio.gather(*background_tasks, return_exceptions=True)
+        for task, result in zip(background_tasks, results):
+            if isinstance(result, BaseException) and not isinstance(
+                result, asyncio.CancelledError
+            ):
+                logger.error(
+                    "Background task %s failed during shutdown",
+                    task.get_name(),
+                    exc_info=(type(result), result, result.__traceback__),
+                )
 
 app = FastAPI(
     title="Quan Ly Ban Hang & Kho API",
@@ -124,3 +151,6 @@ def root():
         "message": "Backend API đang hoạt động bình thường",
         "docs_url": "/docs"
     }
+
+from app.api.v1.endpoints import payment_reminders
+app.include_router(payment_reminders.router, prefix="/api/v1/payment-reminders", tags=["Payment Reminders"])
