@@ -7,7 +7,7 @@ from typing import List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, desc
-from app.api.deps import require_permission, require_sales_role, require_roles
+from app.api.deps import require_permission, require_sales_role, require_roles, get_current_user
 from app.core.database import get_db
 from app.core.rbac import Permission, Role
 from app.schemas.auth import UserResponse
@@ -915,7 +915,10 @@ def clear_stock_quantity(
 
 
 @router.get("/warehouses", response_model=List[WarehouseInfo])
-def get_warehouses_list(db: Session = Depends(get_db)):
+def get_warehouses_list(
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
     """Lấy danh sách các kho hoạt động trong hệ thống."""
     warehouses_dict = dict(DEFAULT_WAREHOUSES)
     if db:

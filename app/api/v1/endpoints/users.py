@@ -22,7 +22,11 @@ from app.services.customer_account import generate_temporary_password, send_cust
 router = APIRouter()
 
 from datetime import datetime, timezone
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+from app.models.entities import UserEntity
 from app.models.dealer import count_dealers_by_sale_id, get_dealers_by_sale_id, DEALERS_DB, save_dealers_db, load_dealers_db
+from app.models.user import load_users_db
 
 
 # Ràng buộc TC-01: Chỉ sales hoặc sales_manager mới được tiếp nhận bàn giao đại lý
@@ -69,12 +73,18 @@ def _build_user_item(u: UserInDB) -> UserItemResponse:
     can_write_inventory = any(ROLE_DETAILS.get(r, {}).get("can_write_inventory", False) for r in roles)
 
     display_branch = getattr(u, "branch", None) or ("Chưa phân công" if u.role == Role.CUSTOMER.value else "Kho Tổng Hà Nội")
+    
+    full_name = u.full_name
+    email = u.email
+    phone = getattr(u, "phone", None)
+
+
     return UserItemResponse(
         id=u.id,
         username=u.username,
-        full_name=u.full_name,
-        email=u.email,
-        phone=getattr(u, "phone", None),
+        full_name=full_name,
+        email=email,
+        phone=phone,
         role=primary_role,
         roles=roles,
         role_title=role_info.get("title", primary_role),
@@ -93,13 +103,48 @@ def _build_user_item(u: UserInDB) -> UserItemResponse:
 
 @router.get("", response_model=UserListResponse)
 def list_users(
+    db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.USER_MANAGE.value))
 ):
     """
-    Lấy danh sách người dùng trong hệ thống (Chỉ dành cho Quản trị viên - Zero-Trust).
+    Lấy danh sách người dùng trong hệ thống (100% SQL Server - Zero-Trust).
     """
     load_dealers_db()
-    users = [_build_user_item(u) for u in sorted(USERS_DB.values(), key=lambda x: x.id)]
+    load_users_db()
+
+    sql_users = []
+    if db:
+        try:
+            # Dọn dẹp triệt để tài khoản quản trị ảo / trùng lặp trên SQL Server
+            dup_admins = db.query(UserEntity).filter(
+                (UserEntity.username.in_(["quanlybanhang", "admin_virtual", "admin_mock"])) |
+                ((UserEntity.role == "admin") & (UserEntity.username != "admin"))
+            ).all()
+            if dup_admins:
+                for dup in dup_admins:
+                    db.delete(dup)
+                db.commit()
+
+
+
+            sql_users = db.query(UserEntity).order_by(UserEntity.id).all()
+        except Exception:
+            pass
+
+    if sql_users:
+        users = [
+            _build_user_item(u)
+            for u in sql_users
+            if u.username.lower() not in ("quanlybanhang", "admin_virtual", "admin_mock")
+            and not (u.username.lower() != "admin" and (u.role == "admin" or "admin" in (u.roles or [])))
+        ]
+    else:
+        users = [
+            _build_user_item(u)
+            for u in sorted(USERS_DB.values(), key=lambda x: x.id)
+            if u.username.lower() not in ("quanlybanhang", "admin_virtual", "admin_mock")
+            and not (u.username.lower() != "admin" and (u.role == "admin" or "admin" in (u.roles or [])))
+        ]
     return UserListResponse(users=users, total=len(users))
 
 @router.post("", response_model=UserItemResponse, status_code=status.HTTP_201_CREATED)
@@ -486,7 +531,7 @@ def update_user(
                 if db_u:
                     if new_roles is not None:
                         db_u.role = user.role
-                        db_u.roles = _json.dumps(user.roles)
+                        db_u.roles = user.roles
                     if data.full_name is not None and data.full_name.strip():
                         db_u.full_name = user.full_name
                     if data.email is not None and data.email.strip():
