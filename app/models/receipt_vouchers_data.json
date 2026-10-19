@@ -158,5 +158,25 @@
     "collector_role": "Kế toán công nợ",
     "created_at": "2026-10-17T12:41:38.868072+00:00",
     "note": "Khách đưa tiền mặt tại quầy giao dịch"
+  },
+  "PT-DL001-20261019160209-09": {
+    "id": 9,
+    "receipt_code": "PT-DL001-20261019160209-09",
+    "dealer_id": 1,
+    "dealer_code": "DL001",
+    "dealer_name": "Đại Lý Phân Phối Miền Bắc - Sao Mai",
+    "dealer_address": "120 Cầu Giấy, Hà Nội",
+    "dealer_phone": "0912345678",
+    "dealer_tax_code": "—",
+    "order_code": "DH-DL001-01",
+    "amount": 18500000.0,
+    "amount_in_words": "Mười tám triệu năm trăm nghìn đồng chẵn.",
+    "payment_method": "Tiền mặt",
+    "reason": "Thu tiền thanh toán đơn hàng DH-DL001-01",
+    "payer_name": "Trần Văn Đại Lý",
+    "collector_name": "Nguyễn Văn Kế Toán",
+    "collector_role": "Kế toán công nợ",
+    "created_at": "2026-10-19T16:02:09.193809+00:00",
+    "note": "Khách đưa tiền mặt tại quầy giao dịch"
   }
 }

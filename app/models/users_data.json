@@ -2,9 +2,9 @@
   "admin": {
     "id": 1,
     "username": "admin",
-    "full_name": "Nguyễn Quản Trị",
-    "email": "admin@congty.vn",
-    "phone": "0523456789",
+    "full_name": "Đào Ngọc Hiệp",
+    "email": "daongochiep645@gmail.com",
+    "phone": "0998887766",
     "role": "admin",
     "roles": [
       "admin"
@@ -165,6 +165,27 @@
     "failed_attempts": 0,
     "locked_until": null,
     "token_version": 2,
+    "avatar_url": null
+  },
+  "hiha": {
+    "id": 10,
+    "username": "hiha",
+    "full_name": "hiha",
+    "email": "dtc245180141@ictu.edu.vn",
+    "phone": "0987654345",
+    "role": "sales_manager",
+    "roles": [
+      "sales_manager"
+    ],
+    "hashed_password": "$2b$12$wh9dimYc/4FyuYdVaU2Bj.eZNfuBMM.STVbHJsstkr4oVj5kbqkVq",
+    "branch": "Toàn quốc",
+    "is_active": true,
+    "status": "ACTIVE",
+    "lock_reason": null,
+    "locked_at": null,
+    "failed_attempts": 0,
+    "locked_until": null,
+    "token_version": 1,
     "avatar_url": null
   }
 }
