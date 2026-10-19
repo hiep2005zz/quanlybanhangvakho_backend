@@ -128,18 +128,13 @@ def _format_audit_response(audit: StockAuditEntity, db: Session = None) -> Stock
     # Map tồn hiện tại ở kho nếu có db session
     current_stocks_map = {}
     if db and audit.warehouse_id:
-        p_ids = [it.get("product_id") for it in items_raw if it.get("product_id")]
-        if p_ids:
-            records = (
-                db.query(WarehouseStockEntity)
-                .filter(
-                    WarehouseStockEntity.warehouse_id == audit.warehouse_id,
-                    WarehouseStockEntity.product_id.in_(p_ids),
-                )
-                .all()
-            )
-            for r in records:
-                current_stocks_map[r.product_id] = r.actual_stock or 0
+        records = (
+            db.query(WarehouseStockEntity.product_id, WarehouseStockEntity.actual_stock)
+            .filter(WarehouseStockEntity.warehouse_id == audit.warehouse_id)
+            .all()
+        )
+        for r_pid, r_actual in records:
+            current_stocks_map[r_pid] = r_actual or 0
 
     items_formatted = [
         _format_audit_item_response(it, current_stocks_map.get(it.get("product_id")))
@@ -438,7 +433,13 @@ def create_stock_audit(
         )
 
     if data.product_ids and len(data.product_ids) > 0:
-        prod_query = prod_query.filter(ProductEntity.id.in_(data.product_ids))
+        if len(data.product_ids) > 2000:
+            from sqlalchemy import or_
+            chunk_size = 2000
+            chunks = [data.product_ids[i:i + chunk_size] for i in range(0, len(data.product_ids), chunk_size)]
+            prod_query = prod_query.filter(or_(*[ProductEntity.id.in_(chunk) for chunk in chunks]))
+        else:
+            prod_query = prod_query.filter(ProductEntity.id.in_(data.product_ids))
 
     products = prod_query.order_by(ProductEntity.id.asc()).all()
 
@@ -449,15 +450,27 @@ def create_stock_audit(
         )
 
     # Chốt tồn kho làm căn cứ cho từng sản phẩm tại kho được chọn
+    # Tối ưu hóa: Load trước toàn bộ tồn kho của kho để tránh hàng nghìn câu query lặp lại
+    existing_stocks = {
+        s.product_id: s
+        for s in db.query(WarehouseStockEntity).filter(
+            WarehouseStockEntity.warehouse_id == data.warehouse_id
+        ).all()
+    }
+
     items = []
     for prod in products:
-        stock_rec = get_or_create_warehouse_stock(
-            db=db,
-            warehouse_id=data.warehouse_id,
-            warehouse_name=warehouse_name,
-            product_id=prod.id,
-            for_update=False,
-        )
+        stock_rec = existing_stocks.get(prod.id)
+        if not stock_rec:
+            stock_rec = get_or_create_warehouse_stock(
+                db=db,
+                warehouse_id=data.warehouse_id,
+                warehouse_name=warehouse_name,
+                product_id=prod.id,
+                for_update=False,
+            )
+            existing_stocks[prod.id] = stock_rec
+
         sys_stock = stock_rec.actual_stock or 0
         res_stock = stock_rec.reserved_stock or 0
 
@@ -701,6 +714,10 @@ def confirm_stock_audit(
         system_frozen = itm["system_stock"]
         adjustment = actual_counted - system_frozen
         reason = itm.get("reason") or "Kiểm kê kho khớp"
+
+        # Nếu không có chênh lệch, không cần cập nhật tồn kho hay ghi log
+        if adjustment == 0:
+            continue
 
         # Khóa bản ghi tồn kho tại kho được kiểm kê
         stock_rec = (
