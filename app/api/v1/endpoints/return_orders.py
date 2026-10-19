@@ -179,16 +179,15 @@ def confirm_return_receipt_endpoint(
     - Ghi Thẻ kho và Nhật ký giao dịch kho.
     """
     user_roles = current_user.roles or [current_user.role]
-    # BẮT BUỘC kiểm tra vai trò Quản lý kho, Thủ kho hoặc Admin (Zero-Trust)
+    # BẮT BUỘC kiểm tra vai trò Quản lý kho hoặc Admin (Zero-Trust)
     warehouse_allowed = {
         Role.SYSTEM_ADMIN.value,
         Role.WAREHOUSE_MANAGER.value,
-        Role.WAREHOUSE_STAFF.value,
     }
     if not any(r in warehouse_allowed for r in user_roles):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Chỉ Quản lý kho, Thủ kho hoặc Quản trị viên mới có quyền xác nhận nhận hàng và cập nhật tồn kho."
+            detail="Chỉ Quản lý kho hoặc Quản trị viên mới có quyền xác nhận nhận hàng và cập nhật tồn kho."
         )
 
     note_text = payload.note if payload else None
