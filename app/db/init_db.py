@@ -505,9 +505,12 @@ def init_db():
                 "IF COL_LENGTH('delivery_stops', 'failure_reason') IS NULL ALTER TABLE delivery_stops ADD failure_reason NVARCHAR(MAX);",
                 "IF COL_LENGTH('delivery_stops', 'return_status') IS NULL ALTER TABLE delivery_stops ADD return_status NVARCHAR(50);",
                 "IF COL_LENGTH('delivery_stops', 'items_detail') IS NULL ALTER TABLE delivery_stops ADD items_detail NVARCHAR(MAX);",
-                "IF COL_LENGTH('delivery_stops', 'delivered_at') IS NOT NULL AND COL_LENGTH('delivery_stops', 'actual_delivery_time') IS NOT NULL EXEC('UPDATE delivery_stops SET actual_delivery_time = delivered_at WHERE actual_delivery_time IS NULL AND delivered_at IS NOT NULL;');",
-                "IF COL_LENGTH('delivery_stops', 'failed_reason') IS NOT NULL AND COL_LENGTH('delivery_stops', 'failure_reason') IS NOT NULL EXEC('UPDATE delivery_stops SET failure_reason = failed_reason WHERE failure_reason IS NULL AND failed_reason IS NOT NULL;');",
-                "IF COL_LENGTH('delivery_stops', 'status') IS NOT NULL AND COL_LENGTH('delivery_stops', 'delivery_status') IS NOT NULL EXEC('UPDATE delivery_stops SET delivery_status = status WHERE delivery_status IS NULL AND status IS NOT NULL;');",
+                "IF COL_LENGTH('delivery_stops', 'actual_delivery_time') IS NOT NULL AND COL_LENGTH('delivery_stops', 'delivered_at') IS NOT NULL EXEC('UPDATE delivery_stops SET actual_delivery_time = delivered_at WHERE actual_delivery_time IS NULL AND delivered_at IS NOT NULL');",
+                "IF COL_LENGTH('delivery_stops', 'failure_reason') IS NOT NULL AND COL_LENGTH('delivery_stops', 'failed_reason') IS NOT NULL EXEC('UPDATE delivery_stops SET failure_reason = failed_reason WHERE failure_reason IS NULL AND failed_reason IS NOT NULL');",
+                "IF COL_LENGTH('delivery_stops', 'delivery_status') IS NOT NULL AND COL_LENGTH('delivery_stops', 'status') IS NOT NULL EXEC('UPDATE delivery_stops SET delivery_status = status WHERE delivery_status IS NULL AND status IS NOT NULL');",
+                "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'ix_warehouse_stocks_wh_stock_prod') CREATE NONCLUSTERED INDEX ix_warehouse_stocks_wh_stock_prod ON warehouse_stocks (warehouse_id, actual_stock) INCLUDE (product_id, reserved_stock, min_stock);",
+                "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'ix_warehouse_stocks_prod_wh') CREATE NONCLUSTERED INDEX ix_warehouse_stocks_prod_wh ON warehouse_stocks (product_id, warehouse_id) INCLUDE (actual_stock, reserved_stock, min_stock);",
+                "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'ix_inv_tx_prod_id') CREATE NONCLUSTERED INDEX ix_inv_tx_prod_id ON inventory_transactions (product_id);",
             ]:
                 try:
                     conn.execute(text(sql_statement))
