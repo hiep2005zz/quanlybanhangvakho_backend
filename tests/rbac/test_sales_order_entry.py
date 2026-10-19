@@ -228,7 +228,7 @@ def test_existing_order_payload_still_works_without_new_fields():
             },
         )
 
-        assert response.status_code == 201
+        assert response.status_code == 201, f"Failed: {response.text}"
         order_code = response.json()["order_code"]
         created_order_codes.add(order_code)
         assert response.json()["total_amount"] == 398000

@@ -34,6 +34,7 @@ class WarehouseEntity(Base):
     manager_name = Column(Unicode(100), nullable=True)
     phone = Column(String(50), nullable=True)
     status = Column(Unicode(50), default="Đang hoạt động", nullable=True)
+    warehouse_type = Column(String(50), default="DEFAULT", nullable=True)  # DEFAULT | DAMAGED | TRANSIT
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=get_utc_now)
 

@@ -182,6 +182,13 @@ def reset_test_state():
             min_needed = max(150, shelves_qty + 50)
             if ws.actual_stock is None or ws.actual_stock < min_needed:
                 ws.actual_stock = min_needed
+
+        from app.models.entities import CreditPolicyConfigEntity
+        cfg = db.query(CreditPolicyConfigEntity).first()
+        if cfg:
+            cfg.over_limit_action = "REQUIRE_APPROVAL"
+            cfg.overdue_action = "BLOCK"
+            cfg.auto_eval_enabled = True
         db.commit()
     finally:
         db.close()
