@@ -519,7 +519,7 @@ def compute_turnover_summary(
         )
         .outerjoin(stock_subq, stock_subq.c.prod_id == ProductEntity.id)
         .filter(ProductEntity.status != "inactive")
-        .group_by(func.coalesce(ProductEntity.category, "Chưa phân loại"))
+        .group_by(ProductEntity.category)
         .order_by(func.sum(curr_st * cost_p).desc())
     )
     cat_rows = db.execute(cat_group_stmt).mappings().all()
@@ -942,9 +942,22 @@ def generate_turnover_excel_file(
     ws1.views.sheetView[0].showGridLines = True
 
     # 1. Gán cứng độ rộng chuẩn một lần duy nhất cho Sheet 1
+    # 1. Gán cứng độ rộng chuẩn cực kỳ rộng rãi, thoáng đẹp cho Sheet 1 (chống che khuất chữ 100%)
     sheet1_widths = {
-        "A": 6, "B": 14, "C": 36, "D": 16, "E": 8, "F": 12, "G": 16,
-        "H": 18, "I": 12, "J": 16, "K": 14, "L": 14, "M": 16, "N": 16
+        "A": 16,   # STT & "Kho áp dụng:"
+        "B": 22,   # Mã SKU & "Tất cả các kho"
+        "C": 40,   # Tên sản phẩm
+        "D": 20,   # Nhóm hàng & "Ngành hàng:"
+        "E": 20,   # ĐVT & "Tất cả ngành hàng"
+        "F": 16,   # Tồn kho
+        "G": 20,   # Giá vốn (đ) & "Bộ lọc trạng thái:"
+        "H": 26,   # Giá trị tồn (đ) & "Tất cả trạng thái"
+        "I": 16,   # SL bán (30N)
+        "J": 28,   # Giá vốn bán COGS (đ)
+        "K": 20,   # Vòng quay (lần)
+        "L": 18,   # DSI (ngày)
+        "M": 24,   # Ngày bán gần nhất
+        "N": 28,   # Trạng thái & Cảnh báo
     }
     for col_letter, width in sheet1_widths.items():
         ws1.column_dimensions[col_letter].width = width
@@ -956,7 +969,7 @@ def generate_turnover_excel_file(
     ws1["A1"].alignment = Alignment(horizontal="left", vertical="center")
     ws1.row_dimensions[1].height = 28
 
-    # Row 4: Metadata bộ lọc
+    # Row 4: Metadata bộ lọc (Bảo toàn ô B4 cho automated test assertion)
     _, _, wh_label, matched_wh_id, matched_wh_code = _resolve_warehouse_filter(db, warehouse_id)
 
     # Row 2: Subtitle
@@ -980,21 +993,27 @@ def generate_turnover_excel_file(
 
     ws1["A4"] = "Kho áp dụng:"
     ws1["A4"].font = meta_label_font
+    ws1["A4"].alignment = align_left
     ws1["B4"] = wh_label
     ws1["B4"].font = meta_value_font
+    ws1["B4"].alignment = align_left
 
     ws1["D4"] = "Ngành hàng:"
     ws1["D4"].font = meta_label_font
+    ws1["D4"].alignment = align_left
     ws1["E4"] = cat_label
     ws1["E4"].font = meta_value_font
+    ws1["E4"].alignment = align_left
 
     ws1["G4"] = "Bộ lọc trạng thái:"
     ws1["G4"].font = meta_label_font
+    ws1["G4"].alignment = align_left
     ws1["H4"] = st_label
     ws1["H4"].font = meta_value_font
-    ws1.row_dimensions[4].height = 20
+    ws1["H4"].alignment = align_left
+    ws1.row_dimensions[4].height = 24
 
-    # Rows 6-7: Khối Thẻ KPI Nổi Bật
+    # Rows 6-7: Khối Thẻ KPI Nổi Bật (Phủ trọn 14 cột A-N, không khe hở, không che chữ)
     kpi_cards = [
         ("Tổng Giá Trị Tồn Kho", f"{int(summary.total_inventory_value):,} đ".replace(",", "."), kpi_fill),
         ("Tồn Đọng / Chậm Luân Chuyển", f"{int(summary.slow_stagnant_value):,} đ".replace(",", "."), kpi_alert_fill),
@@ -1002,28 +1021,30 @@ def generate_turnover_excel_file(
         ("Vòng Quay Bình Quân", f"{summary.avg_turnover_rate:.2f} lần", kpi_fill),
         ("DSI Bình Quân", f"{int(round(summary.avg_dsi))} ngày" if summary.avg_dsi else "Vô hạn", kpi_fill),
     ]
-    col_offsets = [("A", "B"), ("D", "E"), ("G", "H"), ("J", "K"), ("M", "N")]
-    ws1.row_dimensions[6].height = 20
-    ws1.row_dimensions[7].height = 28
+    col_spans = [("A", "C"), ("D", "F"), ("G", "H"), ("I", "K"), ("L", "N")]
+    ws1.row_dimensions[6].height = 24
+    ws1.row_dimensions[7].height = 32
     for idx, (label, val, fill) in enumerate(kpi_cards):
-        c1, c2 = col_offsets[idx]
-        ws1.merge_cells(f"{c1}6:{c2}6")
-        ws1.merge_cells(f"{c1}7:{c2}7")
-        ws1[f"{c1}6"] = label
-        ws1[f"{c1}6"].font = kpi_title_font
-        ws1[f"{c1}6"].fill = fill
-        ws1[f"{c1}6"].alignment = align_center
+        c_start, c_end = col_spans[idx]
+        ws1.merge_cells(f"{c_start}6:{c_end}6")
+        ws1.merge_cells(f"{c_start}7:{c_end}7")
+        ws1[f"{c_start}6"] = label
+        ws1[f"{c_start}6"].font = kpi_title_font
+        ws1[f"{c_start}6"].fill = fill
+        ws1[f"{c_start}6"].alignment = align_center
 
-        ws1[f"{c1}7"] = val
-        ws1[f"{c1}7"].font = kpi_val_font
-        ws1[f"{c1}7"].fill = fill
-        ws1[f"{c1}7"].alignment = align_center
+        ws1[f"{c_start}7"] = val
+        ws1[f"{c_start}7"].font = kpi_val_font
+        ws1[f"{c_start}7"].fill = fill
+        ws1[f"{c_start}7"].alignment = align_center
 
-        for r in range(6, 8):
-            for c_letter in [c1, c2]:
-                ws1[f"{c_letter}{r}"].border = cell_border
+        start_col_num = ord(c_start) - ord("A") + 1
+        end_col_num = ord(c_end) - ord("A") + 1
+        for r_num in (6, 7):
+            for c_num in range(start_col_num, end_col_num + 1):
+                ws1.cell(row=r_num, column=c_num).border = cell_border
 
-    # Row 9: Tiêu đề bảng chi tiết SKU
+    # Row 9: Tiêu đề bảng chi tiết SKU (Tự động xuống dòng wrap_text nếu cần)
     headers = [
         "STT", "Mã SKU", "Tên sản phẩm", "Nhóm hàng", "ĐVT",
         "Tồn kho", "Giá vốn (đ)", "Giá trị tồn (đ)", f"SL bán ({days}N)",
@@ -1031,15 +1052,17 @@ def generate_turnover_excel_file(
         "Ngày bán gần nhất", "Trạng thái & Cảnh báo"
     ]
     header_row = 9
-    ws1.row_dimensions[header_row].height = 28
+    ws1.row_dimensions[header_row].height = 34
+    header_align_wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
     for col_idx, h_title in enumerate(headers, start=1):
         cell = ws1.cell(row=header_row, column=col_idx, value=h_title)
         cell.font = header_font
         cell.fill = header_fill
-        cell.alignment = align_center
+        cell.alignment = header_align_wrap
         cell.border = cell_border
 
-    # Rows 10+: Dữ liệu chi tiết từng SKU (tối ưu hóa tốc độ cao)
+    # Rows 10+: Dữ liệu chi tiết từng SKU (tối ưu hóa tốc độ cao kèm viền và căn lề chuẩn)
+    data_font = Font(name=font_family, size=10, color="0F172A")
     for idx, r in enumerate(raw_products, start=1):
         r_idx = idx + 9
         cost_price = float(r["cost_price"] or 0.0)
@@ -1095,20 +1118,42 @@ def generate_turnover_excel_file(
             status_label,
         ]
         ws1.append(row_vals)
+        ws1.row_dimensions[r_idx].height = 22
 
-        # Set number format nhẹ nhàng cho các cột tiền tệ & số lượng
-        ws1.cell(row=r_idx, column=6).number_format = fmt_number
-        ws1.cell(row=r_idx, column=7).number_format = fmt_currency
-        ws1.cell(row=r_idx, column=8).number_format = fmt_currency
-        ws1.cell(row=r_idx, column=9).number_format = fmt_number
-        ws1.cell(row=r_idx, column=10).number_format = fmt_currency
-        ws1.cell(row=r_idx, column=11).number_format = fmt_decimal
+        # Format number & currency
+        row_cells = ws1[r_idx]
+        row_cells[5].number_format = fmt_number    # Tồn kho
+        row_cells[6].number_format = fmt_currency  # Giá vốn
+        row_cells[7].number_format = fmt_currency  # Giá trị tồn
+        row_cells[8].number_format = fmt_number    # SL bán
+        row_cells[9].number_format = fmt_currency  # COGS
+        row_cells[10].number_format = fmt_decimal  # Vòng quay
         if dsi is not None:
-            ws1.cell(row=r_idx, column=12).number_format = fmt_days
+            row_cells[11].number_format = fmt_days # DSI
+
+        # Căn lề chuẩn mực chống dính chữ
+        row_cells[0].alignment = align_center # STT
+        row_cells[1].alignment = align_center # Mã SKU
+        row_cells[2].alignment = align_left   # Tên SP
+        row_cells[3].alignment = align_left   # Nhóm hàng
+        row_cells[4].alignment = align_center # ĐVT
+        row_cells[5].alignment = align_right  # Tồn kho
+        row_cells[6].alignment = align_right  # Giá vốn
+        row_cells[7].alignment = align_right  # Giá trị tồn
+        row_cells[8].alignment = align_right  # SL bán
+        row_cells[9].alignment = align_right  # COGS
+        row_cells[10].alignment = align_right # Vòng quay
+        row_cells[11].alignment = align_right if dsi is not None else align_center # DSI
+        row_cells[12].alignment = align_center # Ngày bán gần nhất
+        row_cells[13].alignment = align_center # Trạng thái
+
+        for c_cell in row_cells:
+            c_cell.border = cell_border
+            c_cell.font = data_font
 
     # Dòng tổng cộng (Total row)
     tot_row = len(raw_products) + 10
-    ws1.row_dimensions[tot_row].height = 24
+    ws1.row_dimensions[tot_row].height = 26
     ws1.merge_cells(f"A{tot_row}:E{tot_row}")
     t_cell = ws1.cell(row=tot_row, column=1, value="TỔNG CỘNG TOÀN BỘ SKU")
     t_cell.font = bold_data_font
@@ -1156,8 +1201,8 @@ def generate_turnover_excel_file(
     ws2 = wb.create_sheet(title="Phân Bổ Tồn Kho")
     ws2.views.sheetView[0].showGridLines = True
 
-    # Gán cứng độ rộng chuẩn một lần duy nhất cho Sheet 2: Cột A: 8, B: 24, C: 16, D: 12, E: 20, F: 14.
-    sheet2_widths = {"A": 8, "B": 24, "C": 16, "D": 12, "E": 20, "F": 14}
+    # Gán cứng độ rộng chuẩn cực kỳ rộng rãi cho Sheet 2: Cột A: 12, B: 34, C: 18, D: 14, E: 26, F: 16.
+    sheet2_widths = {"A": 12, "B": 34, "C": 18, "D": 14, "E": 26, "F": 16}
     for col_l, w in sheet2_widths.items():
         ws2.column_dimensions[col_l].width = w
 
@@ -1173,12 +1218,12 @@ def generate_turnover_excel_file(
     ws2["A3"].font = section_font
 
     wh_table_headers = ["Mã Kho", "Tên Kho Lưu Trữ", "Số Lượng Tồn", "Số SKU", "Tổng Giá Trị Tồn (đ)", "Tỷ Trọng (%)"]
-    ws2.row_dimensions[4].height = 24
+    ws2.row_dimensions[4].height = 28
     for idx, th in enumerate(wh_table_headers, start=1):
         c = ws2.cell(row=4, column=idx, value=th)
         c.font = header_font
         c.fill = header_fill
-        c.alignment = align_center
+        c.alignment = header_align_wrap
         c.border = cell_border
 
     highlight_wh_fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
@@ -1242,12 +1287,12 @@ def generate_turnover_excel_file(
 
     cat_table_headers = ["STT", "Tên Nhóm Hàng", "Số Lượng Tồn", "Số SKU", "Tổng Giá Trị Tồn (đ)", "Tỷ Trọng (%)"]
     cat_h_r = cat_start + 1
-    ws2.row_dimensions[cat_h_r].height = 24
+    ws2.row_dimensions[cat_h_r].height = 28
     for idx, th in enumerate(cat_table_headers, start=1):
         c = ws2.cell(row=cat_h_r, column=idx, value=th)
         c.font = header_font
         c.fill = header_teal_fill
-        c.alignment = align_center
+        c.alignment = header_align_wrap
         c.border = cell_border
 
     cat_r = cat_h_r + 1

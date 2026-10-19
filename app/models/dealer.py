@@ -27,6 +27,12 @@ class Dealer(BaseModel):
     locked_at: Optional[Union[str, datetime]] = None
     locked_by: Optional[str] = None
     transaction_count: Optional[int] = 0
+    # Cờ cảnh báo tín dụng tự động (S7-04)
+    is_over_credit_limit: bool = False
+    is_overdue: bool = False
+    credit_warning_flag: bool = False
+    credit_flag_reason: Optional[str] = None
+    last_credit_evaluated_at: Optional[Union[str, datetime]] = None
     warehouse_id: Optional[str] = None
     warehouse_name: Optional[str] = None
 # Initial seed data for dealers
@@ -140,7 +146,9 @@ def save_dealers_db():
                 db_dealer.email = d.email
                 db_dealer.address = d.address
                 db_dealer.region = d.region
-                db_dealer.assigned_sale_id = d.assigned_sale_id
+                from app.models.entities import UserEntity
+                valid_user_ids = {u[0] for u in db.query(UserEntity.id).all()}
+                db_dealer.assigned_sale_id = d.assigned_sale_id if d.assigned_sale_id in valid_user_ids else None
                 db_dealer.credit_limit = getattr(d, "credit_limit", getattr(db_dealer, "credit_limit", 0))
                 db_dealer.max_debt_days = getattr(d, "max_debt_days", getattr(db_dealer, "max_debt_days", 30))
                 if hasattr(db_dealer, "overdue_days_allowed"):
@@ -163,6 +171,26 @@ def save_dealers_db():
                     else:
                         db_dealer.locked_at = None
                     db_dealer.locked_by = getattr(d, "locked_by", None)
+                if hasattr(db_dealer, "is_over_credit_limit"):
+                    db_dealer.is_over_credit_limit = bool(getattr(d, "is_over_credit_limit", False))
+                if hasattr(db_dealer, "is_overdue"):
+                    db_dealer.is_overdue = bool(getattr(d, "is_overdue", False))
+                if hasattr(db_dealer, "credit_warning_flag"):
+                    db_dealer.credit_warning_flag = bool(getattr(d, "credit_warning_flag", False))
+                if hasattr(db_dealer, "credit_flag_reason"):
+                    db_dealer.credit_flag_reason = getattr(d, "credit_flag_reason", None)
+                if hasattr(db_dealer, "last_credit_evaluated_at"):
+                    eval_val = getattr(d, "last_credit_evaluated_at", None)
+                    if eval_val:
+                        if isinstance(eval_val, str):
+                            try:
+                                db_dealer.last_credit_evaluated_at = datetime.fromisoformat(eval_val.replace("Z", "+00:00"))
+                            except Exception:
+                                db_dealer.last_credit_evaluated_at = None
+                        elif isinstance(eval_val, datetime):
+                            db_dealer.last_credit_evaluated_at = eval_val
+                    else:
+                        db_dealer.last_credit_evaluated_at = None
                 if hasattr(db_dealer, "warehouse_id"):
                     db_dealer.warehouse_id = getattr(d, "warehouse_id", None)
                 if hasattr(db_dealer, "warehouse_name"):
@@ -217,6 +245,11 @@ def load_dealers_db():
                         locked_at=entity.locked_at.isoformat() if hasattr(getattr(entity, "locked_at", None), "isoformat") else getattr(entity, "locked_at", None),
                         locked_by=getattr(entity, "locked_by", None),
                         transaction_count=int(getattr(entity, "transaction_count", 0) or 0),
+                        is_over_credit_limit=bool(getattr(entity, "is_over_credit_limit", False)),
+                        is_overdue=bool(getattr(entity, "is_overdue", False)),
+                        credit_warning_flag=bool(getattr(entity, "credit_warning_flag", False)),
+                        credit_flag_reason=getattr(entity, "credit_flag_reason", None),
+                        last_credit_evaluated_at=entity.last_credit_evaluated_at.isoformat() if hasattr(getattr(entity, "last_credit_evaluated_at", None), "isoformat") else getattr(entity, "last_credit_evaluated_at", None),
                         warehouse_id=getattr(entity, "warehouse_id", None),
                         warehouse_name=getattr(entity, "warehouse_name", None),
                     )
