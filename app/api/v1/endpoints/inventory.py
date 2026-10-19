@@ -1135,11 +1135,8 @@ def get_inventory_thresholds(
             )
 
         # Nếu không truyền page: trả về List[WarehouseThresholdItem]
-        rows = (
-            base_query
-            .order_by(ProductEntity.code.asc(), WarehouseStockEntity.warehouse_id.asc())
-            .all()
-        )
+        rows = base_query.all()
+        rows.sort(key=lambda r: (getattr(r, "product_code", "") or "", getattr(r, "warehouse_id", "") or ""))
         return [
             WarehouseThresholdItem(
                 warehouse_id=r.warehouse_id,
@@ -1505,11 +1502,8 @@ def get_low_stock_alerts_summary(
             )
 
         # Nếu không truyền page (lấy tất cả)
-        rows = (
-            base_query
-            .order_by(ProductEntity.code.asc(), WarehouseStockEntity.warehouse_id.asc())
-            .all()
-        )
+        rows = base_query.all()
+        rows.sort(key=lambda r: (getattr(r, "product_code", "") or "", getattr(r, "warehouse_id", "") or ""))
         items = [
             WarehouseThresholdItem(
                 warehouse_id=r.warehouse_id,
@@ -1695,11 +1689,12 @@ def get_stock_book(
             _CATEGORIES_CACHE = {"timestamp": now, "data": all_categories}
 
         # 5. Phân trang SQL trực tiếp (LIMIT và OFFSET cực nhanh qua Index)
-        ordered_query = base_query.order_by(ProductEntity.code.asc(), WarehouseStockEntity.warehouse_id.asc())
         if page is not None and page_size is not None and page > 0 and page_size > 0:
+            ordered_query = base_query.order_by(ProductEntity.code.asc(), WarehouseStockEntity.warehouse_id.asc())
             paginated_rows = ordered_query.offset((page - 1) * page_size).limit(page_size).all()
         else:
-            paginated_rows = ordered_query.all()
+            paginated_rows = base_query.all()
+            paginated_rows.sort(key=lambda r: (getattr(r, "product_code", "") or "", getattr(r, "warehouse_id", "") or ""))
 
         # 5. Khởi tạo danh sách items (chỉ đúng số bản ghi của trang đó)
         can_view_cost = getattr(current_user, "can_view_cost", False) or (Permission.COST_READ.value in current_user.permissions)
