@@ -1334,7 +1334,13 @@ def update_product_units(
     data: UnitUpdateRequest,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_roles([Role.SYSTEM_ADMIN.value, Role.WAREHOUSE_MANAGER.value]))
+    current_user: UserResponse = Depends(require_roles([
+        Role.SYSTEM_ADMIN.value,
+        Role.WAREHOUSE_MANAGER.value,
+        Role.WAREHOUSE_STAFF.value,
+        "warehouse",
+        "warehouse_mgr",
+    ]))
 ):
     """
     Tiêu chí 1: Khai báo đa đơn vị tính:
