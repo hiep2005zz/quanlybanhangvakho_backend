@@ -865,6 +865,33 @@ def get_product_location_allocation_status(
     }
 
 
+@router.get("/{warehouse_id}/warehouse-stocks", response_model=Dict[int, int])
+def get_warehouse_stocks_map(
+    warehouse_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_VIEW_ROLES)),
+):
+    """
+    Tra cứu tổng tồn thực tế của tất cả sản phẩm trong kho cụ thể:
+    Trả về dict dạng { product_id: actual_stock }
+    """
+    wh = db.query(WarehouseEntity).filter(WarehouseEntity.id == warehouse_id).first()
+    if not wh:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kho không tồn tại.")
+
+    wh_aliases = [str(warehouse_id)]
+    if wh.code:
+        wh_aliases.append(wh.code)
+        wh_aliases.extend(WAREHOUSE_CODE_ALIASES.get(wh.code, []))
+    wh_aliases.append(f"WH{wh.id:02d}")
+
+    ws_records = db.query(WarehouseStockEntity.product_id, WarehouseStockEntity.actual_stock).filter(
+        WarehouseStockEntity.warehouse_id.in_(wh_aliases)
+    ).all()
+
+    return {r[0]: (r[1] or 0) for r in ws_records}
+
+
 @router.post("/locations/assign-product", response_model=Dict[str, Any])
 def assign_product_to_location(
     payload: AssignProductToLocationRequest,

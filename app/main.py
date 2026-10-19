@@ -1,5 +1,5 @@
-# backend/app/main.py - Fresh Reset
 import os
+import asyncio
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,11 +8,35 @@ from app.api.v1.endpoints import auth, products, inventory, users, orders, categ
 from contextlib import asynccontextmanager
 from app.db.init_db import init_db
 
+async def daily_credit_policy_evaluation():
+    """
+    AC3: Scheduled Task chạy tự động đánh giá lại công nợ toàn bộ đại lý mỗi ngày 1 lần.
+    """
+    # Đợi 10 giây sau khi server khởi động xong trước khi chạy lần đầu
+    await asyncio.sleep(10)
+    while True:
+        try:
+            from app.core.database import SessionLocal
+            from app.services.credit_policy_service import evaluate_all_dealers_credit_flags, get_credit_policy_config
+            with SessionLocal() as db_session:
+                cfg = get_credit_policy_config(db_session)
+                if getattr(cfg, "auto_eval_enabled", True):
+                    evaluate_all_dealers_credit_flags(db_session)
+                    print("[Scheduled Job] Đã hoàn thành đánh giá tự động công nợ đại lý hàng ngày (S7-04).")
+        except Exception as e:
+            print(f"Error in daily credit policy evaluation cron: {e}")
+        # Chạy lại sau mỗi 24 giờ
+        await asyncio.sleep(86400)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Khởi tạo bảng và dữ liệu mẫu trên SQL Server khi ứng dụng khởi động
+    # Khởi tạo bảng và dữ liệu mẫu khi ứng dụng khởi động
     init_db()
-    yield
+    cron_task = asyncio.create_task(daily_credit_policy_evaluation())
+    try:
+        yield
+    finally:
+        cron_task.cancel()
 
 app = FastAPI(
     title="Quan Ly Ban Hang & Kho API",
@@ -67,7 +91,8 @@ app.include_router(goods_receipts.router, prefix="/api/v1/goods-receipts", tags=
 app.include_router(goods_receipts.router, prefix="/goods-receipts", tags=["Goods Receipts"])
 app.include_router(warehouses.router, prefix="/api/v1/warehouses", tags=["Warehouses"])
 app.include_router(stock_audits.router, prefix="/api/v1/stock-audits", tags=["Stock Audits"])
-from app.api.v1.endpoints import agency_debts, debt_payments
+from app.api.v1.endpoints import delivery_trips, agency_debts, debt_payments
+app.include_router(delivery_trips.router, prefix="/api/v1/delivery-trips", tags=["Delivery Trips"])
 app.include_router(agency_debts.router, prefix="/api/v1/agency-debts", tags=["Agency Debts"])
 app.include_router(debt_payments.router, prefix="/api/v1/debt-payments", tags=["Debt Payments"])
 app.include_router(batches.router, prefix="/api/v1/batches", tags=["Batches"])
@@ -78,7 +103,9 @@ app.include_router(inventory_reports.router, prefix="/api/v1/inventory", tags=["
 app.include_router(deliveries.router, prefix="/api/v1/deliveries", tags=["Deliveries"])
 app.include_router(stock_adjustments.router, prefix="/api/v1/stock-adjustments", tags=["Stock Adjustments"])
 app.include_router(payment_collections.router, prefix="/api/v1/payment-collections", tags=["Payment Collections"])
-from app.api.v1.endpoints import debt_reconciliations
+from app.api.v1.endpoints import sales_invoices, return_orders, debt_reconciliations
+app.include_router(sales_invoices.router, prefix="/api/v1/sales-invoices", tags=["Sales Invoices"])
+app.include_router(return_orders.router, prefix="/api/v1/return-orders", tags=["Return Orders / RMA"])
 app.include_router(debt_reconciliations.router, prefix="/api/v1/debt-reconciliations", tags=["Debt Reconciliations"])
 
 # Mount static folder for user avatars / media uploads
