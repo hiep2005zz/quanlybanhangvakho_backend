@@ -3834,6 +3834,12 @@ def edit_or_cancel_invoice(
     new_status = data.status.upper() if data.status else target["status"]
     new_note = data.note if data.note is not None else target.get("note")
     if new_status != target["status"]:
+        user_roles_lower = [str(r).lower() for r in user_roles if r]
+        if not any(r in ["admin", "sales_manager"] for r in user_roles_lower):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Chỉ Quản trị viên hoặc Quản lý kinh doanh mới có quyền thay đổi trạng thái đơn hàng."
+            )
         new_val["status"] = new_status
     if new_note != target.get("note"):
         new_val["note"] = new_note

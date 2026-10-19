@@ -1337,6 +1337,20 @@ def get_dealer_transactions(
             detail=f"Không tìm thấy đại lý ID {dealer_id}."
         )
 
+    user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
+    roles = {str(r).lower() for r in user_roles if r}
+    is_customer = "customer" in roles and not any(r in ["admin", "sales_manager", "sales", "accountant"] for r in roles)
+    if is_customer:
+        is_own = (current_user.id == dealer_id) or \
+                 (getattr(current_user, "username", "").lower() == getattr(dealer, "code", "").lower()) or \
+                 (getattr(current_user, "email", None) and getattr(dealer, "email", None) and current_user.email.lower() == dealer.email.lower()) or \
+                 (getattr(current_user, "phone", None) and getattr(dealer, "phone", None) and current_user.phone == dealer.phone)
+        if not is_own:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tài khoản đại lý chỉ được phép xem giao dịch của chính mình."
+            )
+
     tx_items = get_dealer_unified_orders(dealer_id=dealer_id, dealer=dealer, db=db)
 
     # Tính toán tổng tiền, đã thanh toán và chưa thanh toán
@@ -1496,6 +1510,23 @@ def get_dealer_receipt_vouchers(
     ),
 ):
     """Lấy danh sách các phiếu thu đã ghi nhận của đại lý từ SQL Server."""
+    user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
+    roles = {str(r).lower() for r in user_roles if r}
+    is_customer = "customer" in roles and not any(r in ["admin", "sales_manager", "sales", "accountant"] for r in roles)
+    if is_customer:
+        load_dealers_db()
+        dealer = DEALERS_DB.get(dealer_id)
+        is_own = (current_user.id == dealer_id) or (dealer and (
+                 (getattr(current_user, "username", "").lower() == getattr(dealer, "code", "").lower()) or \
+                 (getattr(current_user, "email", None) and getattr(dealer, "email", None) and current_user.email.lower() == dealer.email.lower()) or \
+                 (getattr(current_user, "phone", None) and getattr(dealer, "phone", None) and current_user.phone == dealer.phone)
+        ))
+        if not is_own:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tài khoản đại lý chỉ được phép xem phiếu thu của chính mình."
+            )
+
     try:
         from app.models.receipt_voucher import ReceiptVoucherEntity
         sql_vouchers = db.query(ReceiptVoucherEntity).filter(

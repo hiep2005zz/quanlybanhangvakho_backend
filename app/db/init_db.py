@@ -524,43 +524,71 @@ def init_db():
                 UserEntity(
                     id=1,
                     username="admin",
-                    password_hash=get_password_hash("admin123"),
-                    full_name="Quản Trị Viên",
-                    role=Role.ADMIN.value,
-                    roles_json=json.dumps([Role.ADMIN.value]),
+                    hashed_password=get_password_hash("123"),
+                    full_name="Đào Ngọc Hiệp",
+                    email="daongochiep645@gmail.com",
+                    phone="0998887766",
+                    role=Role.SYSTEM_ADMIN.value,
+                    roles_json=json.dumps([Role.SYSTEM_ADMIN.value]),
                     is_active=True,
                 ),
                 UserEntity(
                     id=2,
                     username="sales_manager",
-                    password_hash=get_password_hash("manager123"),
-                    full_name="Trưởng Phòng Kinh Doanh",
+                    hashed_password=get_password_hash("123"),
+                    full_name="Phạm Trưởng Phòng Sales",
+                    email="sales.manager@congty.vn",
+                    phone="0822516998",
                     role=Role.SALES_MANAGER.value,
                     roles_json=json.dumps([Role.SALES_MANAGER.value]),
                     is_active=True,
                 ),
                 UserEntity(
                     id=3,
-                    username="sales_user",
-                    password_hash=get_password_hash("sales123"),
-                    full_name="Nhân Viên Bán Hàng",
+                    username="sales",
+                    hashed_password=get_password_hash("123"),
+                    full_name="Trần Bán Hàng",
+                    email="sales@congty.vn",
                     role=Role.SALES.value,
                     roles_json=json.dumps([Role.SALES.value]),
                     is_active=True,
                 ),
                 UserEntity(
                     id=4,
-                    username="warehouse_user",
-                    password_hash=get_password_hash("kho123"),
-                    full_name="Thủ Kho",
-                    role=Role.WAREHOUSE.value,
-                    roles_json=json.dumps([Role.WAREHOUSE.value]),
+                    username="kho",
+                    hashed_password=get_password_hash("123"),
+                    full_name="Lê Thủ Kho",
+                    email="kho@congty.vn",
+                    role=Role.WAREHOUSE_STAFF.value,
+                    roles_json=json.dumps([Role.WAREHOUSE_STAFF.value]),
                     is_active=True,
                 ),
             ]
             db.add_all(initial_users)
             db.commit()
             print("Users seeded successfully.")
+
+        # Đồng bộ và chuẩn hóa tài khoản Quản trị viên chính thức duy nhất: Đào Ngọc Hiệp
+        try:
+            admin_ent = db.query(UserEntity).filter(UserEntity.username == "admin").first()
+            if admin_ent:
+                admin_ent.full_name = "Đào Ngọc Hiệp"
+                admin_ent.email = "daongochiep645@gmail.com"
+                admin_ent.phone = "0998887766"
+                admin_ent.role = Role.SYSTEM_ADMIN.value
+                db.commit()
+
+            # Dọn dẹp triệt để tài khoản quản trị ảo / trùng lặp trên SQL Server
+            dup_admins = db.query(UserEntity).filter(
+                (UserEntity.username.in_(["quanlybanhang", "admin_virtual", "admin_mock"])) |
+                ((UserEntity.role == "admin") & (UserEntity.username != "admin"))
+            ).all()
+            for dup in dup_admins:
+                db.delete(dup)
+            if dup_admins:
+                db.commit()
+        except Exception as u_sync_err:
+            print(f"Notice syncing admin user: {u_sync_err}")
 
         # 2. Seed Categories nếu chưa có
         if db.query(CategoryEntity).count() == 0:
