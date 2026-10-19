@@ -91,7 +91,8 @@ app.include_router(goods_receipts.router, prefix="/api/v1/goods-receipts", tags=
 app.include_router(goods_receipts.router, prefix="/goods-receipts", tags=["Goods Receipts"])
 app.include_router(warehouses.router, prefix="/api/v1/warehouses", tags=["Warehouses"])
 app.include_router(stock_audits.router, prefix="/api/v1/stock-audits", tags=["Stock Audits"])
-from app.api.v1.endpoints import agency_debts, debt_payments
+from app.api.v1.endpoints import delivery_trips, agency_debts, debt_payments
+app.include_router(delivery_trips.router, prefix="/api/v1/delivery-trips", tags=["Delivery Trips"])
 app.include_router(agency_debts.router, prefix="/api/v1/agency-debts", tags=["Agency Debts"])
 app.include_router(debt_payments.router, prefix="/api/v1/debt-payments", tags=["Debt Payments"])
 app.include_router(batches.router, prefix="/api/v1/batches", tags=["Batches"])
@@ -102,9 +103,9 @@ app.include_router(inventory_reports.router, prefix="/api/v1/inventory", tags=["
 app.include_router(deliveries.router, prefix="/api/v1/deliveries", tags=["Deliveries"])
 app.include_router(stock_adjustments.router, prefix="/api/v1/stock-adjustments", tags=["Stock Adjustments"])
 app.include_router(payment_collections.router, prefix="/api/v1/payment-collections", tags=["Payment Collections"])
-from app.api.v1.endpoints import return_orders
+from app.api.v1.endpoints import sales_invoices, return_orders, debt_reconciliations
+app.include_router(sales_invoices.router, prefix="/api/v1/sales-invoices", tags=["Sales Invoices"])
 app.include_router(return_orders.router, prefix="/api/v1/return-orders", tags=["Return Orders / RMA"])
-from app.api.v1.endpoints import debt_reconciliations
 app.include_router(debt_reconciliations.router, prefix="/api/v1/debt-reconciliations", tags=["Debt Reconciliations"])
 
 # Mount static folder for user avatars / media uploads

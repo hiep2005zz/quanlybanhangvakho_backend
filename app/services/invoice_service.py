@@ -27,7 +27,18 @@ def sync_dealer_invoices_from_orders(dealer: DealerEntity, db: Session) -> None:
         OrderEntity.status != "CANCELLED",
     ).all()
 
+    from app.models.invoice import InvoiceDeliveryNoteEntity
     for ord in orders:
+        # Chống trùng: Không tự động tạo HD-ORD nếu đơn này đã được xuất hóa đơn theo phiếu giao hàng
+        has_delivery_invoice = db.query(InvoiceDeliveryNoteEntity).filter(
+            or_(
+                InvoiceDeliveryNoteEntity.order_id == ord.id,
+                InvoiceDeliveryNoteEntity.order_code == ord.order_code,
+            )
+        ).first()
+        if has_delivery_invoice:
+            continue
+
         inv_code = f"HD-{ord.order_code}"
         existing = db.query(InvoiceEntity).filter(InvoiceEntity.invoice_code == inv_code).first()
         if not existing:

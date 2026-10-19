@@ -1,6 +1,7 @@
 # backend/app/db/init_db.py
 import json
 import os
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import inspect, text
 from app.core.database import engine, Base, SessionLocal
 from app.models.entities import (
@@ -21,6 +22,11 @@ from app.models.entities import (
     DeliveryTripEntity,
     DeliveryStopEntity,
     StockAdjustmentEntity,
+    OrderDispatchEntity,
+    DriverEntity,
+    VehicleEntity,
+    DeliveryTripStopEntity,
+    DeliveryTripDispatchEntity,
 )
 from app.models.payment_collection import PaymentCollectionEntity
 from app.models.supplier import SupplierEntity
@@ -41,7 +47,7 @@ from app.models.warehouse import (
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
 from app.models.sales_target import SalesTargetEntity
-from app.models.invoice import InvoiceEntity
+from app.models.invoice import InvoiceEntity, InvoiceDeliveryNoteEntity, InvoiceItemEntity, InvoiceAdjustmentEntity
 from app.models.return_order import ReturnOrderEntity, ReturnOrderItemEntity
 from app.models.debt_payment import (
     PaymentReceiptEntity,
@@ -83,7 +89,6 @@ def _ensure_legacy_columns(bind=engine):
             "status": ("VARCHAR(50) DEFAULT 'active'", "NVARCHAR(50) DEFAULT 'active'"),
             "is_batch_managed": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
             "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
-            "category_id": ("INTEGER", "INT NULL"),
         },
         "warehouse_stocks": {
             "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
@@ -132,6 +137,7 @@ def _ensure_legacy_columns(bind=engine):
             "parent_id": ("INTEGER NULL", "INT NULL"),
             "product_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
             "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
+            "warehouse_type": ("VARCHAR(50) DEFAULT 'DEFAULT'", "NVARCHAR(50) DEFAULT 'DEFAULT'"),
         },
         "warehouses": {
             "manager_name": ("VARCHAR(100)", "NVARCHAR(100)"),
@@ -171,6 +177,12 @@ def _ensure_legacy_columns(bind=engine):
             "completed_at": ("DATETIME NULL", "DATETIME NULL"),
             "note": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
             "created_by": ("VARCHAR(100) DEFAULT ''", "NVARCHAR(100) DEFAULT ''"),
+            "delivery_date": ("VARCHAR(20) NULL", "NVARCHAR(20) NULL"),
+            "driver_id": ("INTEGER NULL", "INT NULL"),
+            "vehicle_id": ("INTEGER NULL", "INT NULL"),
+            "vehicle_type": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
+            "total_stops": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "total_dispatches": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
         },
         "delivery_stops": {
             "actual_delivery_time": ("DATETIME NULL", "DATETIME NULL"),
@@ -179,6 +191,18 @@ def _ensure_legacy_columns(bind=engine):
             "failure_reason": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
             "return_status": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
             "items_detail": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
+        },
+        "invoices": {
+            "source_type": ("VARCHAR(50) DEFAULT 'ORDER'", "NVARCHAR(50) DEFAULT 'ORDER'"),
+            "issue_status": ("VARCHAR(30) DEFAULT 'ISSUED'", "NVARCHAR(30) DEFAULT 'ISSUED'"),
+            "template_code": ("VARCHAR(50) DEFAULT '1/001'", "NVARCHAR(50) DEFAULT '1/001'"),
+            "invoice_series": ("VARCHAR(20) DEFAULT 'C26TAA'", "NVARCHAR(20) DEFAULT 'C26TAA'"),
+            "subtotal_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "vat_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "discount_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "issued_by": ("VARCHAR(100) NULL", "NVARCHAR(100) NULL"),
+            "delivery_dispatches_summary": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
+            "currency": ("VARCHAR(10) DEFAULT 'VND'", "NVARCHAR(10) DEFAULT 'VND'"),
         },
     }
     inspector = inspect(bind)
@@ -557,16 +581,16 @@ def init_db(bind=None):
                 UserEntity(
                     id=1,
                     username="admin",
-                    hashed_password=get_password_hash("admin123"),
+                    password_hash=get_password_hash("admin123"),
                     full_name="Quản Trị Viên",
-                    role=Role.SYSTEM_ADMIN.value,
-                    roles_json=json.dumps([Role.SYSTEM_ADMIN.value]),
+                    role=Role.ADMIN.value,
+                    roles_json=json.dumps([Role.ADMIN.value]),
                     is_active=True,
                 ),
                 UserEntity(
                     id=2,
                     username="sales_manager",
-                    hashed_password=get_password_hash("manager123"),
+                    password_hash=get_password_hash("manager123"),
                     full_name="Trưởng Phòng Kinh Doanh",
                     role=Role.SALES_MANAGER.value,
                     roles_json=json.dumps([Role.SALES_MANAGER.value]),
@@ -575,7 +599,7 @@ def init_db(bind=None):
                 UserEntity(
                     id=3,
                     username="sales_user",
-                    hashed_password=get_password_hash("sales123"),
+                    password_hash=get_password_hash("sales123"),
                     full_name="Nhân Viên Bán Hàng",
                     role=Role.SALES.value,
                     roles_json=json.dumps([Role.SALES.value]),
@@ -584,10 +608,10 @@ def init_db(bind=None):
                 UserEntity(
                     id=4,
                     username="warehouse_user",
-                    hashed_password=get_password_hash("kho123"),
+                    password_hash=get_password_hash("kho123"),
                     full_name="Thủ Kho",
-                    role=Role.WAREHOUSE_STAFF.value,
-                    roles_json=json.dumps([Role.WAREHOUSE_STAFF.value]),
+                    role=Role.WAREHOUSE.value,
+                    roles_json=json.dumps([Role.WAREHOUSE.value]),
                     is_active=True,
                 ),
             ]
@@ -635,11 +659,13 @@ def init_db(bind=None):
                     name="Đại Lý Toàn Thắng",
                     phone="0912345678",
                     address="123 Lê Lợi, Quận 1, TP. HCM",
+                    debt=15000000.0,
                     credit_limit=50000000.0,
                     customer_group="Đại lý cấp 1",
                     status="ACTIVE",
                     region="Miền Nam",
                     assigned_sale_id=3,
+                    assigned_sale_name="Nhân Viên Bán Hàng",
                 ),
                 DealerEntity(
                     id=2,
@@ -647,11 +673,13 @@ def init_db(bind=None):
                     name="Đại Lý Minh Khang",
                     phone="0987654321",
                     address="456 Hoàng Hoa Thám, Ba Đình, Hà Nội",
+                    debt=42000000.0,
                     credit_limit=60000000.0,
                     customer_group="Đại lý cấp 2",
                     status="ACTIVE",
                     region="Miền Bắc",
                     assigned_sale_id=3,
+                    assigned_sale_name="Nhân Viên Bán Hàng",
                 ),
                 DealerEntity(
                     id=3,
@@ -659,11 +687,13 @@ def init_db(bind=None):
                     name="Cửa Hàng Thời Trang Hạnh Phúc",
                     phone="0905123456",
                     address="789 Nguyễn Văn Linh, Hải Châu, Đà Nẵng",
+                    debt=0.0,
                     credit_limit=30000000.0,
                     customer_group="Khách lẻ thân thiết",
                     status="ACTIVE",
                     region="Miền Trung",
                     assigned_sale_id=2,
+                    assigned_sale_name="Trưởng Phòng Kinh Doanh",
                 ),
             ]
             db.add_all(initial_dealers)
@@ -988,12 +1018,10 @@ def init_db(bind=None):
                 )
                 db.add(wh_damaged)
                 db.flush()
-
             db.commit()
             print("Product stocks synchronized from warehouses successfully.")
         except Exception as sync_err:
             print(f"Error syncing product stocks from warehouses: {sync_err}")
-
         # Seed Credit Policy Config (S7-04)
         try:
             if db.query(CreditPolicyConfigEntity).count() == 0:
@@ -1009,6 +1037,149 @@ def init_db(bind=None):
                 print("Credit policy configuration seeded successfully.")
         except Exception as policy_err:
             print(f"Error seeding credit policy: {policy_err}")
+
+                # 11. Khởi tạo danh sách tài xế và phương tiện vận chuyển mẫu nếu chưa có
+        try:
+            if db.query(DriverEntity).count() == 0:
+                default_drivers = [
+                    DriverEntity(code="TX001", name="Nguyễn Văn Hùng", phone="0912345678", license_number="B2-12345678", status="ACTIVE"),
+                    DriverEntity(code="TX002", name="Trần Quốc Tài", phone="0987654321", license_number="C-87654321", status="ACTIVE"),
+                    DriverEntity(code="TX003", name="Lê Hoàng Long", phone="0905112233", license_number="C-45678912", status="ACTIVE"),
+                    DriverEntity(code="TX004", name="Phạm Minh Tuấn", phone="0938445566", license_number="D-98761234", status="ACTIVE"),
+                ]
+                db.add_all(default_drivers)
+                db.commit()
+                print("Default drivers seeded successfully.")
+
+            if db.query(VehicleEntity).count() == 0:
+                default_vehicles = [
+                    VehicleEntity(plate_number="29C-888.99", vehicle_type="Xe tải 1.5 tấn", capacity_kg=1500.0, status="ACTIVE"),
+                    VehicleEntity(plate_number="29C-678.90", vehicle_type="Xe tải 2.5 tấn", capacity_kg=2500.0, status="ACTIVE"),
+                    VehicleEntity(plate_number="51D-999.88", vehicle_type="Xe tải 3.5 tấn", capacity_kg=3500.0, status="ACTIVE"),
+                    VehicleEntity(plate_number="29B-123.45", vehicle_type="Xe Van 850kg", capacity_kg=850.0, status="ACTIVE"),
+                ]
+                db.add_all(default_vehicles)
+                db.commit()
+                print("Default vehicles seeded successfully.")
+        except Exception as seed_trip_err:
+            print(f"Error seeding drivers/vehicles: {seed_trip_err}")
+
+        # 12. Khởi tạo danh sách Lô hàng & Hạn sử dụng (Product Batches) mẫu nếu chưa có
+        try:
+            if db.query(ProductBatchEntity).count() == 0:
+                p_beer = db.query(ProductEntity).filter(ProductEntity.code == "SP-BEER").first()
+                if not p_beer:
+                    p_beer = ProductEntity(
+                        code="SP-BEER",
+                        name="Bia Tiger Crystal Lon 330ml",
+                        stock=428,
+                        cost_price=12000.0,
+                        sell_price=18000.0,
+                        base_unit="Lon",
+                        is_batch_managed=True,
+                        status="active",
+                    )
+                    db.add(p_beer)
+                    db.flush()
+                else:
+                    p_beer.is_batch_managed = True
+                    p_beer.base_unit = "Lon"
+
+                p_amox = db.query(ProductEntity).filter(ProductEntity.code == "SKU-BATCH-01").first()
+                if not p_amox:
+                    p_amox = ProductEntity(
+                        code="SKU-BATCH-01",
+                        name="Thuốc Kháng Sinh Amoxicillin 500mg",
+                        stock=150,
+                        cost_price=45000.0,
+                        sell_price=65000.0,
+                        base_unit="Hộp",
+                        is_batch_managed=True,
+                        status="active",
+                    )
+                    db.add(p_amox)
+                    db.flush()
+                else:
+                    p_amox.is_batch_managed = True
+
+                now_utc = datetime.now(timezone.utc)
+                default_batches = [
+                    ProductBatchEntity(
+                        product_id=p_beer.id,
+                        warehouse_id=1,
+                        batch_number="LOT-2026-TIGER-01",
+                        manufacturing_date=now_utc - timedelta(days=90),
+                        expiry_date=now_utc + timedelta(days=180),
+                        quantity=180.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                    ProductBatchEntity(
+                        product_id=p_beer.id,
+                        warehouse_id=1,
+                        batch_number="LOT-2026-TIGER-NEAR",
+                        manufacturing_date=now_utc - timedelta(days=330),
+                        expiry_date=now_utc + timedelta(days=18),
+                        quantity=80.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                    ProductBatchEntity(
+                        product_id=p_beer.id,
+                        warehouse_id=1,
+                        batch_number="LOT-2025-TIGER-EXP",
+                        manufacturing_date=now_utc - timedelta(days=400),
+                        expiry_date=now_utc - timedelta(days=10),
+                        quantity=45.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                    ProductBatchEntity(
+                        product_id=p_beer.id,
+                        warehouse_id=2,
+                        batch_number="LOT-2026-TIGER-DN01",
+                        manufacturing_date=now_utc - timedelta(days=60),
+                        expiry_date=now_utc + timedelta(days=240),
+                        quantity=123.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                    ProductBatchEntity(
+                        product_id=p_amox.id,
+                        warehouse_id=1,
+                        batch_number="LOT-AMOX-2026-A1",
+                        manufacturing_date=now_utc - timedelta(days=60),
+                        expiry_date=now_utc + timedelta(days=300),
+                        quantity=100.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                    ProductBatchEntity(
+                        product_id=p_amox.id,
+                        warehouse_id=1,
+                        batch_number="LOT-AMOX-2026-WARN",
+                        manufacturing_date=now_utc - timedelta(days=340),
+                        expiry_date=now_utc + timedelta(days=22),
+                        quantity=30.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                    ProductBatchEntity(
+                        product_id=p_amox.id,
+                        warehouse_id=1,
+                        batch_number="LOT-AMOX-2025-EXP",
+                        manufacturing_date=now_utc - timedelta(days=500),
+                        expiry_date=now_utc - timedelta(days=15),
+                        quantity=20.0,
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    ),
+                ]
+                db.add_all(default_batches)
+                db.commit()
+                print("Default product batches seeded successfully.")
+        except Exception as seed_batch_err:
+            print(f"Error seeding product batches: {seed_batch_err}")
 
         # S7-02: Tự động đồng bộ hoá đơn từ đơn hàng và công nợ CSDL hiện có
         try:

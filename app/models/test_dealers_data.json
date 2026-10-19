@@ -18,11 +18,11 @@
     "locked_at": null,
     "locked_by": null,
     "transaction_count": 0,
-    "is_over_credit_limit": false,
+    "is_over_credit_limit": true,
     "is_overdue": false,
-    "credit_warning_flag": false,
-    "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-18T15:15:30.482075",
+    "credit_warning_flag": true,
+    "credit_flag_reason": "Vượt hạn mức công nợ: 269,208,000 đ > 100,000,000 đ",
+    "last_credit_evaluated_at": "2026-10-19T16:00:42.552358",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -49,7 +49,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-18T15:15:30.523869",
+    "last_credit_evaluated_at": "2026-10-19T16:00:11.698459",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -76,7 +76,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-18T15:15:30.565961",
+    "last_credit_evaluated_at": "2026-10-19T16:00:05.882736",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -103,7 +103,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-18T15:15:30.608615",
+    "last_credit_evaluated_at": "2026-10-19T16:00:05.902227",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -130,7 +130,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-18T15:15:30.649708",
+    "last_credit_evaluated_at": "2026-10-19T16:00:05.921946",
     "warehouse_id": null,
     "warehouse_name": null
   }
