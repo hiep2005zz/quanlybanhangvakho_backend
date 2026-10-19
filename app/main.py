@@ -129,6 +129,8 @@ app.include_router(inventory_reports.router, prefix="/api/v1/inventory", tags=["
 app.include_router(deliveries.router, prefix="/api/v1/deliveries", tags=["Deliveries"])
 app.include_router(stock_adjustments.router, prefix="/api/v1/stock-adjustments", tags=["Stock Adjustments"])
 app.include_router(payment_collections.router, prefix="/api/v1/payment-collections", tags=["Payment Collections"])
+from app.api.v1.endpoints import return_orders
+app.include_router(return_orders.router, prefix="/api/v1/return-orders", tags=["Return Orders / RMA"])
 from app.api.v1.endpoints import debt_reconciliations
 app.include_router(debt_reconciliations.router, prefix="/api/v1/debt-reconciliations", tags=["Debt Reconciliations"])
 
