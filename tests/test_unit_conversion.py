@@ -81,8 +81,14 @@ def test_criterion_1_unit_declaration_and_validation():
     res_neg = client.put(f"/api/v1/products/{product_id}/units", json=payload_invalid_negative, headers=headers)
     assert res_neg.status_code in [400, 422]
 
-    # 3. Phân quyền: Thủ kho (kho) không có quyền Cấu hình ĐVT quy đổi -> Bị từ chối HTTP 403 Forbidden
-    res_forbidden = client.put(f"/api/v1/products/{product_id}/units", json=payload_valid, headers=headers_staff)
+    # 3. Phân quyền: Thủ kho (kho) CÓ quyền Cấu hình ĐVT quy đổi -> Thành công HTTP 200
+    res_kho = client.put(f"/api/v1/products/{product_id}/units", json=payload_valid, headers=headers_staff)
+    assert res_kho.status_code == 200
+
+    # Vai trò không có thẩm quyền (ví dụ: Nhân viên kinh doanh `sales`) -> Bị từ chối HTTP 403 Forbidden
+    sales_token = get_token("sales")
+    headers_sales = {"Authorization": f"Bearer {sales_token}"}
+    res_forbidden = client.put(f"/api/v1/products/{product_id}/units", json=payload_valid, headers=headers_sales)
     assert res_forbidden.status_code == 403
 
 
