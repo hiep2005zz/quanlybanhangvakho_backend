@@ -1061,10 +1061,47 @@ def generate_turnover_excel_file(
         cell.alignment = header_align_wrap
         cell.border = cell_border
 
+    ws1.sheet_format.defaultRowHeight = 22
+
+    # 1. Cấu hình sẵn mảng định dạng & căn lề theo từng cột
+    col_alignments = (
+        align_center, # 0: STT
+        align_center, # 1: Mã SKU
+        align_left,   # 2: Tên SP
+        align_left,   # 3: Nhóm hàng
+        align_center, # 4: ĐVT
+        align_right,  # 5: Tồn kho
+        align_right,  # 6: Giá vốn
+        align_right,  # 7: Giá trị tồn
+        align_right,  # 8: SL bán
+        align_right,  # 9: COGS
+        align_right,  # 10: Vòng quay
+        align_right,  # 11: DSI (mặc định)
+        align_center, # 12: Ngày bán gần nhất
+        align_center, # 13: Trạng thái
+    )
+    col_number_formats = (
+        None,         # 0
+        None,         # 1
+        None,         # 2
+        None,         # 3
+        None,         # 4
+        fmt_number,   # 5: Tồn kho
+        fmt_currency, # 6: Giá vốn
+        fmt_currency, # 7: Giá trị tồn
+        fmt_number,   # 8: SL bán
+        fmt_currency, # 9: COGS
+        fmt_decimal,  # 10: Vòng quay
+        fmt_days,     # 11: DSI
+        None,         # 12
+        None,         # 13
+    )
+
     # Rows 10+: Dữ liệu chi tiết từng SKU (tối ưu hóa tốc độ cao kèm viền và căn lề chuẩn)
     data_font = Font(name=font_family, size=10, color="0F172A")
+    dsi_none_row_indices = set()
+
     for idx, r in enumerate(raw_products, start=1):
-        r_idx = idx + 9
         cost_price = float(r["cost_price"] or 0.0)
         current_stock = int(r["current_stock"] or 0)
         sold_quantity = int(r["sold_quantity"] or 0)
@@ -1118,38 +1155,23 @@ def generate_turnover_excel_file(
             status_label,
         ]
         ws1.append(row_vals)
-        ws1.row_dimensions[r_idx].height = 22
+        if dsi is None:
+            dsi_none_row_indices.add(idx + 9)
 
-        # Format number & currency
-        row_cells = ws1[r_idx]
-        row_cells[5].number_format = fmt_number    # Tồn kho
-        row_cells[6].number_format = fmt_currency  # Giá vốn
-        row_cells[7].number_format = fmt_currency  # Giá trị tồn
-        row_cells[8].number_format = fmt_number    # SL bán
-        row_cells[9].number_format = fmt_currency  # COGS
-        row_cells[10].number_format = fmt_decimal  # Vòng quay
-        if dsi is not None:
-            row_cells[11].number_format = fmt_days # DSI
-
-        # Căn lề chuẩn mực chống dính chữ
-        row_cells[0].alignment = align_center # STT
-        row_cells[1].alignment = align_center # Mã SKU
-        row_cells[2].alignment = align_left   # Tên SP
-        row_cells[3].alignment = align_left   # Nhóm hàng
-        row_cells[4].alignment = align_center # ĐVT
-        row_cells[5].alignment = align_right  # Tồn kho
-        row_cells[6].alignment = align_right  # Giá vốn
-        row_cells[7].alignment = align_right  # Giá trị tồn
-        row_cells[8].alignment = align_right  # SL bán
-        row_cells[9].alignment = align_right  # COGS
-        row_cells[10].alignment = align_right # Vòng quay
-        row_cells[11].alignment = align_right if dsi is not None else align_center # DSI
-        row_cells[12].alignment = align_center # Ngày bán gần nhất
-        row_cells[13].alignment = align_center # Trạng thái
-
-        for c_cell in row_cells:
-            c_cell.border = cell_border
-            c_cell.font = data_font
+    # Định dạng hàng loạt cực nhanh qua iter_rows (thay vì ws1[r_idx] và row_dimensions gây lag 27s)
+    total_data_rows = len(raw_products)
+    if total_data_rows > 0:
+        for r_num, row_cells in enumerate(ws1.iter_rows(min_row=10, max_row=total_data_rows + 9, min_col=1, max_col=14), start=10):
+            is_dsi_none = r_num in dsi_none_row_indices
+            for col_idx in range(14):
+                c_cell = row_cells[col_idx]
+                c_cell.font = data_font
+                c_cell.border = cell_border
+                c_cell.alignment = align_center if (col_idx == 11 and is_dsi_none) else col_alignments[col_idx]
+                fmt = col_number_formats[col_idx]
+                if fmt is not None:
+                    if not (col_idx == 11 and is_dsi_none):
+                        c_cell.number_format = fmt
 
     # Dòng tổng cộng (Total row)
     tot_row = len(raw_products) + 10

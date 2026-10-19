@@ -69,6 +69,10 @@ ALLOWED_ACTION_TYPES = SYSTEM_AUDIT_ACTION_TYPES | {
     "DEALER_ASSIGNMENT",
     "DEALER_STATUS_CHANGE",
     "GOODS_RECEIPT_CONFIRM",
+    "CREDIT_FLAG_CHANGE",
+    "CREDIT_POLICY_CONFIG_CHANGE",
+    "PAYMENT_RECORD",
+    "ORDER_SUPPLEMENTARY_DELIVERY",
 }
 
 ALLOWED_ENTITY_TYPES = {
@@ -80,10 +84,12 @@ ALLOWED_ENTITY_TYPES = {
     "Product",
     "ProductPrice",
     "PriceBook",
-    # 3. Hạn mức công nợ & Đại lý (SCRUM-48)
+    # 3. Hạn mức công nợ & Đại lý (SCRUM-48) & Chính sách tín dụng (S7-04)
     "CustomerDebt",
     "DealerDebtLimit",
     "Dealer",
+    "CreditPolicy",
+    "Payment",
     # 4. Hoá đơn / Đơn hàng
     "Invoice",
     "Order",

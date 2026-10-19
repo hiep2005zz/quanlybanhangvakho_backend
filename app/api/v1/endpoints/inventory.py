@@ -124,17 +124,31 @@ def get_stock_card(
     product_id: Optional[int] = Query(None, description="Lọc theo ID sản phẩm"),
     warehouse_id: Optional[str] = Query(None, description="Lọc theo mã kho (WH01, WH02... hoặc ID số)"),
     search: Optional[str] = Query(None, description="Tìm kiếm theo mã SP, tên SP, mã chứng từ"),
+    from_date: Optional[str] = Query(None, description="Từ ngày (YYYY-MM-DD hoặc ISO)"),
+    to_date: Optional[str] = Query(None, description="Đến ngày (YYYY-MM-DD hoặc ISO)"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_permission(Permission.INVENTORY_READ.value))
+    current_user: UserResponse = Depends(
+        require_roles([
+            Role.SYSTEM_ADMIN.value,
+            Role.WAREHOUSE_STAFF.value,
+            Role.WAREHOUSE_MANAGER.value,
+            Role.ACCOUNTANT.value,
+            "admin",
+            "warehouse",
+            "warehouse_staff",
+            "warehouse_manager",
+            "accountant",
+        ])
+    )
 ):
     """
     Thẻ kho điện tử (Stock Card / Inventory Ledger).
     Ghi nhận toàn bộ biến động: Nhập kho (RECEIPT), Xuất kho (ISSUE), và Điều chỉnh tồn kho (ADJUST).
     RÀNG BUỘC PHÂN QUYỀN BẢO MẬT:
     Mọi phiếu điều chỉnh tồn kho (ADJUST / ADJ-) CHỈ xuất hiện trên Thẻ kho đối với Quản lý kho và Quản trị viên (Admin).
-    Thủ kho thông thường hoặc các vai trò khác sẽ không nhìn thấy các dòng điều chỉnh tổn thất này.
+    Thủ kho thông thường hoặc các vai trò khác sẽ không nhìn thấy các dòng điều chỉnh tổn thất này trong danh sách items.
     """
     user_roles = [current_user.role]
     if hasattr(current_user, "roles") and current_user.roles:
@@ -148,6 +162,25 @@ def get_stock_card(
         ]
         for r in user_roles
     )
+
+    summary = None
+    entries = None
+    warehouses = None
+    if product_id:
+        try:
+            from app.services.stock_card_service import get_stock_card_for_product
+            card_res = get_stock_card_for_product(
+                db=db,
+                product_id=product_id,
+                warehouse_filter=warehouse_id,
+                from_date_str=from_date,
+                to_date_str=to_date,
+            )
+            summary = card_res.summary
+            entries = card_res.entries
+            warehouses = card_res.warehouses
+        except Exception:
+            pass
 
     query = (
         db.query(
@@ -177,7 +210,7 @@ def get_stock_card(
         if wh_num:
             query = query.filter(InventoryLedgerEntity.warehouse_id == wh_num)
         else:
-            return StockCardResponse(items=[], total=0)
+            return StockCardResponse(items=[], total=0, summary=summary, entries=entries or [], warehouses=warehouses)
 
     if search and search.strip():
         term = f"%{search.strip()}%"
@@ -222,7 +255,13 @@ def get_stock_card(
             )
         )
 
-    return StockCardResponse(items=items, total=total)
+    return StockCardResponse(
+        items=items,
+        total=total,
+        summary=summary,
+        entries=entries,
+        warehouses=warehouses,
+    )
 
 
 @router.get("/available-stock", response_model=AvailableStockResponse)
@@ -1732,9 +1771,12 @@ def get_stock_book(
     )
 
 
+
+
 # ==========================================
 # QUẢN LÝ CHUYỂN KHO NỘI BỘ (STOCK TRANSFERS)
 # ==========================================
+
 
 from app.models.entities import StockTransferEntity
 from app.schemas.stock_transfer import (
