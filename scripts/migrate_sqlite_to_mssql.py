@@ -12,9 +12,10 @@ if hasattr(sys.stdout, "reconfigure"):
 BASE_DIR = Path(__file__).resolve().parent.parent
 SQLITE_DB_PATH = BASE_DIR / "quanlybanhang.db"
 
+MSSQL_SERVER = os.getenv("MSSQL_SERVER", "(localdb)\\MSSQLLocalDB")
 MSSQL_CONN_STR = (
     "DRIVER={ODBC Driver 17 for SQL Server};"
-    "SERVER=(localdb)\\MSSQLLocalDB;"
+    f"SERVER={MSSQL_SERVER};"
     "DATABASE=quanlybanhang;"
     "Trusted_Connection=yes;"
 )
@@ -158,7 +159,11 @@ def migrate():
             new_r = []
             for val, c_name in zip(r, common_cols):
                 c_type = table_col_types[t][c_name]
-                new_r.append(parse_val(val, c_type))
+                parsed = parse_val(val, c_type)
+                if t == "categories" and c_name == "code" and (not parsed or str(parsed).strip() == ""):
+                    cat_id = r[common_cols.index("id")] if "id" in common_cols else 1
+                    parsed = f"CAT{cat_id:04d}"
+                new_r.append(parsed)
             converted_rows.append(tuple(new_r))
 
         # Batch insert
