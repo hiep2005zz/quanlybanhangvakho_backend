@@ -404,6 +404,7 @@ def get_deliveries_for_invoicing(
         "quick_stats": {
             "total_pending_invoices": total_pending_count,
             "total_issued_invoices": total_issued_count,
+            "total_adjustments": db.query(InvoiceAdjustmentEntity).count(),
             "total_pending_amount": round(total_pending_amount),
         },
         "pagination": {
@@ -948,6 +949,93 @@ def get_sales_invoices(
             "total_pages": max(1, (total_records + page_size - 1) // page_size),
         },
         "data": data,
+    }
+
+
+@router.get("/adjustments/history")
+def get_all_invoice_adjustments(
+    search: Optional[str] = Query(None, description="Tìm theo mã điều chỉnh, mã hóa đơn, lý do, người lập"),
+    adjustment_type: Optional[str] = Query(None, description="Loại điều chỉnh: INCREASE | DECREASE | INFO"),
+    from_date: Optional[str] = Query(None),
+    to_date: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(15, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Lấy danh sách toàn bộ lịch sử chứng từ điều chỉnh hóa đơn đã lập."""
+    _require_accountant_or_admin(current_user)
+
+    query = db.query(InvoiceAdjustmentEntity)
+
+    if adjustment_type and adjustment_type.strip() and adjustment_type.upper() != "ALL":
+        query = query.filter(InvoiceAdjustmentEntity.adjustment_type == adjustment_type.strip().upper())
+
+    if search and search.strip():
+        term = f"%{search.strip().lower()}%"
+        query = query.filter(
+            or_(
+                func.lower(InvoiceAdjustmentEntity.adjustment_code).like(term),
+                func.lower(InvoiceAdjustmentEntity.invoice_code).like(term),
+                func.lower(InvoiceAdjustmentEntity.reason).like(term),
+                func.lower(InvoiceAdjustmentEntity.created_by).like(term),
+            )
+        )
+
+    # Date filters
+    if from_date and from_date.strip():
+        try:
+            fd = datetime.strptime(from_date.strip(), "%Y-%m-%d")
+            query = query.filter(InvoiceAdjustmentEntity.created_at >= fd)
+        except Exception:
+            pass
+
+    if to_date and to_date.strip():
+        try:
+            td = datetime.strptime(to_date.strip(), "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+            query = query.filter(InvoiceAdjustmentEntity.created_at <= td)
+        except Exception:
+            pass
+
+    total_records = query.count()
+    items = (
+        query.order_by(desc(InvoiceAdjustmentEntity.created_at))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    result = []
+    for a in items:
+        inv = db.query(InvoiceEntity).filter(InvoiceEntity.id == a.invoice_id).first()
+        result.append({
+            "id": a.id,
+            "adjustment_code": a.adjustment_code,
+            "invoice_id": a.invoice_id,
+            "invoice_code": a.invoice_code,
+            "dealer_name": inv.dealer_name if inv else "",
+            "adjustment_type": a.adjustment_type,
+            "reason": a.reason,
+            "difference_subtotal": a.difference_subtotal or 0.0,
+            "difference_vat": a.difference_vat or 0.0,
+            "difference_total": a.difference_total or 0.0,
+            "details_json": a.details_json,
+            "created_by": a.created_by or "",
+            "created_at": a.created_at.strftime("%d/%m/%Y %H:%M") if a.created_at else "",
+        })
+
+    return {
+        "status": "success",
+        "quick_stats": {
+            "total_adjustments": total_records,
+        },
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total_records": total_records,
+            "total_pages": max(1, (total_records + page_size - 1) // page_size),
+        },
+        "data": result,
     }
 
 
