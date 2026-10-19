@@ -42,6 +42,7 @@ from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
 from app.models.sales_target import SalesTargetEntity
 from app.models.invoice import InvoiceEntity
+from app.models.return_order import ReturnOrderEntity, ReturnOrderItemEntity
 from app.models.debt_payment import (
     PaymentReceiptEntity,
     PaymentAllocationEntity,
@@ -136,6 +137,7 @@ def _ensure_legacy_columns(bind=engine):
             "manager_name": ("VARCHAR(100)", "NVARCHAR(100)"),
             "phone": ("VARCHAR(50)", "NVARCHAR(50)"),
             "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
+            "warehouse_type": ("VARCHAR(50) DEFAULT 'DEFAULT'", "NVARCHAR(50) DEFAULT 'DEFAULT'"),
         },
         "stock_audits": {
             "discrepancy_items_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
@@ -975,6 +977,24 @@ def init_db(bind=None):
                 if p.id in wh_map and wh_map[p.id] is not None:
                     if p.stock != wh_map[p.id]:
                         p.stock = wh_map[p.id]
+            # Đảm bảo Kho Hàng Lỗi & Chờ Xử Lý (DAMAGED WAREHOUSE) luôn tồn tại
+            wh_damaged = db.query(WarehouseEntity).filter(
+                (WarehouseEntity.code == "KHO_LOI") | (WarehouseEntity.warehouse_type == "DAMAGED")
+            ).first()
+            if not wh_damaged:
+                wh_damaged = WarehouseEntity(
+                    code="KHO_LOI",
+                    name="Kho Hàng Lỗi & Chờ Xử Lý",
+                    warehouse_type="DAMAGED",
+                    status="Đang hoạt động",
+                    is_active=True,
+                    address="Khu vực lưu trữ hàng lỗi / cách ly kỹ thuật",
+                    manager_name="Thủ Kho Hàng Lỗi",
+                    phone="0900000000",
+                )
+                db.add(wh_damaged)
+                db.flush()
+
             db.commit()
             print("Product stocks synchronized from warehouses successfully.")
         except Exception as sync_err:

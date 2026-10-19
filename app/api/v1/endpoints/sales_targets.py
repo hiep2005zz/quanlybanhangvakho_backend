@@ -1,4 +1,5 @@
 # backend/app/api/v1/endpoints/sales_targets.py
+from __future__ import annotations
 import json
 import calendar
 from datetime import datetime, timezone
