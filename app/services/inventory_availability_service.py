@@ -45,6 +45,14 @@ def sync_missing_warehouse_stocks(db: Session, force: bool = False) -> bool:
         # 1. Chỉ đồng bộ cho các kho mặc định hệ thống (DEFAULT_WAREHOUSES: WH01, WH02, WH03)
         # Các kho mới do người dùng tạo sẽ chỉ có sản phẩm khi thực tế có giao dịch nhập kho / chuyển kho / điều chỉnh.
         warehouse_map = dict(DEFAULT_WAREHOUSES)
+        wh_keys = list(warehouse_map.keys())
+
+        # Fast O(1) count check: nếu số lượng bản ghi warehouse_stocks đã đủ cho tất cả sản phẩm * kho mặc định thì kết thúc ngay (<0.02s)
+        from sqlalchemy import func
+        total_p_cnt = db.query(func.count(ProductEntity.id)).scalar() or 0
+        total_ws_cnt = db.query(func.count(WarehouseStockEntity.id)).filter(WarehouseStockEntity.warehouse_id.in_(wh_keys)).scalar() or 0
+        if total_ws_cnt >= (total_p_cnt * len(wh_keys)):
+            return False
 
         existing_pairs = set(db.query(WarehouseStockEntity.product_id, WarehouseStockEntity.warehouse_id).all())
         prods = db.query(ProductEntity.id, ProductEntity.min_stock).all()
