@@ -229,6 +229,7 @@ class IssueInvoiceRequest(BaseModel):
 
 @router.get("/deliveries")
 def get_deliveries_for_invoicing(
+    search: Optional[str] = Query(None, description="Tìm nhanh theo mã phiếu, mã đơn, đại lý hoặc kho xuất"),
     dispatch_code: Optional[str] = Query(None, description="Lọc theo mã phiếu giao hàng"),
     order_code: Optional[str] = Query(None, description="Lọc theo mã đơn hàng"),
     dealer_id: Optional[int] = Query(None, description="Lọc theo ID đại lý"),
@@ -251,6 +252,17 @@ def get_deliveries_for_invoicing(
 
     # Lấy toàn bộ phiếu xuất kho kèm đơn hàng
     query = db.query(OrderDispatchEntity).join(OrderEntity, OrderDispatchEntity.order_id == OrderEntity.id)
+
+    if search and search.strip():
+        s = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                OrderDispatchEntity.dispatch_code.ilike(s),
+                OrderDispatchEntity.order_code.ilike(s),
+                OrderEntity.dealer_name.ilike(s),
+                OrderDispatchEntity.warehouse_name.ilike(s),
+            )
+        )
 
     if dispatch_code:
         query = query.filter(OrderDispatchEntity.dispatch_code.ilike(f"%{dispatch_code.strip()}%"))
@@ -1153,19 +1165,25 @@ def export_sales_invoice_pdf(
 
     # Hàng tổng cộng
     cur_y -= row_h
+    c.setFillColorRGB(0.97, 0.98, 0.99)
     c.rect(40, cur_y, w - 80, row_h, fill=1, stroke=1)
+    c.setFillColorRGB(0, 0, 0)
     c.setFont(font_bold, 9)
     c.drawString(75, cur_y + 6, "Cộng tiền hàng (chưa có thuế GTGT):")
     c.drawRightString(545, cur_y + 6, fmt_cur(inv.subtotal_amount))
 
     cur_y -= row_h
-    c.rect(40, cur_y, w - 80, row_h, fill=0, stroke=1)
+    c.setFillColorRGB(1, 1, 1)
+    c.rect(40, cur_y, w - 80, row_h, fill=1, stroke=1)
+    c.setFillColorRGB(0, 0, 0)
     c.setFont(font_bold, 9)
     c.drawString(75, cur_y + 6, "Tiền thuế GTGT (10%):")
     c.drawRightString(545, cur_y + 6, fmt_cur(inv.vat_amount))
 
     cur_y -= row_h
+    c.setFillColorRGB(0.93, 0.95, 0.98)
     c.rect(40, cur_y, w - 80, row_h, fill=1, stroke=1)
+    c.setFillColorRGB(0, 0, 0)
     c.setFont(font_bold, 10)
     c.drawString(75, cur_y + 6, "TỔNG CỘNG TIỀN THANH TOÁN:")
     c.drawRightString(545, cur_y + 6, fmt_cur(inv.total_amount))
