@@ -221,3 +221,35 @@ def test_admin_created_order_never_needs_approval_and_sales_cannot_approve():
     print("\n>>> TEST ADMIN ORDER CONFIRMATION & SALES PERMISSION RESTRICTIONS PASSED <<<")
 
 
+def test_create_customer_endpoint_no_500():
+    login_resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "123"})
+    assert login_resp.status_code == 200
+    token = login_resp.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    test_payload = {
+        "full_name": "Nguyễn Văn Test Tạo Tài Khoản",
+        "email": "test_create_account_no_500@congty.vn",
+        "phone": "0987654311",
+        "roles": ["sales_manager"],
+        "branch": "Toàn quốc",
+    }
+    USERS_DB.pop("test_create_account_no_500", None)
+
+    create_resp = client.post("/api/v1/users/customers", json=test_payload, headers=headers)
+    assert create_resp.status_code == 201, f"Create customer failed: {create_resp.status_code} - {create_resp.text}"
+    created_data = create_resp.json()
+    assert "user" in created_data
+    assert "temporary_password" in created_data
+    created_username = created_data["user"]["username"]
+
+    resend_resp = client.post(f"/api/v1/users/{created_username}/resend-credentials", headers=headers)
+    assert resend_resp.status_code == 200, f"Resend credentials failed: {resend_resp.status_code} - {resend_resp.text}"
+    resend_data = resend_resp.json()
+    assert "temporary_password" in resend_data
+
+    USERS_DB.pop(created_username, None)
+    save_users_db()
+
+
+

@@ -397,8 +397,8 @@ def create_customer(
     except Exception as e:
         print(f"Warning: could not sync customer user to DB: {e}")
 
-    role_titles = [ROLE_DETAILS[r].title for r in chosen_roles if r in ROLE_DETAILS]
-    role_display = ", ".join(role_titles) if role_titles else (ROLE_DETAILS[primary_role].title if primary_role in ROLE_DETAILS else primary_role)
+    role_titles = [ROLE_DETAILS.get(r, {}).get("title", r) for r in chosen_roles if r in ROLE_DETAILS]
+    role_display = ", ".join(role_titles) if role_titles else ROLE_DETAILS.get(primary_role, {}).get("title", primary_role)
 
     email_sent = send_customer_credentials(
         email=clean_email,
@@ -480,7 +480,7 @@ def resend_user_credentials(
         print(f"Warning: could not sync updated password to DB: {e}")
 
     user_roles = user.get_roles()
-    role_titles = [ROLE_DETAILS[r].title for r in user_roles if r in ROLE_DETAILS]
+    role_titles = [ROLE_DETAILS.get(r, {}).get("title", r) for r in user_roles if r in ROLE_DETAILS]
     role_display = ", ".join(role_titles) if role_titles else user.role
 
     email_sent = send_customer_credentials(
