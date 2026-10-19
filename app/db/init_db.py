@@ -234,9 +234,6 @@ def init_db(bind=None):
     # Tự động migrate thêm cột nếu bảng đã tồn tại từ trước
     is_sqlite = target_engine.url.drivername.startswith("sqlite")
     with target_engine.connect() as conn:
-    # Tạo các bảng nếu chưa có
-    print("Tables created successfully.")
-    # Tự động migrate thêm cột nếu bảng đã tồn tại từ trước
         if is_sqlite:
             # Kiểm tra và thêm cột cho SQLite
             user_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(users)")).fetchall()]
