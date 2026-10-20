@@ -6,6 +6,7 @@ from sqlalchemy import (
     Integer,
     String,
     Float,
+    Boolean,
     DateTime,
     Unicode,
     UnicodeText,
@@ -31,13 +32,13 @@ class ReturnOrderEntity(Base):
     order_id = Column(Integer, ForeignKey("orders.id"), nullable=True, index=True)
     order_code = Column(String(50), nullable=False, index=True)
     original_invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True, index=True)
-    original_invoice_code = Column(String(50), nullable=False, index=True)
+    original_invoice_code = Column(String(50), nullable=True, default="", index=True)
     dealer_id = Column(Integer, ForeignKey("dealers.id"), nullable=False, index=True)
     dealer_name = Column(Unicode(255), nullable=False)
     warehouse_id = Column(String(50), nullable=True)
     warehouse_name = Column(Unicode(255), nullable=True)
     status = Column(String(30), default="CONFIRMED", nullable=False)  # PENDING_WAREHOUSE | CONFIRMED | COMPLETED | CANCELLED
-    reason = Column(Unicode(500), nullable=False)
+    reason = Column(Unicode(500), nullable=True, default="")
     note = Column(Unicode(500), nullable=True)
     subtotal_amount = Column(Float, default=0.0, nullable=False)
     tax_amount = Column(Float, default=0.0, nullable=False)
@@ -85,11 +86,30 @@ class ReturnOrderEntity(Base):
 
     @property
     def total_items(self):
-        return len(self.items) if self.items else 0
+        return len(self.items) if self.items else getattr(self, "_total_items", 0)
+
+    @total_items.setter
+    def total_items(self, val):
+        self._total_items = val
 
     @property
     def total_quantity(self):
-        return sum(it.quantity for it in self.items) if self.items else 0
+        return sum(it.quantity for it in self.items) if self.items else getattr(self, "_total_quantity", 0)
+
+    @total_quantity.setter
+    def total_quantity(self, val):
+        self._total_quantity = val
+
+    def __init__(self, **kwargs):
+        if "total_items" in kwargs:
+            self._total_items = kwargs.pop("total_items")
+        if "total_quantity" in kwargs:
+            self._total_quantity = kwargs.pop("total_quantity")
+        if "original_invoice_code" not in kwargs or kwargs["original_invoice_code"] is None:
+            kwargs["original_invoice_code"] = ""
+        if "reason" not in kwargs or kwargs["reason"] is None:
+            kwargs["reason"] = kwargs.get("note", "") or ""
+        super().__init__(**kwargs)
 
     # Relationships
     items = relationship(
@@ -108,47 +128,45 @@ class ReturnOrderItemEntity(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     return_order_id = Column(Integer, ForeignKey("return_orders.id"), nullable=False, index=True)
+    order_item_id = Column(Integer, nullable=True, index=True)
     product_id = Column(Integer, nullable=False, index=True)
-    product_code = Column(String(50), nullable=False)
+    product_code = Column(String(50), nullable=True)
     product_name = Column(Unicode(255), nullable=False)
-    unit_name = Column(Unicode(50), nullable=True)
-    quantity = Column(Integer, default=1, nullable=False)
+    unit_name = Column(Unicode(50), default="Cái", nullable=True)
     unit_price = Column(Float, default=0.0, nullable=False)
+    original_quantity = Column(Integer, default=0, nullable=True)
+    return_quantity = Column(Integer, default=1, nullable=False)
+    quantity = Column(Integer, default=1, nullable=False)
+    refund_amount = Column(Float, default=0.0, nullable=False)
     line_total = Column(Float, default=0.0, nullable=False)
+    return_reason = Column(Unicode(255), nullable=True)
     reason = Column(Unicode(255), nullable=True)
+    is_damaged = Column(Boolean, default=False, nullable=False)
 
-    # Backward compatibility properties
-    @property
-    def return_quantity(self):
-        return self.quantity
+    target_warehouse_id = Column(Integer, nullable=True)
+    target_warehouse_code = Column(String(50), nullable=True)
+    target_warehouse_name = Column(Unicode(255), nullable=True)
 
-    @return_quantity.setter
-    def return_quantity(self, val):
-        self.quantity = val
+    batch_id = Column(Integer, nullable=True)
+    batch_number = Column(String(100), nullable=True)
 
-    @property
-    def original_quantity(self):
-        return self.quantity
+    note = Column(UnicodeText, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
 
-    @original_quantity.setter
-    def original_quantity(self, val):
-        pass
-
-    @property
-    def refund_amount(self):
-        return self.line_total
-
-    @refund_amount.setter
-    def refund_amount(self, val):
-        self.line_total = val
-
-    @property
-    def return_reason(self):
-        return self.reason
-
-    @return_reason.setter
-    def return_reason(self, val):
-        self.reason = val
+    def __init__(self, **kwargs):
+        if "return_quantity" in kwargs and "quantity" not in kwargs:
+            kwargs["quantity"] = kwargs["return_quantity"]
+        elif "quantity" in kwargs and "return_quantity" not in kwargs:
+            kwargs["return_quantity"] = kwargs["quantity"]
+        if "refund_amount" in kwargs and "line_total" not in kwargs:
+            kwargs["line_total"] = kwargs["refund_amount"]
+        elif "line_total" in kwargs and "refund_amount" not in kwargs:
+            kwargs["refund_amount"] = kwargs["line_total"]
+        if "return_reason" in kwargs and "reason" not in kwargs:
+            kwargs["reason"] = kwargs["return_reason"]
+        elif "reason" in kwargs and "return_reason" not in kwargs:
+            kwargs["return_reason"] = kwargs["reason"]
+        super().__init__(**kwargs)
 
     # Relationships
     return_order = relationship("ReturnOrderEntity", back_populates="items")

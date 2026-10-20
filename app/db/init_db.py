@@ -206,6 +206,19 @@ def _ensure_legacy_columns(bind=engine):
             "updated_at": ("DATETIME NULL", "DATETIME NULL"),
         },
         "return_order_items": {
+            "order_item_id": ("INTEGER NULL", "INT NULL"),
+            "original_quantity": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "return_quantity": ("INTEGER DEFAULT 1", "INT DEFAULT 1"),
+            "refund_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "return_reason": ("NVARCHAR(255) NULL", "NVARCHAR(255) NULL"),
+            "is_damaged": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
+            "target_warehouse_id": ("INTEGER NULL", "INT NULL"),
+            "target_warehouse_code": ("VARCHAR(50) NULL", "VARCHAR(50) NULL"),
+            "target_warehouse_name": ("NVARCHAR(255) NULL", "NVARCHAR(255) NULL"),
+            "batch_id": ("INTEGER NULL", "INT NULL"),
+            "batch_number": ("VARCHAR(100) NULL", "VARCHAR(100) NULL"),
+            "note": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
+            "created_at": ("DATETIME NULL", "DATETIME NULL"),
             "quantity": ("INTEGER DEFAULT 1", "INT DEFAULT 1"),
             "line_total": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
             "reason": ("NVARCHAR(255) NULL", "NVARCHAR(255) NULL"),
@@ -253,6 +266,26 @@ def _ensure_legacy_columns(bind=engine):
         pass
 
 
+def _ensure_mssql_column_types(bind):
+    if bind.dialect.name != "mssql":
+        return
+    with bind.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE dealers ALTER COLUMN status NVARCHAR(50) NULL;"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE drivers ALTER COLUMN status NVARCHAR(50) NOT NULL;"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE delivery_trips ALTER COLUMN driver_name NVARCHAR(150) NULL;"))
+            conn.execute(text("ALTER TABLE delivery_trips ALTER COLUMN vehicle_plate NVARCHAR(50) NULL;"))
+            conn.execute(text("ALTER TABLE delivery_trips ALTER COLUMN dispatched_at DATETIME NULL;"))
+        except Exception:
+            pass
+
+
 def init_db():
     if engine.dialect.name != "mssql":
         raise RuntimeError(
@@ -265,6 +298,7 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _ensure_dealer_credit_limit_column(engine)
     _ensure_legacy_columns(engine)
+    _ensure_mssql_column_types(engine)
     # Tự động migrate thêm cột và chỉ mục cho SQL Server
     with engine.connect() as conn:
         if False:

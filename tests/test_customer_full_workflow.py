@@ -23,11 +23,30 @@ def setup_customer_account():
     save_users_db()
 
     orig_dealer_1 = None
+    from app.core.database import SessionLocal
+    from app.models.entities import DealerEntity
+    db = SessionLocal()
+    orig_db_overdue = None
+    orig_db_max_debt = None
+    try:
+        d_entity = db.query(DealerEntity).filter(DealerEntity.id == 1).first()
+        if d_entity:
+            orig_db_overdue = d_entity.overdue_days_allowed
+            orig_db_max_debt = d_entity.max_debt_days
+            d_entity.overdue_days_allowed = 9999
+            d_entity.max_debt_days = 9999
+            d_entity.credit_limit = 10_000_000_000.0
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
     if 1 in DEALERS_DB:
-        orig_dealer_1 = DEALERS_DB[1].copy() if hasattr(DEALERS_DB[1], "copy") else DEALERS_DB[1]
-        DEALERS_DB[1].max_debt_days = 60
-        DEALERS_DB[1].overdue_days_allowed = 60
-        DEALERS_DB[1].credit_limit = 100000000.0
+        orig_dealer_1 = DEALERS_DB[1].model_copy() if hasattr(DEALERS_DB[1], "model_copy") else (DEALERS_DB[1].copy() if hasattr(DEALERS_DB[1], "copy") else DEALERS_DB[1])
+        DEALERS_DB[1].max_debt_days = 9999
+        DEALERS_DB[1].overdue_days_allowed = 9999
+        DEALERS_DB[1].credit_limit = 10_000_000_000.0
         DEALERS_DB[1].is_overdue = False
         DEALERS_DB[1].is_over_credit_limit = False
         DEALERS_DB[1].credit_warning_flag = False
@@ -40,6 +59,19 @@ def setup_customer_account():
     if orig_dealer_1 and 1 in DEALERS_DB:
         DEALERS_DB[1] = orig_dealer_1
         save_dealers_db()
+    db = SessionLocal()
+    try:
+        d_entity = db.query(DealerEntity).filter(DealerEntity.id == 1).first()
+        if d_entity:
+            if orig_db_overdue is not None:
+                d_entity.overdue_days_allowed = orig_db_overdue
+            if orig_db_max_debt is not None:
+                d_entity.max_debt_days = orig_db_max_debt
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
 
 def test_full_customer_ordering_workflow():
     # 1. Login tài khoản test_portal_cust (role: customer, liên kết Dealer 1)

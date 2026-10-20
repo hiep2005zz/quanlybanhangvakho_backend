@@ -283,9 +283,6 @@ def save_dealers_db():
                 if hasattr(db_dealer, "warehouse_name"):
                     db_dealer.warehouse_name = getattr(d, "warehouse_name", None)
 
-            if DEALERS_DB:
-                existing_ids = list(DEALERS_DB.keys())
-                db.query(DealerEntity).filter(DealerEntity.id.not_in(existing_ids)).delete(synchronize_session=False)
             db.commit()
         except Exception as sql_err:
             db.rollback()

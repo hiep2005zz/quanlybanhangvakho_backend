@@ -15,6 +15,7 @@ from app.models.entities import (
     WarehouseStockEntity,
     InventoryTransactionEntity,
     AuditLogEntity,
+    UserEntity,
 )
 from app.models.goods_receipt import (
     WarehouseEntity,
@@ -36,6 +37,14 @@ from app.schemas.return_order import (
 
 def get_utc_now():
     return datetime.now(timezone.utc)
+
+
+def _safe_user_id(db: Session, user_id: Optional[int]) -> Optional[int]:
+    """Trả về user_id nếu tồn tại trong database bảng users, ngược lại trả về None để tránh lỗi khóa ngoại (FK) trên SQL Server."""
+    if not user_id:
+        return None
+    exists = db.query(UserEntity.id).filter(UserEntity.id == user_id).first()
+    return user_id if exists else None
 
 
 def is_reason_damaged(reason: str) -> bool:
@@ -362,7 +371,7 @@ def create_return_order(
         total_quantity=0,
         total_refund_amount=0.0,
         note=data.note,
-        created_by_id=current_user.id,
+        created_by_id=_safe_user_id(db, current_user.id),
         created_by=current_user.full_name or current_user.username,
         created_at=now_utc,
     )
@@ -489,7 +498,7 @@ def create_return_order(
     # Ghi Audit Log khởi tạo phiếu trả
     try:
         audit = AuditLogEntity(
-            user_id=current_user.id,
+            user_id=_safe_user_id(db, current_user.id),
             user_name=current_user.full_name or current_user.username,
             action_type="RETURN_ORDER_CREATE",
             entity_type="ReturnOrder",
@@ -551,7 +560,7 @@ def confirm_return_receipt(
         # 1. Chuyển trạng thái phiếu sang COMPLETED
         return_order.status = "COMPLETED"
         return_order.confirmed_by = user_display_name
-        return_order.confirmed_by_id = current_user.id
+        return_order.confirmed_by_id = _safe_user_id(db, current_user.id)
         return_order.confirmed_at = now_utc
         if note:
             return_order.note = ((return_order.note + " | ") if return_order.note else "") + f"Xác nhận kho: {note}"
@@ -713,7 +722,7 @@ def confirm_return_receipt(
         # 3. Ghi Audit Log xác nhận nhập kho thành công
         try:
             audit = AuditLogEntity(
-                user_id=current_user.id,
+                user_id=_safe_user_id(db, current_user.id),
                 user_name=user_display_name,
                 action_type="RETURN_ORDER_CONFIRM",
                 entity_type="ReturnOrder",
@@ -762,13 +771,13 @@ def cancel_return_order(
     now_utc = get_utc_now()
     return_order.status = "CANCELLED"
     return_order.cancelled_by = current_user.full_name or current_user.username
-    return_order.cancelled_by_id = current_user.id
+    return_order.cancelled_by_id = _safe_user_id(db, current_user.id)
     return_order.cancelled_at = now_utc
     return_order.cancel_reason = reason.strip()
 
     try:
         audit = AuditLogEntity(
-            user_id=current_user.id,
+            user_id=_safe_user_id(db, current_user.id),
             user_name=current_user.full_name or current_user.username,
             action_type="RETURN_ORDER_CANCEL",
             entity_type="ReturnOrder",

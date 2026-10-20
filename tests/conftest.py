@@ -60,16 +60,82 @@ def reset_test_state():
             UserEntity.username.in_(["sales_moi", "admin2", "multi_role_user", "kho_invalid_branch", "kho_valid_branch", "temp_user"])
         ).delete(synchronize_session=False)
 
-        # Xóa các đại lý test phát sinh (id > 5)
-        from app.models.entities import DealerEntity
-        db.query(DealerEntity).filter(DealerEntity.id > 5).delete(synchronize_session=False)
+        # Xóa các đại lý test phát sinh một cách an toàn (tránh vi phạm Foreign Key trên MSSQL)
+        # Xóa các đại lý test phát sinh một cách an toàn (tránh vi phạm Foreign Key trên MSSQL)
+        from app.models.entities import DealerEntity, OrderEntity, OrderItemEntity, DealerPaymentEntity, DealerDeliveryPointEntity
+        from app.models.invoice import InvoiceEntity
+        from app.models.debt_payment import PaymentReceiptEntity
+        from app.models.debt_adjustment import DebtAdjustmentEntity
+        from app.models.debt_reconciliation import DebtReconciliationEntity
+        from app.models.dealer import DEALERS_DB
+        seed_dealer_ids = {1, 2, 3, 4, 5, 7, 8, 998, 999, 1000, 1001, 1002, 8801}
+        
+        test_dealers = db.query(DealerEntity).filter(
+            ~DealerEntity.id.in_(seed_dealer_ids)
+        ).all()
+        for td in test_dealers:
+            try:
+                db.query(DealerDeliveryPointEntity).filter(DealerDeliveryPointEntity.dealer_id == td.id).delete(synchronize_session=False)
+                db.query(PaymentReceiptEntity).filter(PaymentReceiptEntity.dealer_id == td.id).delete(synchronize_session=False)
+                db.query(DealerPaymentEntity).filter(DealerPaymentEntity.dealer_id == td.id).delete(synchronize_session=False)
+                db.query(DebtAdjustmentEntity).filter(DebtAdjustmentEntity.dealer_id == td.id).delete(synchronize_session=False)
+                db.query(DebtReconciliationEntity).filter(DebtReconciliationEntity.dealer_id == td.id).delete(synchronize_session=False)
+                db.query(InvoiceEntity).filter(InvoiceEntity.dealer_id == td.id).delete(synchronize_session=False)
+                test_orders = db.query(OrderEntity).filter(OrderEntity.dealer_id == td.id).all()
+                if test_orders:
+                    o_ids = [o.id for o in test_orders]
+                    db.query(OrderItemEntity).filter(OrderItemEntity.order_id.in_(o_ids)).delete(synchronize_session=False)
+                    db.query(OrderEntity).filter(OrderEntity.id.in_(o_ids)).delete(synchronize_session=False)
+                db.delete(td)
+                db.commit()
+                if td.id in DEALERS_DB:
+                    del DEALERS_DB[td.id]
+            except Exception:
+                db.rollback()
+        
+        for k in list(DEALERS_DB.keys()):
+            if k not in seed_dealer_ids:
+                del DEALERS_DB[k]
 
-        # Xóa các sản phẩm test được tạo trong lúc test
-        from app.models.entities import ProductEntity
-        db.query(ProductEntity).filter(
+        # Dọn dẹp chuyến giao hàng test và phiếu xuất test theo đúng thứ tự Foreign Key
+        from app.models.entities import (
+            DeliveryTripEntity,
+            DeliveryStopEntity,
+            DeliveryTripStopEntity,
+            DeliveryTripDispatchEntity,
+            OrderDispatchEntity,
+        )
+        try:
+            db.query(DeliveryTripDispatchEntity).delete(synchronize_session=False)
+            db.query(DeliveryTripStopEntity).delete(synchronize_session=False)
+            db.query(DeliveryStopEntity).delete(synchronize_session=False)
+            db.query(DeliveryTripEntity).filter(
+                (DeliveryTripEntity.trip_code.like(r"TRIP-%", escape="\\")) | (DeliveryTripEntity.trip_code.like(r"TEST-%", escape="\\"))
+            ).delete(synchronize_session=False)
+            db.query(OrderDispatchEntity).filter(
+                (OrderDispatchEntity.dispatch_code.like(r"PXK-%", escape="\\")) | (OrderDispatchEntity.dispatch_code.like(r"TEST-%", escape="\\"))
+            ).delete(synchronize_session=False)
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        # Xóa các sản phẩm test được tạo trong lúc test (xóa an toàn các bản ghi phụ thuộc trước)
+        from app.models.entities import ProductEntity, OrderItemEntity, InventoryTransactionEntity, WarehouseStockEntity
+        from app.models.goods_receipt import ProductBatchEntity, InventoryLedgerEntity
+        from app.models.return_order import ReturnOrderItemEntity
+        test_prods = db.query(ProductEntity).filter(
             ((ProductEntity.code.like(r"SP\_%", escape="\\")) | (ProductEntity.code == "SSOJSH"))
             & (~ProductEntity.code.in_(["SP001", "SP002", "SP003", "SP004", "SP005"]))
-        ).delete(synchronize_session=False)
+        ).all()
+        if test_prods:
+            test_prod_ids = [p.id for p in test_prods]
+            db.query(ReturnOrderItemEntity).filter(ReturnOrderItemEntity.product_id.in_(test_prod_ids)).delete(synchronize_session=False)
+            db.query(OrderItemEntity).filter(OrderItemEntity.product_id.in_(test_prod_ids)).delete(synchronize_session=False)
+            db.query(InventoryLedgerEntity).filter(InventoryLedgerEntity.product_id.in_(test_prod_ids)).delete(synchronize_session=False)
+            db.query(ProductBatchEntity).filter(ProductBatchEntity.product_id.in_(test_prod_ids)).delete(synchronize_session=False)
+            db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id.in_(test_prod_ids)).delete(synchronize_session=False)
+            db.query(InventoryTransactionEntity).filter(InventoryTransactionEntity.product_id.in_(test_prod_ids)).delete(synchronize_session=False)
+            db.query(ProductEntity).filter(ProductEntity.id.in_(test_prod_ids)).delete(synchronize_session=False)
         from app.api.v1.endpoints.products import RAW_PRODUCTS
         RAW_PRODUCTS[:] = [p for p in RAW_PRODUCTS if not p.get("code", "").startswith("SP_") and p.get("code") != "SSOJSH"]
 
