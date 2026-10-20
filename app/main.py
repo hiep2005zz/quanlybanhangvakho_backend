@@ -1,5 +1,6 @@
 import os
 import asyncio
+import logging
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +8,11 @@ from app.api.v1.endpoints import auth, products, inventory, users, orders, categ
 
 from contextlib import asynccontextmanager
 from app.db.init_db import init_db
+from app.modules.payment_reminders.config import FEATURE_ENABLED
+from app.modules.payment_reminders.migration import upgrade as upgrade_payment_reminder_schema
+from app.modules.payment_reminders.scheduler import run_daily_scheduler
+
+logger = logging.getLogger(__name__)
 
 async def daily_credit_policy_evaluation():
     """
@@ -32,11 +38,36 @@ async def daily_credit_policy_evaluation():
 async def lifespan(app: FastAPI):
     # Khởi tạo bảng và dữ liệu mẫu khi ứng dụng khởi động
     init_db()
-    cron_task = asyncio.create_task(daily_credit_policy_evaluation())
+    upgrade_payment_reminder_schema()
+    background_tasks = []
+    if FEATURE_ENABLED:
+        background_tasks.append(
+            asyncio.create_task(
+                run_daily_scheduler(),
+                name="payment-reminder-scheduler",
+            )
+        )
+    background_tasks.append(
+        asyncio.create_task(
+            daily_credit_policy_evaluation(),
+            name="daily-credit-policy-evaluation",
+        )
+    )
     try:
         yield
     finally:
-        cron_task.cancel()
+        for task in background_tasks:
+            task.cancel()
+        results = await asyncio.gather(*background_tasks, return_exceptions=True)
+        for task, result in zip(background_tasks, results):
+            if isinstance(result, BaseException) and not isinstance(
+                result, asyncio.CancelledError
+            ):
+                logger.error(
+                    "Background task %s failed during shutdown",
+                    task.get_name(),
+                    exc_info=(type(result), result, result.__traceback__),
+                )
 
 app = FastAPI(
     title="Quan Ly Ban Hang & Kho API",
@@ -91,10 +122,11 @@ app.include_router(goods_receipts.router, prefix="/api/v1/goods-receipts", tags=
 app.include_router(goods_receipts.router, prefix="/goods-receipts", tags=["Goods Receipts"])
 app.include_router(warehouses.router, prefix="/api/v1/warehouses", tags=["Warehouses"])
 app.include_router(stock_audits.router, prefix="/api/v1/stock-audits", tags=["Stock Audits"])
-from app.api.v1.endpoints import delivery_trips, agency_debts, debt_payments
+from app.api.v1.endpoints import delivery_trips, agency_debts, debt_payments, payment_reminders
 app.include_router(delivery_trips.router, prefix="/api/v1/delivery-trips", tags=["Delivery Trips"])
 app.include_router(agency_debts.router, prefix="/api/v1/agency-debts", tags=["Agency Debts"])
 app.include_router(debt_payments.router, prefix="/api/v1/debt-payments", tags=["Debt Payments"])
+app.include_router(payment_reminders.router, prefix="/api/v1/payment-reminders", tags=["Payment Reminders"])
 app.include_router(batches.router, prefix="/api/v1/batches", tags=["Batches"])
 app.include_router(executive_dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
 app.include_router(sales_reports.router, prefix="/api/v1/reports", tags=["Reports"])
