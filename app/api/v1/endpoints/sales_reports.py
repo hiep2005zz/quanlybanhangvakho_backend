@@ -30,6 +30,11 @@ class SalesReportItem(BaseModel):
     cost: Optional[float] = None
     gross_profit: Optional[float] = None
     gross_margin_pct: Optional[float] = None
+    # Đồng bộ Chỉ tiêu KPI và Hàng trả lại
+    target_amount: Optional[float] = None
+    target_achievement_rate: Optional[float] = None
+    return_quantity: Optional[int] = 0
+    return_amount: Optional[float] = 0.0
 
 
 class SalesReportSummary(BaseModel):
@@ -42,6 +47,10 @@ class SalesReportSummary(BaseModel):
     total_cost: Optional[float] = None
     total_gross_profit: Optional[float] = None
     average_gross_margin_pct: Optional[float] = None
+    total_target_amount: Optional[float] = None
+    total_target_achievement_rate: Optional[float] = None
+    total_return_quantity: Optional[int] = 0
+    total_return_amount: Optional[float] = 0.0
 
 
 class SalesMultidimensionalResponse(BaseModel):
@@ -405,8 +414,46 @@ def get_sales_multidimensional_report(
             cat_name = p_info.get("category") or "Khác"
             return cat_name, None, cat_name, "Ngành hàng"
 
-    # 6. Gom nhóm tính toán số liệu kỳ này
+    # 6. Truy vấn Chỉ tiêu doanh số (KPI) cho kỳ báo cáo
+    targets_map: Dict[str, float] = {}
+    try:
+        from app.models.sales_target import SalesTargetEntity
+        m_year = cur_start.strftime("%Y-%m")
+        db_targets = db.query(SalesTargetEntity).filter(SalesTargetEntity.month_year == m_year).all()
+        for t in db_targets:
+            if t.target_type == "salesperson" and t.employee_id:
+                targets_map[f"salesperson_{t.employee_id}"] = float(t.target_amount or 0.0)
+            elif t.target_type == "region" and t.region:
+                targets_map[f"region_{normalize_region_name(t.region)}"] = float(t.target_amount or 0.0)
+    except Exception as ex:
+        print(f"Warning query sales targets: {ex}")
+
+    # 7. Gom nhóm tính toán số liệu kỳ này
     groups: Dict[str, Dict[str, Any]] = {}
+
+    # Nếu chiều là nhân viên kinh doanh, khởi tạo trước toàn bộ nhân viên sales trong hệ thống
+    if dimension == "salesperson":
+        try:
+            for u in db_users:
+                u_role = (getattr(u, "role", "") or "").lower()
+                u_roles = [str(r).lower() for r in (getattr(u, "roles", []) or [u_role])]
+                if "sales" in u_roles or "sales_manager" in u_roles or "agent" in u_roles or u.id == 3:
+                    g_id = str(u.id)
+                    groups[g_id] = {
+                        "id": g_id,
+                        "code": f"NV{u.id:03d}",
+                        "name": u.full_name or u.username,
+                        "sub_text": "Kinh doanh",
+                        "quantity": 0,
+                        "revenue": 0.0,
+                        "cost": 0.0,
+                        "previous_quantity": 0,
+                        "previous_revenue": 0.0,
+                        "return_quantity": 0,
+                        "return_amount": 0.0,
+                    }
+        except Exception:
+            pass
 
     for o in current_period_orders:
         for it in o.get("items") or []:
@@ -422,6 +469,8 @@ def get_sales_multidimensional_report(
                     "cost": 0.0,
                     "previous_quantity": 0,
                     "previous_revenue": 0.0,
+                    "return_quantity": 0,
+                    "return_amount": 0.0,
                 }
             
             qty = int(it.get("quantity") or 1)
@@ -435,7 +484,7 @@ def get_sales_multidimensional_report(
             groups[g_id]["revenue"] += item_rev
             groups[g_id]["cost"] += item_cost
 
-    # 7. Gom nhóm số liệu cùng kỳ trước
+    # 8. Gom nhóm số liệu cùng kỳ trước
     for o in previous_period_orders:
         for it in o.get("items") or []:
             g_id, g_code, g_name, g_sub = get_group_info(o, it)
@@ -450,19 +499,76 @@ def get_sales_multidimensional_report(
                     "cost": 0.0,
                     "previous_quantity": 0,
                     "previous_revenue": 0.0,
+                    "return_quantity": 0,
+                    "return_amount": 0.0,
                 }
             qty = int(it.get("quantity") or 1)
             price = float(it.get("unit_price") or it.get("price") or 0.0)
             groups[g_id]["previous_quantity"] += qty
             groups[g_id]["previous_revenue"] += (qty * price)
 
-    # 8. Chuyển đổi thành danh sách kết quả & Lọc tìm kiếm
+    # 9. Đồng bộ trừ hàng trả lại (RMA / Return Orders)
+    total_system_return_qty = 0
+    total_system_return_amount = 0.0
+    try:
+        from app.models.return_order import ReturnOrderEntity
+        return_orders = db.query(ReturnOrderEntity).filter(ReturnOrderEntity.status != "CANCELLED").all()
+        for ro in return_orders:
+            ro_date = ro.confirmed_at or ro.created_at
+            if ro_date and not ro_date.tzinfo:
+                ro_date = ro_date.replace(tzinfo=timezone.utc)
+
+            is_cur = (cur_start <= ro_date <= cur_end) if ro_date else False
+            is_prev = (prev_start <= ro_date <= prev_end) if ro_date else False
+            if not (is_cur or is_prev):
+                continue
+
+            d_id = ro.dealer_id
+            order_info = next((o for o in all_orders if o["order_code"] == ro.order_code), None)
+
+            for r_it in ro.items:
+                p_id = r_it.product_id
+                r_qty = int(r_it.return_quantity or 0)
+                r_amount = float(r_it.refund_amount or (r_qty * float(r_it.unit_price or 0.0)))
+                p_info = products_map.get(p_id, {})
+                c_price = float(p_info.get("cost_price", 0.0))
+                r_cost = r_qty * c_price
+
+                fake_order = {
+                    "dealer_id": d_id,
+                    "dealer_name": ro.dealer_name,
+                    "assigned_sale_id": order_info.get("assigned_sale_id") if order_info else None,
+                    "assigned_sale_name": order_info.get("assigned_sale_name") if order_info else None,
+                }
+                fake_item = {
+                    "product_id": p_id,
+                    "product_name": r_it.product_name,
+                }
+                g_id, g_code, g_name, g_sub = get_group_info(fake_order, fake_item)
+                if g_id in groups:
+                    if is_cur:
+                        groups[g_id]["quantity"] = max(0, groups[g_id]["quantity"] - r_qty)
+                        groups[g_id]["revenue"] = max(0.0, groups[g_id]["revenue"] - r_amount)
+                        groups[g_id]["cost"] = max(0.0, groups[g_id]["cost"] - r_cost)
+                        groups[g_id]["return_quantity"] = groups[g_id].get("return_quantity", 0) + r_qty
+                        groups[g_id]["return_amount"] = groups[g_id].get("return_amount", 0.0) + r_amount
+                        total_system_return_qty += r_qty
+                        total_system_return_amount += r_amount
+                    elif is_prev:
+                        groups[g_id]["previous_quantity"] = max(0, groups[g_id]["previous_quantity"] - r_qty)
+                        groups[g_id]["previous_revenue"] = max(0.0, groups[g_id]["previous_revenue"] - r_amount)
+    except Exception as ex:
+        print(f"Warning deducting returns in sales report: {ex}")
+
+    # 10. Chuyển đổi thành danh sách kết quả & Lọc tìm kiếm
     items_list: List[SalesReportItem] = []
     
     total_qty = 0
     total_rev = 0.0
     total_cost = 0.0
     prev_total_rev = 0.0
+    accumulated_target = 0.0
+    has_any_target = False
 
     search_kw = search.strip().lower() if search else None
 
@@ -472,9 +578,23 @@ def get_sales_multidimensional_report(
         cost = g["cost"]
         qty = g["quantity"]
 
-        # Nếu cả 2 kỳ đều bằng 0 thì bỏ qua
+        # Tra cứu KPI tương ứng
+        target_amt = None
+        achieve_rate = None
+        if dimension == "salesperson":
+            target_amt = targets_map.get(f"salesperson_{g['id']}")
+        elif dimension == "region":
+            target_amt = targets_map.get(f"region_{g['id']}")
+
+        if target_amt is not None and target_amt > 0:
+            achieve_rate = round((rev / target_amt) * 100, 1)
+            accumulated_target += target_amt
+            has_any_target = True
+
+        # Nếu không có doanh số cả 2 kỳ và không phải là nhân viên sales (hoặc không có target) thì bỏ qua
         if rev == 0 and prev_rev == 0 and qty == 0:
-            continue
+            if dimension != "salesperson" and target_amt is None:
+                continue
 
         # Lọc tìm kiếm
         if search_kw:
@@ -512,6 +632,10 @@ def get_sales_multidimensional_report(
             cost=round(cost, 2) if can_view_profit else None,
             gross_profit=round(gross_profit, 2) if can_view_profit else None,
             gross_margin_pct=margin_pct if can_view_profit else None,
+            target_amount=round(target_amt, 2) if target_amt is not None else None,
+            target_achievement_rate=achieve_rate,
+            return_quantity=g.get("return_quantity", 0),
+            return_amount=round(g.get("return_amount", 0.0), 2),
         )
         items_list.append(item_data)
 
@@ -527,6 +651,9 @@ def get_sales_multidimensional_report(
     total_gross_profit = total_rev - total_cost
     avg_margin = round((total_gross_profit / total_rev) * 100, 1) if total_rev > 0 else 0.0
 
+    total_target_val = round(accumulated_target, 2) if has_any_target else None
+    total_achieve_rate = round((total_rev / accumulated_target) * 100, 1) if (has_any_target and accumulated_target > 0) else None
+
     summary = SalesReportSummary(
         total_quantity=total_qty,
         total_revenue=round(total_rev, 2),
@@ -537,6 +664,10 @@ def get_sales_multidimensional_report(
         total_cost=round(total_cost, 2) if can_view_profit else None,
         total_gross_profit=round(total_gross_profit, 2) if can_view_profit else None,
         average_gross_margin_pct=avg_margin if can_view_profit else None,
+        total_target_amount=total_target_val,
+        total_target_achievement_rate=total_achieve_rate,
+        total_return_quantity=total_system_return_qty,
+        total_return_amount=round(total_system_return_amount, 2),
     )
 
     return SalesMultidimensionalResponse(
