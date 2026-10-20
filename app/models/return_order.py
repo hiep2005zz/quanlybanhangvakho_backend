@@ -77,6 +77,43 @@ class ReturnOrderEntity(Base):
         self.confirmed_by_name = val
 
     @property
+    def cancelled_by(self):
+        return getattr(self, "cancelled_by_name", None) or getattr(self, "_cancelled_by", None)
+
+    @cancelled_by.setter
+    def cancelled_by(self, val):
+        self._cancelled_by = val
+        if hasattr(self, "cancelled_by_name"):
+            try:
+                self.cancelled_by_name = val
+            except Exception:
+                pass
+
+    @property
+    def cancelled_by_id(self):
+        return getattr(self, "_cancelled_by_id", None)
+
+    @cancelled_by_id.setter
+    def cancelled_by_id(self, val):
+        self._cancelled_by_id = val
+
+    @property
+    def cancelled_at(self):
+        return getattr(self, "_cancelled_at", None)
+
+    @cancelled_at.setter
+    def cancelled_at(self, val):
+        self._cancelled_at = val
+
+    @property
+    def cancel_reason(self):
+        return getattr(self, "_cancel_reason", None)
+
+    @cancel_reason.setter
+    def cancel_reason(self, val):
+        self._cancel_reason = val
+
+    @property
     def total_refund_amount(self):
         return self.total_amount
 
@@ -86,7 +123,7 @@ class ReturnOrderEntity(Base):
 
     @property
     def total_items(self):
-        return len(self.items) if self.items else getattr(self, "_total_items", 0)
+        return len(self.items) if self.items is not None and len(self.items) > 0 else getattr(self, "_total_items", 0)
 
     @total_items.setter
     def total_items(self, val):
@@ -94,17 +131,41 @@ class ReturnOrderEntity(Base):
 
     @property
     def total_quantity(self):
-        return sum(it.quantity for it in self.items) if self.items else getattr(self, "_total_quantity", 0)
+        if self.items:
+            return sum((getattr(it, "return_quantity", None) or getattr(it, "quantity", None) or 0) for it in self.items)
+        return getattr(self, "_total_quantity", 0)
 
     @total_quantity.setter
     def total_quantity(self, val):
         self._total_quantity = val
 
     def __init__(self, **kwargs):
+        if "code" in kwargs and "return_code" not in kwargs:
+            kwargs["return_code"] = kwargs["code"]
+        if "return_code" in kwargs and "code" not in kwargs:
+            kwargs["code"] = kwargs["return_code"]
+        if "created_by" in kwargs and "created_by_name" not in kwargs:
+            kwargs["created_by_name"] = kwargs["created_by"]
+        if "created_by_name" in kwargs and "created_by" not in kwargs:
+            kwargs["created_by"] = kwargs["created_by_name"]
+        if "confirmed_by" in kwargs and "confirmed_by_name" not in kwargs:
+            kwargs["confirmed_by_name"] = kwargs["confirmed_by"]
+        if "total_refund_amount" in kwargs and "total_amount" not in kwargs:
+            kwargs["total_amount"] = kwargs["total_refund_amount"]
+        if "total_amount" in kwargs and "total_refund_amount" not in kwargs:
+            kwargs["total_refund_amount"] = kwargs["total_amount"]
         if "total_items" in kwargs:
             self._total_items = kwargs.pop("total_items")
         if "total_quantity" in kwargs:
             self._total_quantity = kwargs.pop("total_quantity")
+        if "cancelled_by" in kwargs:
+            self._cancelled_by = kwargs.pop("cancelled_by")
+        if "cancelled_at" in kwargs:
+            self._cancelled_at = kwargs.pop("cancelled_at")
+        if "cancel_reason" in kwargs:
+            self._cancel_reason = kwargs.pop("cancel_reason")
+        if "cancelled_by_id" in kwargs:
+            self._cancelled_by_id = kwargs.pop("cancelled_by_id")
         if "original_invoice_code" not in kwargs or kwargs["original_invoice_code"] is None:
             kwargs["original_invoice_code"] = ""
         if "reason" not in kwargs or kwargs["reason"] is None:
@@ -166,6 +227,8 @@ class ReturnOrderItemEntity(Base):
             kwargs["reason"] = kwargs["return_reason"]
         elif "reason" in kwargs and "return_reason" not in kwargs:
             kwargs["return_reason"] = kwargs["reason"]
+        if "original_quantity" not in kwargs:
+            kwargs["original_quantity"] = kwargs.get("return_quantity", kwargs.get("quantity", 0))
         super().__init__(**kwargs)
 
     # Relationships

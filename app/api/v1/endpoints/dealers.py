@@ -13,7 +13,7 @@ from sqlalchemy import func
 
 from app.api.deps import require_roles, get_current_user
 from app.core.database import get_db
-from app.models.dealer import DEALERS_DB, Dealer, save_dealers_db, load_dealers_db, compute_dealer_unified_debt, parse_tx_date
+from app.models.dealer import DEALERS_DB, Dealer, save_dealers_db, load_dealers_db, compute_dealer_unified_debt, parse_tx_date, normalize_dealer_status
 from app.models.user import USERS_DB, load_users_db
 from app.models.entities import OrderEntity, DealerEntity
 from app.models.payment_collection import PaymentCollectionEntity
@@ -1039,7 +1039,7 @@ def search_dealers(
             "assigned_sale_id": customer_dealer.assigned_sale_id,
             "assigned_sale_name": get_sale_name(customer_dealer.assigned_sale_id),
             "customer_group": getattr(customer_dealer, "customer_group", "Đại lý cấp 1"),
-            "status": getattr(customer_dealer, "status", "Đang hoạt động"),
+            "status": normalize_dealer_status(getattr(customer_dealer, "status", "Đang hoạt động")),
             "lock_reason": None,
             "locked_at": None,
             "locked_by": None,
@@ -1260,7 +1260,7 @@ def search_dealers(
             "assigned_sale_id": dealer.assigned_sale_id,
             "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
             "customer_group": getattr(dealer, "customer_group", "Đại lý cấp 1"),
-            "status": getattr(dealer, "status", "Đang hoạt động"),
+            "status": normalize_dealer_status(getattr(dealer, "status", "Đang hoạt động")),
             "lock_reason": getattr(dealer, "lock_reason", None),
             "locked_at": getattr(dealer, "locked_at", None),
             "locked_by": getattr(dealer, "locked_by", None),
@@ -2591,7 +2591,7 @@ def get_dealers(
             "current_debt": current_debt,
             "debt_status": debt_status,
             "customer_group": getattr(customer_dealer, "customer_group", "Đại lý cấp 1"),
-            "status": getattr(customer_dealer, "status", "Đang hoạt động"),
+            "status": normalize_dealer_status(getattr(customer_dealer, "status", "Đang hoạt động")),
             "lock_reason": None,
             "locked_at": None,
             "locked_by": None,
@@ -2666,7 +2666,7 @@ def get_dealers(
             "current_debt": current_debt,
             "debt_status": debt_status,
             "customer_group": getattr(d, "customer_group", "Đại lý cấp 1"),
-            "status": getattr(d, "status", "Đang hoạt động"),
+            "status": normalize_dealer_status(getattr(d, "status", "Đang hoạt động")),
             "lock_reason": getattr(d, "lock_reason", None),
             "locked_at": getattr(d, "locked_at", None),
             "locked_by": getattr(d, "locked_by", None),
@@ -3162,7 +3162,7 @@ def calculate_debt_statement(
         "overdue_days_allowed": int(getattr(dealer, "overdue_days_allowed", 30) or 30),
         "assigned_sale_id": dealer.assigned_sale_id,
         "assigned_sale_name": get_sale_name(dealer.assigned_sale_id),
-        "status": getattr(dealer, "status", "Đang hoạt động"),
+        "status": normalize_dealer_status(getattr(dealer, "status", "Đang hoạt động")),
     }
 
     return {

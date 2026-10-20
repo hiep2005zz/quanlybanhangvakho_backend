@@ -203,6 +203,10 @@ def _ensure_legacy_columns(bind=engine):
             "total_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
             "created_by_name": ("NVARCHAR(150) NULL", "NVARCHAR(150) NULL"),
             "confirmed_by_name": ("NVARCHAR(150) NULL", "NVARCHAR(150) NULL"),
+            "cancelled_by_id": ("INTEGER NULL", "INT NULL"),
+            "cancelled_by_name": ("NVARCHAR(150) NULL", "NVARCHAR(150) NULL"),
+            "cancelled_at": ("DATETIME NULL", "DATETIME NULL"),
+            "cancel_reason": ("NVARCHAR(500) NULL", "NVARCHAR(500) NULL"),
             "updated_at": ("DATETIME NULL", "DATETIME NULL"),
         },
         "return_order_items": {
@@ -247,21 +251,35 @@ def _ensure_legacy_columns(bind=engine):
             with bind.begin() as connection:
                 if "code" in cols and "return_code" in cols:
                     connection.execute(text("UPDATE return_orders SET return_code = code WHERE (return_code IS NULL OR return_code = '') AND code IS NOT NULL"))
+                    connection.execute(text("UPDATE return_orders SET code = return_code WHERE (code IS NULL OR code = '') AND return_code IS NOT NULL"))
                 if "total_refund_amount" in cols and "total_amount" in cols:
                     connection.execute(text("UPDATE return_orders SET total_amount = total_refund_amount WHERE (total_amount IS NULL OR total_amount = 0.0) AND total_refund_amount IS NOT NULL"))
+                    connection.execute(text("UPDATE return_orders SET total_refund_amount = total_amount WHERE (total_refund_amount IS NULL OR total_refund_amount = 0.0) AND total_amount IS NOT NULL"))
                 if "created_by" in cols and "created_by_name" in cols:
                     connection.execute(text("UPDATE return_orders SET created_by_name = created_by WHERE (created_by_name IS NULL OR created_by_name = '') AND created_by IS NOT NULL"))
+                    connection.execute(text("UPDATE return_orders SET created_by = created_by_name WHERE (created_by IS NULL OR created_by = '') AND created_by_name IS NOT NULL"))
                 if "confirmed_by" in cols and "confirmed_by_name" in cols:
                     connection.execute(text("UPDATE return_orders SET confirmed_by_name = confirmed_by WHERE (confirmed_by_name IS NULL OR confirmed_by_name = '') AND confirmed_by IS NOT NULL"))
+                    connection.execute(text("UPDATE return_orders SET confirmed_by = confirmed_by_name WHERE (confirmed_by IS NULL OR confirmed_by = '') AND confirmed_by_name IS NOT NULL"))
+                if "cancelled_by" in cols and "cancelled_by_name" in cols:
+                    connection.execute(text("UPDATE return_orders SET cancelled_by_name = cancelled_by WHERE (cancelled_by_name IS NULL OR cancelled_by_name = '') AND cancelled_by IS NOT NULL"))
         if updated_inspector.has_table("return_order_items"):
             cols = {c["name"] for c in updated_inspector.get_columns("return_order_items")}
             with bind.begin() as connection:
                 if "return_quantity" in cols and "quantity" in cols:
                     connection.execute(text("UPDATE return_order_items SET quantity = return_quantity WHERE (quantity IS NULL OR quantity = 0) AND return_quantity IS NOT NULL"))
+                    connection.execute(text("UPDATE return_order_items SET return_quantity = quantity WHERE (return_quantity IS NULL OR return_quantity = 0) AND quantity IS NOT NULL"))
                 if "refund_amount" in cols and "line_total" in cols:
                     connection.execute(text("UPDATE return_order_items SET line_total = refund_amount WHERE (line_total IS NULL OR line_total = 0.0) AND refund_amount IS NOT NULL"))
+                    connection.execute(text("UPDATE return_order_items SET refund_amount = line_total WHERE (refund_amount IS NULL OR refund_amount = 0.0) AND line_total IS NOT NULL"))
                 if "return_reason" in cols and "reason" in cols:
                     connection.execute(text("UPDATE return_order_items SET reason = return_reason WHERE (reason IS NULL OR reason = '') AND return_reason IS NOT NULL"))
+                    connection.execute(text("UPDATE return_order_items SET return_reason = reason WHERE (return_reason IS NULL OR return_reason = '') AND reason IS NOT NULL"))
+                if "original_quantity" in cols:
+                    if "return_quantity" in cols:
+                        connection.execute(text("UPDATE return_order_items SET original_quantity = return_quantity WHERE (original_quantity IS NULL OR original_quantity = 0) AND return_quantity IS NOT NULL"))
+                    elif "quantity" in cols:
+                        connection.execute(text("UPDATE return_order_items SET original_quantity = quantity WHERE (original_quantity IS NULL OR original_quantity = 0) AND quantity IS NOT NULL"))
     except Exception:
         pass
 
@@ -272,6 +290,8 @@ def _ensure_mssql_column_types(bind):
     with bind.begin() as conn:
         try:
             conn.execute(text("ALTER TABLE dealers ALTER COLUMN status NVARCHAR(50) NULL;"))
+            conn.execute(text("UPDATE dealers SET status = N'Đã khóa' WHERE status LIKE '%khóa%' OR status LIKE '%khoá%' OR status LIKE '%?%' OR LOWER(status) LIKE '%lock%';"))
+            conn.execute(text("UPDATE dealers SET status = N'Đang hoạt động' WHERE status LIKE '%ho?t%' OR status LIKE '%Ðang%' OR status = 'ACTIVE';"))
         except Exception:
             pass
         try:
@@ -1146,9 +1166,13 @@ def init_db():
                                 product_name=item_info["product_name"],
                                 unit_name=item_info["unit_name"],
                                 quantity=qty,
+                                return_quantity=qty,
+                                original_quantity=qty,
                                 unit_price=uprice,
+                                refund_amount=ltot,
                                 line_total=ltot,
                                 reason="Hàng giao sai quy cách theo phản ánh của đại lý",
+                                return_reason="Hàng giao sai quy cách theo phản ánh của đại lý",
                             )
                         )
 

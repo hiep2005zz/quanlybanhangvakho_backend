@@ -6,7 +6,20 @@ Stores assigned_sale_id pointing to users.id.
 """
 from typing import Optional, List, Union, Dict, Any, Tuple
 from datetime import datetime, timezone
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+def normalize_dealer_status(raw_status: Optional[str]) -> str:
+    s = str(raw_status or "").strip()
+    if not s:
+        return "Đang hoạt động"
+    s_lower = s.lower()
+    if "ho?t" in s or "Ðang" in s or s.upper() == "ACTIVE" or "hoạt" in s:
+        return "Đang hoạt động"
+    if "khóa" in s_lower or "khoá" in s_lower or "đ?" in s_lower or "lock" in s_lower:
+        return "Đã khóa"
+    if "tạm" in s_lower or "ngừng" in s_lower or "ngung" in s_lower or "inactive" in s_lower:
+        return "Tạm ngừng"
+    return s
 
 def parse_tx_date(val: Any) -> datetime:
     if isinstance(val, datetime):
@@ -122,6 +135,11 @@ class Dealer(BaseModel):
     last_credit_evaluated_at: Optional[Union[str, datetime]] = None
     warehouse_id: Optional[str] = None
     warehouse_name: Optional[str] = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def validate_status(cls, val: Any) -> str:
+        return normalize_dealer_status(val)
 # Initial seed data for dealers
 # Sales user: id=3 (username: 'sales', full_name: 'Trần Bán Hàng')
 DEALERS_DB: dict[int, Dealer] = {
@@ -324,7 +342,7 @@ def load_dealers_db():
                         max_debt_days=int(entity.max_debt_days) if getattr(entity, "max_debt_days", None) is not None else 30,
                         overdue_days_allowed=int(getattr(entity, "overdue_days_allowed", None) or getattr(entity, "max_debt_days", None) or 30),
                         customer_group=getattr(entity, "customer_group", None) or "Đại lý cấp 1",
-                        status="Đang hoạt động" if ("ho?t" in str(getattr(entity, "status", "")) or "Ðang" in str(getattr(entity, "status", ""))) else (getattr(entity, "status", "Đang hoạt động") or "Đang hoạt động"),
+                        status=normalize_dealer_status(getattr(entity, "status", None)),
                         lock_reason=getattr(entity, "lock_reason", None),
                         locked_at=entity.locked_at.isoformat() if hasattr(getattr(entity, "locked_at", None), "isoformat") else getattr(entity, "locked_at", None),
                         locked_by=getattr(entity, "locked_by", None),
@@ -351,6 +369,8 @@ def load_dealers_db():
             with open(DEALERS_JSON_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 for k, v in data.items():
+                    if isinstance(v, dict) and "status" in v:
+                        v["status"] = normalize_dealer_status(v.get("status"))
                     DEALERS_DB[int(k)] = Dealer(**v)
         except Exception as e:
             print(f"Error loading dealers db from json: {e}")
