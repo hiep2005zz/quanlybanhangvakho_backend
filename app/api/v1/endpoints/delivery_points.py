@@ -1,6 +1,6 @@
 import re
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -367,6 +367,12 @@ def delete_point(dealer_id: int, point_id: int,
     if not point or point.dealer_id != dealer_id or not point.is_active:
         raise HTTPException(404, "Không tìm thấy điểm giao")
 
+    if point.is_default:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Không thể xóa điểm giao hàng mặc định của đại lý. Vui lòng thiết lập một điểm giao khác làm mặc định trước khi xóa."
+        )
+
     used = any(o.get("delivery_point_id") == point_id for o in ORDERS_DB.values())
     if not used:
         from app.models.entities import OrderEntity
@@ -374,27 +380,7 @@ def delete_point(dealer_id: int, point_id: int,
         if has_db_order:
             used = True
 
-    was_default = point.is_default
     point.is_active = False      # Luôn vô hiệu hóa is_active = False để lưu vết xóa, tránh tự động sinh lại
     point.is_default = False
     db.flush()
-
-    if was_default:                  # xóa điểm mặc định -> đẩy điểm khác lên thay
-        nxt = db.scalars(select(DealerDeliveryPointEntity).where(
-            DealerDeliveryPointEntity.dealer_id == dealer_id,
-            DealerDeliveryPointEntity.is_active == True)  # noqa: E712
-            .order_by(DealerDeliveryPointEntity.id)).first()
-        if nxt:
-            nxt.is_default = True
-            dealer = DEALERS_DB.get(dealer_id)
-            if dealer and nxt.address:
-                dealer.address = nxt.address
-                if nxt.receiver_phone:
-                    dealer.phone = nxt.receiver_phone
-                try:
-                    from app.models.dealer import save_dealers_db
-                    save_dealers_db()
-                except Exception:
-                    pass
-
     db.commit()

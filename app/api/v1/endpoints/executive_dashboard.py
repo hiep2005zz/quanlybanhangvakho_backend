@@ -24,6 +24,11 @@ class KpiMetrics(BaseModel):
     pending_export_orders_count: int
     total_overdue_debt: float
     low_stock_skus_count: int
+    monthly_sales_target: float = 0.0
+    sales_target_completion_pct: float = 0.0
+    expiring_batches_count: int = 0
+    active_delivery_trips_count: int = 0
+    actual_cash_collected_month: float = 0.0
 
 
 class DailyRevenueItem(BaseModel):
@@ -51,6 +56,9 @@ class OverdueDealerItem(BaseModel):
     current_debt: float
     total_overdue: float
     max_overdue_days: int
+    total_debt: Optional[float] = None
+    overdue_amount: Optional[float] = None
+    overdue_days: Optional[int] = None
 
 
 class ExecutiveDashboardResponse(BaseModel):
@@ -256,86 +264,117 @@ def get_executive_metrics(
     today_growth = round(((revenue_today - revenue_yesterday) / revenue_yesterday * 100), 1) if revenue_yesterday > 0 else (100.0 if revenue_today > 0 else 0.0)
     month_growth = round(((revenue_this_month - revenue_last_month) / revenue_last_month * 100), 1) if revenue_last_month > 0 else (100.0 if revenue_this_month > 0 else 0.0)
 
-    # 3. Tính toán công nợ quá hạn và Top đại lý quá hạn
+    # 3. Tính toán công nợ quá hạn và Top đại lý quá hạn (Đồng bộ với Sổ công nợ & Tuổi nợ)
     dealer_overdue_list = []
     total_system_overdue_debt = 0.0
 
-    confirmed_payments_map: Dict[int, float] = {}
     try:
-        from app.models.payment_collection import PaymentCollectionEntity
-        rows = (
-            db.query(
-                PaymentCollectionEntity.dealer_id,
-                func.sum(PaymentCollectionEntity.amount)
+        from app.services.debt_ledger_service import compute_debt_ledger_data
+        ledger_res = compute_debt_ledger_data(db=db)
+        for it in ledger_res.items:
+            if it.is_overdue and it.remaining_debt > 0:
+                overdue_amt = float(it.ageing.bucket_31_60 + it.ageing.bucket_61_90 + it.ageing.bucket_over_90)
+                effective_overdue = overdue_amt if overdue_amt > 0 else float(it.remaining_debt)
+                total_system_overdue_debt += effective_overdue
+                
+                overdue_days = max(1, it.oldest_debt_days)
+
+                dealer_overdue_list.append(OverdueDealerItem(
+                    dealer_id=it.dealer_id,
+                    dealer_code=it.dealer_code,
+                    dealer_name=it.dealer_name,
+                    phone=it.phone,
+                    region=it.region,
+                    assigned_sale_name=it.assigned_sale_name or "Chưa phân công",
+                    credit_limit=float(it.credit_limit or 50000000.0),
+                    current_debt=float(it.remaining_debt),
+                    total_overdue=float(effective_overdue),
+                    max_overdue_days=int(overdue_days),
+                    total_debt=float(it.remaining_debt),
+                    overdue_amount=float(effective_overdue),
+                    overdue_days=int(overdue_days),
+                ))
+    except Exception as ex:
+        print(f"Warning compute_debt_ledger_data for dashboard: {ex}")
+        confirmed_payments_map: Dict[int, float] = {}
+        try:
+            from app.models.payment_collection import PaymentCollectionEntity
+            rows = (
+                db.query(
+                    PaymentCollectionEntity.dealer_id,
+                    func.sum(PaymentCollectionEntity.amount)
+                )
+                .filter(PaymentCollectionEntity.status == "CONFIRMED")
+                .group_by(PaymentCollectionEntity.dealer_id)
+                .all()
             )
-            .filter(PaymentCollectionEntity.status == "CONFIRMED")
-            .group_by(PaymentCollectionEntity.dealer_id)
-            .all()
-        )
-        for did, total_amt in rows:
-            if did:
-                confirmed_payments_map[did] = float(total_amt or 0.0)
-    except Exception:
-        pass
+            for did, total_amt in rows:
+                if did:
+                    confirmed_payments_map[did] = float(total_amt or 0.0)
+        except Exception:
+            pass
 
-    for d_id, d in dealers_map.items():
-        d_code = getattr(d, "code", None) or (d.get("code") if isinstance(d, dict) else f"DL{d_id:03d}")
-        d_name = getattr(d, "name", None) or (d.get("name") if isinstance(d, dict) else f"Đại lý {d_id}")
-        d_phone = getattr(d, "phone", None) or (d.get("phone") if isinstance(d, dict) else None)
-        d_region = getattr(d, "region", None) or (d.get("region") if isinstance(d, dict) else None)
-        d_sale_id = getattr(d, "assigned_sale_id", None) or (d.get("assigned_sale_id") if isinstance(d, dict) else None)
-        d_limit = float(getattr(d, "credit_limit", 50000000.0) or (d.get("credit_limit", 50000000.0) if isinstance(d, dict) else 50000000.0))
-        allowed_days = int(getattr(d, "overdue_days_allowed", getattr(d, "max_debt_days", 30)) or 30)
+        for d_id, d in dealers_map.items():
+            d_code = getattr(d, "code", None) or (d.get("code") if isinstance(d, dict) else f"DL{d_id:03d}")
+            d_name = getattr(d, "name", None) or (d.get("name") if isinstance(d, dict) else f"Đại lý {d_id}")
+            d_phone = getattr(d, "phone", None) or (d.get("phone") if isinstance(d, dict) else None)
+            d_region = getattr(d, "region", None) or (d.get("region") if isinstance(d, dict) else None)
+            d_sale_id = getattr(d, "assigned_sale_id", None) or (d.get("assigned_sale_id") if isinstance(d, dict) else None)
+            d_limit = float(getattr(d, "credit_limit", 50000000.0) or (d.get("credit_limit", 50000000.0) if isinstance(d, dict) else 50000000.0))
+            allowed_days = int(getattr(d, "overdue_days_allowed", getattr(d, "max_debt_days", 30)) or 30)
 
-        sale_name = sales_map.get(d_sale_id, "Chưa phân công")
+            sale_name = sales_map.get(d_sale_id, "Chưa phân công")
 
-        raw_orders = [o for o in all_orders if o["dealer_id"] == d_id and o["status"] not in ("PAID", "CANCELLED", "REJECTED")]
-        dealer_orders = [
-            {"amount": o["total_amount"], "created_at": o["created_at"]}
-            for o in raw_orders
-        ]
-        dealer_orders.sort(key=lambda x: x["created_at"])
+            raw_orders = [o for o in all_orders if o["dealer_id"] == d_id and o["status"] not in ("PAID", "CANCELLED", "REJECTED")]
+            dealer_orders = [
+                {"amount": o["total_amount"], "created_at": o["created_at"]}
+                for o in raw_orders
+            ]
+            dealer_orders.sort(key=lambda x: x["created_at"])
 
-        rem_pay = confirmed_payments_map.get(d_id, 0.0)
-        for ord_it in dealer_orders:
-            if rem_pay > 0:
-                ded = min(ord_it["amount"], rem_pay)
-                ord_it["amount"] -= ded
-                rem_pay -= ded
+            rem_pay = confirmed_payments_map.get(d_id, 0.0)
+            for ord_it in dealer_orders:
+                if rem_pay > 0:
+                    ded = min(ord_it["amount"], rem_pay)
+                    ord_it["amount"] -= ded
+                    rem_pay -= ded
 
-        dealer_debt = 0.0
-        dealer_overdue = 0.0
-        max_overdue_days = 0
+            dealer_debt = 0.0
+            dealer_overdue = 0.0
+            max_overdue_days = 0
 
-        for ord_it in dealer_orders:
-            amt = ord_it["amount"]
-            if amt <= 0.0001:
-                continue
-            dealer_debt += amt
-            dt: datetime = ord_it["created_at"]
-            if not dt.tzinfo:
-                dt = dt.replace(tzinfo=timezone.utc)
-            days_old = max(0, (now - dt).days)
-            if days_old > allowed_days:
-                overdue_days = days_old - allowed_days
-                dealer_overdue += amt
-                if overdue_days > max_overdue_days:
-                    max_overdue_days = overdue_days
+            for ord_it in dealer_orders:
+                amt = ord_it["amount"]
+                if amt <= 0.0001:
+                    continue
+                dealer_debt += amt
+                dt: datetime = ord_it["created_at"]
+                if not dt.tzinfo:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                days_old = max(0, (now - dt).days)
+                if days_old > allowed_days:
+                    overdue_days = days_old - allowed_days
+                    dealer_overdue += amt
+                    if overdue_days > max_overdue_days:
+                        max_overdue_days = overdue_days
 
-        if dealer_overdue > 0:
-            total_system_overdue_debt += dealer_overdue
-            dealer_overdue_list.append(OverdueDealerItem(
-                dealer_id=d_id,
-                dealer_code=d_code,
-                dealer_name=d_name,
-                phone=d_phone,
-                region=d_region,
-                assigned_sale_name=sale_name,
-                credit_limit=d_limit,
-                current_debt=dealer_debt,
-                total_overdue=dealer_overdue,
-                max_overdue_days=max_overdue_days,
-            ))
+            if dealer_overdue > 0:
+                total_system_overdue_debt += dealer_overdue
+                dealer_overdue_list.append(OverdueDealerItem(
+                    dealer_id=d_id,
+                    dealer_code=d_code,
+                    dealer_name=d_name,
+                    phone=d_phone,
+                    region=d_region,
+                    assigned_sale_name=sale_name,
+                    credit_limit=d_limit,
+                    current_debt=dealer_debt,
+                    total_overdue=dealer_overdue,
+                    max_overdue_days=max_overdue_days,
+                    total_debt=dealer_debt,
+                    overdue_amount=dealer_overdue,
+                    overdue_days=max_overdue_days,
+                ))
 
     # Xếp theo số tiền quá hạn giảm dần (Top 5)
     dealer_overdue_list.sort(key=lambda x: (x.total_overdue, x.max_overdue_days), reverse=True)
@@ -358,6 +397,63 @@ def get_executive_metrics(
             low_stock_count = db.query(ProductEntity).filter(ProductEntity.stock <= func.coalesce(ProductEntity.min_stock, 10)).count()
         except Exception:
             low_stock_count = 0
+
+    # 4b. Đồng bộ Chỉ tiêu doanh số (KPI - /sales-targets)
+    monthly_sales_target = 0.0
+    sales_target_completion_pct = 0.0
+    cur_month_str = f"{now.year}-{now.month:02d}"
+    try:
+        from app.models.sales_target import SalesTargetEntity, SALES_TARGETS_DB
+        db_targets = db.query(SalesTargetEntity).filter(SalesTargetEntity.month_year == cur_month_str).all()
+        if db_targets:
+            sp_targets = [t for t in db_targets if getattr(t, 'target_type', '') == 'salesperson']
+            monthly_sales_target = sum(float(t.target_amount or 0.0) for t in (sp_targets if sp_targets else db_targets))
+        elif SALES_TARGETS_DB:
+            mem_targets = [t for t in SALES_TARGETS_DB.values() if t.get("month_year") == cur_month_str]
+            sp_mem = [t for t in mem_targets if t.get("target_type") == "salesperson"]
+            monthly_sales_target = sum(float(t.get("target_amount") or 0.0) for t in (sp_mem if sp_mem else mem_targets))
+        if monthly_sales_target > 0:
+            sales_target_completion_pct = round((revenue_this_month / monthly_sales_target) * 100, 1)
+    except Exception as ex:
+        print(f"Warning compute sales targets: {ex}")
+
+    # 4c. Đồng bộ Lô & Hạn sử dụng (Batches - /batches)
+    expiring_batches_count = 0
+    try:
+        from app.models.goods_receipt import ProductBatchEntity
+        expiry_limit = (now.replace(tzinfo=None) if now.tzinfo else now) + timedelta(days=60)
+        all_b = db.query(ProductBatchEntity).filter(ProductBatchEntity.quantity > 0, ProductBatchEntity.expiry_date.isnot(None)).all()
+        for b in all_b:
+            exp_date = b.expiry_date.replace(tzinfo=None) if getattr(b.expiry_date, "tzinfo", None) else b.expiry_date
+            if exp_date and exp_date <= expiry_limit:
+                expiring_batches_count += 1
+    except Exception as ex:
+        print(f"Warning compute expiring batches: {ex}")
+
+    # 4d. Đồng bộ Chuyến giao hàng & Vận chuyển (/delivery-trips)
+    active_delivery_trips_count = 0
+    try:
+        from app.models.entities import DeliveryTripEntity
+        active_delivery_trips_count = (
+            db.query(DeliveryTripEntity)
+            .filter(DeliveryTripEntity.status.in_(["ASSIGNED", "IN_PROGRESS", "PICKING"]))
+            .count()
+        )
+    except Exception as ex:
+        print(f"Warning compute active delivery trips: {ex}")
+
+    # 4e. Đồng bộ Dòng tiền thực thu trong tháng (/debt-payments, /payment-collections)
+    actual_cash_collected_month = 0.0
+    try:
+        from app.models.payment_collection import PaymentCollectionEntity
+        collected_res = (
+            db.query(func.sum(PaymentCollectionEntity.amount))
+            .filter(PaymentCollectionEntity.status == "CONFIRMED")
+            .scalar()
+        )
+        actual_cash_collected_month = float(collected_res or 0.0)
+    except Exception as ex:
+        print(f"Warning compute cash collected: {ex}")
 
     # 5. Định dạng dữ liệu biểu đồ
     daily_revenue_list: List[DailyRevenueItem] = []
@@ -392,6 +488,11 @@ def get_executive_metrics(
             pending_export_orders_count=pending_export_count,
             total_overdue_debt=total_system_overdue_debt,
             low_stock_skus_count=low_stock_count,
+            monthly_sales_target=monthly_sales_target,
+            sales_target_completion_pct=sales_target_completion_pct,
+            expiring_batches_count=expiring_batches_count,
+            active_delivery_trips_count=active_delivery_trips_count,
+            actual_cash_collected_month=actual_cash_collected_month,
         ),
         daily_revenue=daily_revenue_list,
         revenue_by_region=region_revenue_list,
