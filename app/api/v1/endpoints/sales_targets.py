@@ -130,6 +130,7 @@ def get_all_consolidated_orders(db: Session) -> List[Dict[str, Any]]:
                 orders_list.append({
                     "order_code": o.order_code,
                     "dealer_id": o.dealer_id,
+                    "delivery_point_id": getattr(o, "delivery_point_id", None),
                     "assigned_sale_id": o.assigned_sale_id,
                     "total_amount": float(o.total_amount or 0.0),
                     "status": (o.status or "PENDING").upper(),
@@ -153,6 +154,7 @@ def get_all_consolidated_orders(db: Session) -> List[Dict[str, Any]]:
             orders_list.append({
                 "order_code": code,
                 "dealer_id": o_dict.get("dealer_id"),
+                "delivery_point_id": o_dict.get("delivery_point_id"),
                 "assigned_sale_id": o_dict.get("assigned_sale_id"),
                 "total_amount": float(o_dict.get("total_amount") or 0.0),
                 "status": (o_dict.get("status") or "PENDING").upper(),
@@ -181,6 +183,81 @@ def get_dealer_region_map(db: Session) -> Dict[int, str]:
     return d_map
 
 
+def get_dealers_assigned_sales_map(db: Session) -> Dict[int, int]:
+    """Map dealer_id -> assigned_sale_id (nhân viên phụ trách đại lý)."""
+    s_map: Dict[int, int] = {}
+    try:
+        db_dealers = db.query(DealerEntity).all()
+        for d in db_dealers:
+            sale_id = getattr(d, "assigned_sale_id", None) or getattr(d, "assigned_salesperson_id", None)
+            if sale_id:
+                s_map[d.id] = sale_id
+    except Exception:
+        pass
+
+    for d_id, d_data in DEALERS_DB.items():
+        if d_id not in s_map:
+            sale_id = getattr(d_data, "assigned_sale_id", None) if not isinstance(d_data, dict) else (d_data.get("assigned_sale_id") or d_data.get("assigned_salesperson_id"))
+            if sale_id:
+                s_map[d_id] = sale_id
+
+    return s_map
+
+
+def get_delivery_point_region_map(db: Session) -> Dict[int, str]:
+    """Map delivery_point_id -> normalized region name from delivery point address."""
+    dp_map: Dict[int, str] = {}
+    try:
+        from app.models.entities import DealerDeliveryPointEntity
+        dps = db.query(DealerDeliveryPointEntity).filter(DealerDeliveryPointEntity.is_active == True).all()
+        for dp in dps:
+            addr = dp.address or ""
+            for r in ["Hà Nội", "Hải Phòng", "Đà Nẵng", "TP. HCM", "TP.HCM", "Cần Thơ", "Bình Dương", "Đồng Nai", "Nghệ An"]:
+                if r.lower() in addr.lower():
+                    dp_map[dp.id] = normalize_region_name(r)
+                    break
+    except Exception:
+        pass
+    return dp_map
+
+
+def get_month_return_orders(db: Session, month_year: str) -> List[Dict[str, Any]]:
+    """Tổng hợp đơn trả hàng hợp lệ phát sinh trong tháng để khấu trừ KPI."""
+    ret_list = []
+    try:
+        from app.models.return_order import ReturnOrderEntity
+        db_returns = db.query(ReturnOrderEntity).filter(ReturnOrderEntity.status != "CANCELLED").all()
+        for ro in db_returns:
+            ro_date = ro.confirmed_at or ro.created_at
+            dt_str = None
+            if isinstance(ro_date, datetime):
+                dt_str = ro_date.strftime("%Y-%m-%d")
+            elif isinstance(ro_date, str):
+                dt_str = ro_date[:10]
+
+            if dt_str and dt_str.startswith(month_year):
+                total_refund = 0.0
+                if hasattr(ro, "items") and ro.items:
+                    for it in ro.items:
+                        r_qty = float(getattr(it, "return_quantity", 0) or 0)
+                        r_uprice = float(getattr(it, "unit_price", 0.0) or 0.0)
+                        r_amount = float(getattr(it, "refund_amount", None) or (r_qty * r_uprice))
+                        total_refund += r_amount
+                elif hasattr(ro, "total_refund_amount") and ro.total_refund_amount:
+                    total_refund = float(ro.total_refund_amount)
+
+                ret_list.append({
+                    "return_code": ro.return_code,
+                    "order_code": ro.order_code,
+                    "dealer_id": ro.dealer_id,
+                    "refund_amount": total_refund,
+                    "date_str": dt_str,
+                })
+    except Exception as ex:
+        print(f"Warning query returns for sales targets: {ex}")
+    return ret_list
+
+
 def calculate_actual_revenue(
     target_type: str,
     employee_id: Optional[int],
@@ -188,9 +265,17 @@ def calculate_actual_revenue(
     month_year: str,
     orders: List[Dict[str, Any]],
     dealers_region_map: Dict[int, str],
+    dealers_sale_map: Optional[Dict[int, int]] = None,
+    dp_region_map: Optional[Dict[int, str]] = None,
+    returns: Optional[List[Dict[str, Any]]] = None,
 ) -> float:
-    """Tính doanh số thực tế trong tháng của nhân viên hoặc khu vực."""
+    """Tính doanh số thực tế thuần (Net Revenue) trong tháng của nhân viên hoặc khu vực."""
     total = 0.0
+    orders_by_code: Dict[str, Dict[str, Any]] = {}
+    dealers_sale_map = dealers_sale_map or {}
+    dp_region_map = dp_region_map or {}
+    returns = returns or []
+
     for o in orders:
         if o["status"] == "CANCELLED":
             continue
@@ -200,30 +285,64 @@ def calculate_actual_revenue(
         if not odate.startswith(month_year):
             continue
 
+        orders_by_code[o["order_code"]] = o
         amount = float(o.get("total_amount") or 0.0)
 
+        # 1. Nhân viên phụ trách: ưu tiên của đơn hàng, fallback sang nhân viên phụ trách đại lý
+        d_id = o.get("dealer_id")
+        assigned_sale = o.get("assigned_sale_id") or dealers_sale_map.get(d_id)
+
+        # 2. Khu vực: ưu tiên theo điểm giao hàng thực tế, fallback sang khu vực đăng ký đại lý
+        dp_id = o.get("delivery_point_id")
+        d_region = dp_region_map.get(dp_id) or dealers_region_map.get(d_id, "")
+
         if target_type == "salesperson":
-            if employee_id and o.get("assigned_sale_id") == employee_id:
+            if employee_id and assigned_sale == employee_id:
                 total += amount
         elif target_type == "region":
             if region:
                 target_reg = normalize_region_name(region).lower()
-                d_id = o.get("dealer_id")
-                d_region = dealers_region_map.get(d_id, "")
                 norm_d_reg = normalize_region_name(d_region).lower()
                 if norm_d_reg and (target_reg in norm_d_reg or norm_d_reg in target_reg):
                     total += amount
 
-    return total
+    # 3. Khấu trừ hàng trả lại & hoàn tiền (RMA / Returns)
+    for ro in returns:
+        r_amount = float(ro.get("refund_amount") or 0.0)
+        orig_order = orders_by_code.get(ro.get("order_code"))
+
+        assigned_sale = None
+        d_region = ""
+        if orig_order:
+            d_id = orig_order.get("dealer_id")
+            assigned_sale = orig_order.get("assigned_sale_id") or dealers_sale_map.get(d_id)
+            dp_id = orig_order.get("delivery_point_id")
+            d_region = dp_region_map.get(dp_id) or dealers_region_map.get(d_id, "")
+        else:
+            d_id = ro.get("dealer_id")
+            assigned_sale = dealers_sale_map.get(d_id)
+            d_region = dealers_region_map.get(d_id, "")
+
+        if target_type == "salesperson":
+            if employee_id and assigned_sale == employee_id:
+                total -= r_amount
+        elif target_type == "region":
+            if region:
+                target_reg = normalize_region_name(region).lower()
+                norm_d_reg = normalize_region_name(d_region).lower()
+                if norm_d_reg and (target_reg in norm_d_reg or norm_d_reg in target_reg):
+                    total -= r_amount
+
+    return max(0.0, total)
 
 
 def calculate_projected(actual: float, month_year: str) -> Optional[float]:
-    """Ước tính doanh số cuối tháng nếu đang ở tháng hiện tại."""
+    """Ước tính doanh số cuối tháng nếu đang ở tháng hiện tại theo ngày thực tế."""
     if month_year != CURRENT_MONTH_YEAR:
         return None
     try:
-        # Ngày hiện tại của hệ thống là 16
-        day_of_month = 16
+        now = datetime.now(timezone.utc)
+        day_of_month = now.day
         year, month = map(int, month_year.split("-"))
         days_in_month = calendar.monthrange(year, month)[1]
         if day_of_month > 0:
@@ -251,6 +370,9 @@ def get_sales_targets(
     target_month = month_year or CURRENT_MONTH_YEAR
     orders = get_all_consolidated_orders(db)
     dealers_map = get_dealer_region_map(db)
+    dealers_sale_map = get_dealers_assigned_sales_map(db)
+    dp_region_map = get_delivery_point_region_map(db)
+    returns = get_month_return_orders(db, target_month)
 
     # Đọc danh sách từ DB và SALES_TARGETS_DB
     all_targets: Dict[int, Dict[str, Any]] = {}
@@ -259,7 +381,9 @@ def get_sales_targets(
     try:
         db_items = db.query(SalesTargetEntity).filter(SalesTargetEntity.month_year == target_month).all()
         for item in db_items:
-            all_targets[item.id] = item.to_dict()
+            item_dict = item.to_dict()
+            all_targets[item.id] = item_dict
+            SALES_TARGETS_DB[item.id] = item_dict
     except Exception:
         pass
 
@@ -304,7 +428,7 @@ def get_sales_targets(
         tgt_amount = float(t_data.get("target_amount") or 0.0)
 
         # Tính toán thực tế
-        actual = calculate_actual_revenue(t_type, emp_id, reg, m_year, orders, dealers_map)
+        actual = calculate_actual_revenue(t_type, emp_id, reg, m_year, orders, dealers_map, dealers_sale_map, dp_region_map, returns)
         pct = round((actual / tgt_amount) * 100, 2) if tgt_amount > 0 else 0.0
         remaining = max(0.0, tgt_amount - actual)
         proj = calculate_projected(actual, m_year)
@@ -383,16 +507,22 @@ def get_sales_targets_metadata(
     """
     check_sales_target_access(current_user)
 
-    # 1. Danh sách nhân viên (sales, sales_manager, admin) từ bảng users
+    # 1. Danh sách nhân viên (chỉ lấy sales, sales_manager, bỏ qua admin) từ bảng users
     salespersons = []
     try:
         users = db.query(UserEntity).filter(UserEntity.is_active == True).all()
         for u in users:
+            # Loại bỏ tài khoản admin
+            if (u.username or "").lower() == "admin" or (u.role or "").lower() == "admin":
+                continue
+
             roles = set(json.loads(u.roles_json) if u.roles_json else [])
             if u.role:
                 roles.add(u.role)
-            if roles & {"sales", "sales_manager", "admin"}:
-                role_label = "Nhân viên kinh doanh" if "sales" in roles else ("Quản lý kinh doanh" if "sales_manager" in roles else "Admin")
+            
+            # Chỉ lấy tài khoản có role kinh doanh và không phải admin
+            if (roles & {"sales", "sales_manager"}) and "admin" not in roles:
+                role_label = "Nhân viên kinh doanh" if "sales" in roles else "Quản lý kinh doanh"
                 salespersons.append({
                     "id": u.id,
                     "username": u.username,
@@ -407,7 +537,6 @@ def get_sales_targets_metadata(
         salespersons = [
             {"id": 3, "username": "sales_user", "full_name": "Trần Bán Hàng", "role": "sales", "role_label": "Nhân viên kinh doanh"},
             {"id": 2, "username": "sales_manager", "full_name": "Trưởng Phòng Kinh Doanh", "role": "sales_manager", "role_label": "Quản lý kinh doanh"},
-            {"id": 1, "username": "admin", "full_name": "Đào Ngọc Hiệp", "role": "admin", "role_label": "Admin"},
         ]
 
     # 2. Danh sách khu vực duy nhất đồng bộ trực tiếp từ danh bạ đại lý (dealers)
@@ -444,6 +573,9 @@ def get_my_sales_progress(
 
     orders = get_all_consolidated_orders(db)
     dealers_map = get_dealer_region_map(db)
+    dealers_sale_map = get_dealers_assigned_sales_map(db)
+    dp_region_map = get_delivery_point_region_map(db)
+    returns = get_month_return_orders(db, CURRENT_MONTH_YEAR)
 
     # Tìm chỉ tiêu tháng này của user
     my_target = None
@@ -473,9 +605,15 @@ def get_my_sales_progress(
                 break
 
     target_amt = float(my_target.get("target_amount") or 0.0) if my_target else 50000000.0
-    actual = calculate_actual_revenue("salesperson", current_user.id, None, CURRENT_MONTH_YEAR, orders, dealers_map)
+    actual = calculate_actual_revenue("salesperson", current_user.id, None, CURRENT_MONTH_YEAR, orders, dealers_map, dealers_sale_map, dp_region_map, returns)
     pct = round((actual / target_amt) * 100, 2) if target_amt > 0 else 0.0
     proj = calculate_projected(actual, CURRENT_MONTH_YEAR)
+
+    now = datetime.now(timezone.utc)
+    day_of_month = now.day
+    year, month = map(int, CURRENT_MONTH_YEAR.split("-"))
+    days_in_month = calendar.monthrange(year, month)[1]
+    days_left = max(0, days_in_month - day_of_month)
 
     return {
         "employee_id": current_user.id,
@@ -487,7 +625,7 @@ def get_my_sales_progress(
         "remaining_amount": max(0.0, target_amt - actual),
         "projected_amount": proj,
         "is_locked": False,
-        "days_left": 15,
+        "days_left": days_left,
     }
 
 
@@ -512,9 +650,32 @@ def create_sales_target(
     if payload.target_type == "salesperson":
         if not payload.employee_id:
             raise HTTPException(status_code=400, detail="Vui lòng chọn nhân viên kinh doanh.")
+
+        # Kiểm tra không cho phép đặt chỉ tiêu cho tài khoản Admin
+        target_u = db.query(UserEntity).filter(UserEntity.id == payload.employee_id).first()
+        is_target_admin = False
+        if target_u:
+            u_roles = set(json.loads(target_u.roles_json) if target_u.roles_json else [])
+            if (target_u.username or "").lower() == "admin" or (target_u.role or "").lower() == "admin" or "admin" in u_roles:
+                is_target_admin = True
+        elif payload.employee_id == 1:
+            is_target_admin = True
+        elif payload.employee_id in USERS_DB:
+            u_obj = USERS_DB[payload.employee_id]
+            u_r = getattr(u_obj, "role", None) if not isinstance(u_obj, dict) else u_obj.get("role")
+            u_uname = getattr(u_obj, "username", None) if not isinstance(u_obj, dict) else u_obj.get("username")
+            if (u_uname or "").lower() == "admin" or (u_r or "").lower() == "admin":
+                is_target_admin = True
+
+        if is_target_admin:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Không thể thiết lập chỉ tiêu doanh số cho tài khoản Admin."
+            )
+
         if not emp_name:
             # Tra cứu tên nhân viên
-            u = db.query(UserEntity).filter(UserEntity.id == payload.employee_id).first()
+            u = target_u
             if u:
                 emp_name = u.full_name or u.username
             elif payload.employee_id in USERS_DB:
@@ -527,7 +688,23 @@ def create_sales_target(
             raise HTTPException(status_code=400, detail="Vui lòng nhập tên khu vực.")
         payload.region = normalize_region_name(payload.region.strip())
 
-    # Kiểm tra trùng lặp
+    # Kiểm tra trùng lặp trong DB
+    try:
+        db_dups = db.query(SalesTargetEntity).filter(
+            SalesTargetEntity.month_year == payload.month_year,
+            SalesTargetEntity.target_type == payload.target_type
+        ).all()
+        for t in db_dups:
+            if payload.target_type == "salesperson" and t.employee_id == payload.employee_id:
+                raise HTTPException(status_code=400, detail=f"Chỉ tiêu tháng {payload.month_year} cho nhân viên này đã tồn tại.")
+            if payload.target_type == "region" and (t.region or "").strip().lower() == payload.region.strip().lower():
+                raise HTTPException(status_code=400, detail=f"Chỉ tiêu tháng {payload.month_year} cho khu vực này đã tồn tại.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    # Kiểm tra trùng lặp trong SALES_TARGETS_DB
     for t in SALES_TARGETS_DB.values():
         if t.get("month_year") == payload.month_year and t.get("target_type") == payload.target_type:
             if payload.target_type == "salesperson" and t.get("employee_id") == payload.employee_id:
@@ -535,9 +712,32 @@ def create_sales_target(
             if payload.target_type == "region" and (t.get("region") or "").strip().lower() == payload.region.strip().lower():
                 raise HTTPException(status_code=400, detail=f"Chỉ tiêu tháng {payload.month_year} cho khu vực này đã tồn tại.")
 
-    new_id = max(SALES_TARGETS_DB.keys(), default=0) + 1
     now_iso = datetime.now(timezone.utc).isoformat()
     is_locked = payload.month_year < CURRENT_MONTH_YEAR
+
+    # Lưu vào DB nếu có kết nối
+    new_id = None
+    try:
+        db_entity = SalesTargetEntity(
+            target_type=payload.target_type,
+            employee_id=payload.employee_id,
+            employee_name=emp_name,
+            region=payload.region,
+            month_year=payload.month_year,
+            target_amount=float(payload.target_amount),
+            is_locked=is_locked,
+            note=payload.note,
+            created_by=current_user.username,
+        )
+        db.add(db_entity)
+        db.commit()
+        db.refresh(db_entity)
+        new_id = db_entity.id
+    except Exception as ex:
+        print(f"Warning saving sales target to db: {ex}")
+
+    if not new_id:
+        new_id = max(SALES_TARGETS_DB.keys(), default=0) + 1
 
     new_target_dict = {
         "id": new_id,
@@ -559,27 +759,12 @@ def create_sales_target(
     SALES_TARGETS_DB[new_id] = new_target_dict
     save_sales_targets_db(SALES_TARGETS_DB)
 
-    # Lưu vào DB nếu có kết nối
-    try:
-        db_entity = SalesTargetEntity(
-            target_type=payload.target_type,
-            employee_id=payload.employee_id,
-            employee_name=emp_name,
-            region=payload.region,
-            month_year=payload.month_year,
-            target_amount=float(payload.target_amount),
-            is_locked=is_locked,
-            note=payload.note,
-            created_by=current_user.username,
-        )
-        db.add(db_entity)
-        db.commit()
-    except Exception as ex:
-        print(f"Warning saving sales target to db: {ex}")
-
     orders = get_all_consolidated_orders(db)
     dealers_map = get_dealer_region_map(db)
-    actual = calculate_actual_revenue(payload.target_type, payload.employee_id, payload.region, payload.month_year, orders, dealers_map)
+    dealers_sale_map = get_dealers_assigned_sales_map(db)
+    dp_region_map = get_delivery_point_region_map(db)
+    returns = get_month_return_orders(db, payload.month_year)
+    actual = calculate_actual_revenue(payload.target_type, payload.employee_id, payload.region, payload.month_year, orders, dealers_map, dealers_sale_map, dp_region_map, returns)
     pct = round((actual / payload.target_amount) * 100, 2) if payload.target_amount > 0 else 0.0
 
     return SalesTargetItem(
@@ -622,7 +807,17 @@ def update_sales_target(
             detail="Chỉ Quản lý kinh doanh hoặc Admin mới có quyền điều chỉnh chỉ tiêu."
         )
 
-    target_data = SALES_TARGETS_DB.get(target_id)
+    db_entity = None
+    try:
+        db_entity = db.query(SalesTargetEntity).filter(SalesTargetEntity.id == target_id).first()
+    except Exception as ex:
+        print(f"Warning querying sales target in db: {ex}")
+
+    if db_entity:
+        target_data = db_entity.to_dict()
+    else:
+        target_data = SALES_TARGETS_DB.get(target_id)
+
     if not target_data:
         raise HTTPException(status_code=404, detail="Không tìm thấy chỉ tiêu cần điều chỉnh.")
 
@@ -662,25 +857,30 @@ def update_sales_target(
     save_sales_targets_db(SALES_TARGETS_DB)
 
     # Cập nhật DB
-    try:
-        db_entity = db.query(SalesTargetEntity).filter(SalesTargetEntity.id == target_id).first()
-        if db_entity:
+    if db_entity:
+        try:
             db_entity.target_amount = new_amount
             db_entity.note = target_data.get("note")
             db_entity.audit_logs = target_data.get("audit_logs")
             db.commit()
-    except Exception as ex:
-        print(f"Warning update db sales target: {ex}")
+        except Exception as ex:
+            print(f"Warning update db sales target: {ex}")
 
     orders = get_all_consolidated_orders(db)
     dealers_map = get_dealer_region_map(db)
+    dealers_sale_map = get_dealers_assigned_sales_map(db)
+    dp_region_map = get_delivery_point_region_map(db)
+    returns = get_month_return_orders(db, m_year)
     actual = calculate_actual_revenue(
         target_data.get("target_type", "salesperson"),
         target_data.get("employee_id"),
         target_data.get("region"),
         m_year,
         orders,
-        dealers_map
+        dealers_map,
+        dealers_sale_map,
+        dp_region_map,
+        returns
     )
     pct = round((actual / new_amount) * 100, 2) if new_amount > 0 else 0.0
 
@@ -732,7 +932,17 @@ def delete_sales_target(
             detail="Chỉ Quản lý kinh doanh hoặc Admin mới có quyền xóa chỉ tiêu."
         )
 
-    target_data = SALES_TARGETS_DB.get(target_id)
+    db_entity = None
+    try:
+        db_entity = db.query(SalesTargetEntity).filter(SalesTargetEntity.id == target_id).first()
+    except Exception as ex:
+        print(f"Warning querying sales target in db: {ex}")
+
+    if db_entity:
+        target_data = db_entity.to_dict()
+    else:
+        target_data = SALES_TARGETS_DB.get(target_id)
+
     if not target_data:
         raise HTTPException(status_code=404, detail="Không tìm thấy chỉ tiêu cần xóa.")
 
@@ -745,15 +955,15 @@ def delete_sales_target(
             detail="Không thể xóa chỉ tiêu của kỳ đã qua bị khoá. Vui lòng giữ nguyên lịch sử."
         )
 
-    del SALES_TARGETS_DB[target_id]
-    save_sales_targets_db(SALES_TARGETS_DB)
+    if target_id in SALES_TARGETS_DB:
+        del SALES_TARGETS_DB[target_id]
+        save_sales_targets_db(SALES_TARGETS_DB)
 
-    try:
-        db_entity = db.query(SalesTargetEntity).filter(SalesTargetEntity.id == target_id).first()
-        if db_entity:
+    if db_entity:
+        try:
             db.delete(db_entity)
             db.commit()
-    except Exception:
-        pass
+        except Exception as ex:
+            print(f"Warning deleting sales target from db: {ex}")
 
     return {"message": "Đã xóa chỉ tiêu thành công.", "id": target_id}

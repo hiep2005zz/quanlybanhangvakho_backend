@@ -94,10 +94,18 @@ def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> UserRespo
     email_val = getattr(user, "email", None)
     user_id = getattr(user, "id", None)
     
+    full_name_val = user.full_name
+    if user.username.lower() == "admin":
+        full_name_val = "Đào Ngọc Hiệp"
+        if not email_val or email_val == "admin@congty.vn":
+            email_val = "daongochiep645@gmail.com"
+        if not phone_val or phone_val == "0523456789":
+            phone_val = "0998887766"
+
     return UserResponse(
         id=user_id,
         username=user.username,
-        full_name=user.full_name,
+        full_name=full_name_val,
         email=email_val,
         phone=phone_val,
         phone_number=phone_val,

@@ -104,7 +104,7 @@ def test_dealer_search_and_filters():
         "status": "Đang hoạt động"
     }
     create_res = client.post("/api/v1/dealers", json=new_dealer_payload, headers=headers)
-    assert create_res.status_code == 201
+    assert create_res.status_code == 201, f"Tạo đại lý thất bại: {create_res.status_code} {create_res.text}"
     created = create_res.json()
     assert created["code"] == unique_code
     assert created["name"] == "Đại Lý Thử Nghiệm Hà Đông"
@@ -193,11 +193,14 @@ def test_dealer_search_and_filters():
         save_dealers_db()
 
     from app.core.database import SessionLocal
-    from app.models.entities import DealerEntity
+    from app.models.entities import DealerEntity, DealerDeliveryPointEntity
     cleanup_db = SessionLocal()
     try:
+        cleanup_db.query(DealerDeliveryPointEntity).filter(DealerDeliveryPointEntity.dealer_id == created["id"]).delete(synchronize_session=False)
         cleanup_db.query(DealerEntity).filter(DealerEntity.id == created["id"]).delete(synchronize_session=False)
         cleanup_db.commit()
+    except Exception:
+        cleanup_db.rollback()
     finally:
         cleanup_db.close()
 
@@ -750,10 +753,35 @@ def test_bulk_assign_dealers_and_audit_history():
             if did in DEALERS_DB:
                 del DEALERS_DB[did]
         from app.core.database import SessionLocal
-        from app.models.entities import DealerEntity
+        from app.models.entities import DealerEntity, DealerDeliveryPointEntity
         cleanup_db = SessionLocal()
         try:
+            cleanup_db.query(DealerDeliveryPointEntity).filter(DealerDeliveryPointEntity.dealer_id.in_([d1["id"], d2["id"]])).delete(synchronize_session=False)
             cleanup_db.query(DealerEntity).filter(DealerEntity.id.in_([d1["id"], d2["id"]])).delete(synchronize_session=False)
             cleanup_db.commit()
+        except Exception:
+            cleanup_db.rollback()
         finally:
             cleanup_db.close()
+
+
+def test_dealer_debt_statement_excel_export():
+    import zipfile
+    import io
+
+    token = get_token("ketoan")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 1. Gọi endpoint xuất file Excel sổ chi tiết công nợ đại lý 1
+    resp = client.get("/api/v1/dealers/1/debt-statement/export-excel", headers=headers)
+    assert resp.status_code == 200, f"Xuất excel thất bại: {resp.text}"
+    assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in resp.headers.get("content-type", "")
+    assert "So_Chi_Tiet_Cong_No_" in resp.headers.get("content-disposition", "")
+    assert len(resp.content) > 1000
+
+    # 2. Kiểm tra tính toàn vẹn của tệp .xlsx và không có thẻ XML fitToHeight="0" gây lỗi Excel repair
+    excel_buf = io.BytesIO(resp.content)
+    zf = zipfile.ZipFile(excel_buf)
+    sheet1_xml = zf.read("xl/worksheets/sheet1.xml").decode("utf-8")
+    assert 'fitToHeight="0"' not in sheet1_xml, "Thẻ fitToHeight='0' gây lỗi hỏng tệp khi mở trên Microsoft Excel!"
+    assert 'orientation="landscape"' in sheet1_xml

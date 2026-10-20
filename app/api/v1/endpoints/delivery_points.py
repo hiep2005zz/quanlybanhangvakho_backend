@@ -1,6 +1,6 @@
 import re
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -48,28 +48,6 @@ def _sync_to_master(db: Session, label: str, address: str, receiver_name: str = 
     db.flush()
 
 
-@dealers_router.get("")
-def list_dealers(user=Depends(get_current_user)):
-    """Lấy danh sách các đại lý mà người dùng hiện tại có quyền truy cập."""
-    roles = getattr(user, "roles", None) or [getattr(user, "role", None)]
-    roles = {str(r).lower() for r in roles if r}
-    if roles & {"admin", "sales_manager", "sales"}:
-        dealers = list(DEALERS_DB.values())
-    else:
-        dealers = list(DEALERS_DB.values())
-
-    return [
-        {
-            "id": d.id,
-            "code": d.code,
-            "name": d.name,
-            "phone": d.phone,
-            "email": d.email,
-            "address": d.address,
-            "assigned_sale_id": d.assigned_sale_id,
-        }
-        for d in dealers
-    ]
 
 
 @dealers_router.get("/all-delivery-points")
@@ -105,7 +83,10 @@ def list_all_delivery_points(db: Session = Depends(get_db), user=Depends(get_cur
 
 @dealers_router.post("/master-delivery-points", status_code=201)
 def create_master_point(body: DeliveryPointCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    """Tạo điểm giao hàng mới vào danh mục điểm giao chung."""
+    """Tạo điểm giao hàng mới vào danh mục điểm giao chung (Chỉ Admin và Sales Manager)."""
+    roles = {str(r).lower() for r in (getattr(user, "roles", None) or [getattr(user, "role", None)]) if r}
+    if not (roles & {"admin", "sales_manager"}):
+        raise HTTPException(403, "Chỉ Quản trị viên hoặc Quản lý kinh doanh mới có quyền tạo điểm giao trong danh mục chung.")
     phone_clean = (body.receiver_phone or "").strip()
     if not phone_clean:
         raise HTTPException(400, "Vui lòng nhập số điện thoại người nhận.")
@@ -132,7 +113,10 @@ def create_master_point(body: DeliveryPointCreate, db: Session = Depends(get_db)
 
 @dealers_router.put("/master-delivery-points/{point_id}")
 def update_master_point(point_id: int, body: DeliveryPointUpdate, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    """Cập nhật thông tin điểm giao trong danh mục điểm giao chung."""
+    """Cập nhật thông tin điểm giao trong danh mục điểm giao chung (Chỉ Admin và Sales Manager)."""
+    roles = {str(r).lower() for r in (getattr(user, "roles", None) or [getattr(user, "role", None)]) if r}
+    if not (roles & {"admin", "sales_manager"}):
+        raise HTTPException(403, "Chỉ Quản trị viên hoặc Quản lý kinh doanh mới có quyền cập nhật điểm giao trong danh mục chung.")
     item = db.get(MasterDeliveryPointEntity, point_id)
     if not item or not item.is_active:
         raise HTTPException(404, "Không tìm thấy điểm giao trong danh mục")
@@ -181,7 +165,10 @@ def update_master_point(point_id: int, body: DeliveryPointUpdate, db: Session = 
 
 @dealers_router.delete("/master-delivery-points/{point_id}", status_code=204)
 def delete_master_point(point_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    """Xóa điểm giao khỏi danh mục điểm giao chung."""
+    """Xóa điểm giao khỏi danh mục điểm giao chung (Chỉ Admin và Sales Manager)."""
+    roles = {str(r).lower() for r in (getattr(user, "roles", None) or [getattr(user, "role", None)]) if r}
+    if not (roles & {"admin", "sales_manager"}):
+        raise HTTPException(403, "Chỉ Quản trị viên hoặc Quản lý kinh doanh mới có quyền xóa điểm giao trong danh mục chung.")
     item = db.get(MasterDeliveryPointEntity, point_id)
     if not item or not item.is_active:
         raise HTTPException(404, "Không tìm thấy điểm giao trong danh mục")
@@ -196,13 +183,21 @@ def _check_access(db: Session, dealer_id: int, user):
 
     roles = getattr(user, "roles", None) or [getattr(user, "role", None)]
     roles = {str(r).lower() for r in roles if r}
-    # Cho phép các vai trò quản trị, nhân viên và đại lý (khách hàng) truy cập điểm giao
-    if roles & {"admin", "sales_manager", "sales", "accountant", "warehouse", "warehouse_manager", "customer", "agent"}:
+    is_customer = "customer" in roles and not any(r in ["admin", "sales_manager", "sales", "accountant"] for r in roles)
+    if is_customer:
+        is_own = (user.id == dealer_id) or \
+                 (getattr(user, "username", "").lower() == getattr(dealer, "code", "").lower()) or \
+                 (getattr(user, "email", None) and getattr(dealer, "email", None) and user.email.lower() == dealer.email.lower()) or \
+                 (getattr(user, "phone", None) and getattr(dealer, "phone", None) and user.phone == dealer.phone)
+        if not is_own:
+            raise HTTPException(403, "Tài khoản đại lý chỉ được phép quản lý điểm giao hàng của chính mình.")
         return dealer
-    # Mặc định cho phép nếu là chính đại lý đang đăng nhập
-    if user.id == dealer_id or getattr(user, "username", "").lower() in [getattr(dealer, "code", "").lower(), "muahang"]:
+
+    # Cho phép các vai trò quản trị và nhân viên nội bộ
+    if roles & {"admin", "sales_manager", "sales", "accountant", "warehouse", "warehouse_manager"}:
         return dealer
-    return dealer
+
+    raise HTTPException(403, "Bạn không có quyền truy cập thông tin điểm giao hàng của đại lý này.")
 
 
 def _clear_default(db: Session, dealer_id: int):
@@ -372,6 +367,12 @@ def delete_point(dealer_id: int, point_id: int,
     if not point or point.dealer_id != dealer_id or not point.is_active:
         raise HTTPException(404, "Không tìm thấy điểm giao")
 
+    if point.is_default:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Không thể xóa điểm giao hàng mặc định của đại lý. Vui lòng thiết lập một điểm giao khác làm mặc định trước khi xóa."
+        )
+
     used = any(o.get("delivery_point_id") == point_id for o in ORDERS_DB.values())
     if not used:
         from app.models.entities import OrderEntity
@@ -379,27 +380,7 @@ def delete_point(dealer_id: int, point_id: int,
         if has_db_order:
             used = True
 
-    was_default = point.is_default
     point.is_active = False      # Luôn vô hiệu hóa is_active = False để lưu vết xóa, tránh tự động sinh lại
     point.is_default = False
     db.flush()
-
-    if was_default:                  # xóa điểm mặc định -> đẩy điểm khác lên thay
-        nxt = db.scalars(select(DealerDeliveryPointEntity).where(
-            DealerDeliveryPointEntity.dealer_id == dealer_id,
-            DealerDeliveryPointEntity.is_active == True)  # noqa: E712
-            .order_by(DealerDeliveryPointEntity.id)).first()
-        if nxt:
-            nxt.is_default = True
-            dealer = DEALERS_DB.get(dealer_id)
-            if dealer and nxt.address:
-                dealer.address = nxt.address
-                if nxt.receiver_phone:
-                    dealer.phone = nxt.receiver_phone
-                try:
-                    from app.models.dealer import save_dealers_db
-                    save_dealers_db()
-                except Exception:
-                    pass
-
     db.commit()

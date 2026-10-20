@@ -102,12 +102,8 @@ def atomic_db_transaction(db: Session):
 
 
 def _lock_database_for_concurrency(db: Session):
-    """Khóa cấp DB cho SQLite nếu chạy SQLite (BEGIN IMMEDIATE)."""
-    if db.bind and db.bind.dialect.name == "sqlite":
-        try:
-            db.connection().execute(text("BEGIN IMMEDIATE"))
-        except Exception:
-            pass
+    """SQL Server sử dụng row-level locking (UPDLOCK) trên từng bản ghi."""
+    pass
 
 
 # ==========================================

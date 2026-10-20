@@ -39,3 +39,10 @@ from app.models.debt_payment import (
     PaymentAllocationEntity,
     PaymentAdjustmentEntity,
 )
+from app.models.debt_adjustment import (
+    DebtAdjustmentEntity,
+    DebtAdjustmentItemEntity,
+    ReturnOrderEntity,
+    ReturnOrderItemEntity,
+)
+from app.models.receipt_voucher import ReceiptVoucherEntity

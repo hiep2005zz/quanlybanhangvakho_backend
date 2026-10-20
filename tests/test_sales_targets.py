@@ -62,13 +62,30 @@ def test_sales_targets_manager_and_admin_full_access():
 def test_create_and_delete_sales_target():
     # 5. Tạo mới chỉ tiêu cho nhân viên và xóa
     mgr_token = get_token("sales_manager")
-    create_payload = {
+    # Thử tạo chỉ tiêu cho Admin -> Bắt buộc từ chối 400
+    admin_payload = {
         "target_type": "salesperson",
         "employee_id": 1,
         "employee_name": "Đào Ngọc Hiệp",
         "month_year": "2026-11",
         "target_amount": 75000000.0,
-        "note": "Chỉ tiêu tháng 11 thử nghiệm"
+    }
+    admin_resp = client.post(
+        "/api/v1/sales-targets",
+        json=admin_payload,
+        headers={"Authorization": f"Bearer {mgr_token}"}
+    )
+    assert admin_resp.status_code == 400
+    assert "Admin" in admin_resp.json()["detail"]
+
+    # Tạo mới chỉ tiêu cho nhân viên kinh doanh hợp lệ và xóa
+    create_payload = {
+        "target_type": "salesperson",
+        "employee_id": 3,
+        "employee_name": "Trần Bán Hàng",
+        "month_year": "2026-12",
+        "target_amount": 75000000.0,
+        "note": "Chỉ tiêu tháng 12 thử nghiệm"
     }
     resp = client.post(
         "/api/v1/sales-targets",
@@ -93,10 +110,25 @@ def test_update_locked_target_enforces_reason_and_audit():
     # 6. Kỳ đã qua (2026-09) bị khóa: Sửa không có lý do -> 400; có lý do -> thành công và lưu audit log
     mgr_token = get_token("sales_manager")
     
-    # Target id 2 là tháng 2026-09 (đã qua kỳ chốt sổ)
+    # Tạo chỉ tiêu cho tháng đã qua (2026-09) bị khóa
+    past_target = client.post(
+        "/api/v1/sales-targets",
+        json={
+            "target_type": "salesperson",
+            "employee_id": 3,
+            "employee_name": "Trần Bán Hàng",
+            "month_year": "2026-09",
+            "target_amount": 50000000.0,
+            "note": "Chỉ tiêu tháng 9 đã qua kỳ chốt sổ"
+        },
+        headers={"Authorization": f"Bearer {mgr_token}"}
+    )
+    assert past_target.status_code == 200, past_target.text
+    locked_id = past_target.json()["id"]
+
     # Lần 1: Cố tình không gửi lý do
     fail_resp = client.put(
-        "/api/v1/sales-targets/2",
+        f"/api/v1/sales-targets/{locked_id}",
         json={"target_amount": 55000000.0, "reason": ""},
         headers={"Authorization": f"Bearer {mgr_token}"}
     )
@@ -105,7 +137,7 @@ def test_update_locked_target_enforces_reason_and_audit():
 
     # Lần 2: Gửi kèm lý do hợp lệ
     success_resp = client.put(
-        "/api/v1/sales-targets/2",
+        f"/api/v1/sales-targets/{locked_id}",
         json={
             "target_amount": 55000000.0,
             "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
