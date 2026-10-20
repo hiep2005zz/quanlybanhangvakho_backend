@@ -249,6 +249,20 @@ def _ensure_legacy_columns(bind=engine):
         if updated_inspector.has_table("return_orders"):
             cols = {c["name"] for c in updated_inspector.get_columns("return_orders")}
             with bind.begin() as connection:
+                if bind.dialect.name == "mssql":
+                    try:
+                        if "code" in cols:
+                            connection.execute(text("ALTER TABLE return_orders ALTER COLUMN code VARCHAR(50) NULL"))
+                        if "created_by" in cols:
+                            connection.execute(text("ALTER TABLE return_orders ALTER COLUMN created_by NVARCHAR(100) NULL"))
+                        if "total_items" in cols:
+                            connection.execute(text("ALTER TABLE return_orders ALTER COLUMN total_items INT NULL"))
+                        if "total_quantity" in cols:
+                            connection.execute(text("ALTER TABLE return_orders ALTER COLUMN total_quantity INT NULL"))
+                        if "total_refund_amount" in cols:
+                            connection.execute(text("ALTER TABLE return_orders ALTER COLUMN total_refund_amount FLOAT NULL"))
+                    except Exception:
+                        pass
                 if "code" in cols and "return_code" in cols:
                     connection.execute(text("UPDATE return_orders SET return_code = code WHERE (return_code IS NULL OR return_code = '') AND code IS NOT NULL"))
                     connection.execute(text("UPDATE return_orders SET code = return_code WHERE (code IS NULL OR code = '') AND return_code IS NOT NULL"))
