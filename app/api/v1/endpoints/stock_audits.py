@@ -130,16 +130,19 @@ def _format_audit_response(audit: StockAuditEntity, db: Session = None) -> Stock
     if db and audit.warehouse_id:
         p_ids = [it.get("product_id") for it in items_raw if it.get("product_id")]
         if p_ids:
-            records = (
-                db.query(WarehouseStockEntity)
-                .filter(
-                    WarehouseStockEntity.warehouse_id == audit.warehouse_id,
-                    WarehouseStockEntity.product_id.in_(p_ids),
+            chunk_size = 900
+            for i in range(0, len(p_ids), chunk_size):
+                chunk = p_ids[i:i + chunk_size]
+                records = (
+                    db.query(WarehouseStockEntity)
+                    .filter(
+                        WarehouseStockEntity.warehouse_id == audit.warehouse_id,
+                        WarehouseStockEntity.product_id.in_(chunk),
+                    )
+                    .all()
                 )
-                .all()
-            )
-            for r in records:
-                current_stocks_map[r.product_id] = r.actual_stock or 0
+                for r in records:
+                    current_stocks_map[r.product_id] = r.actual_stock or 0
 
     items_formatted = [
         _format_audit_item_response(it, current_stocks_map.get(it.get("product_id")))
