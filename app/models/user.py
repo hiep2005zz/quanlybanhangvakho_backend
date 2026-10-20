@@ -175,7 +175,12 @@ def save_users_db():
             # Xóa các user trong DB nếu đã bị xóa khỏi USERS_DB
             existing_ids = [u.id for u in USERS_DB.values()]
             if existing_ids:
-                db.query(UserEntity).filter(~UserEntity.id.in_(existing_ids)).delete(synchronize_session=False)
+                to_delete = db.query(UserEntity.id).filter(~UserEntity.id.in_(existing_ids)).all()
+                if to_delete:
+                    del_ids = [t[0] for t in to_delete]
+                    from app.models.entities import AuditLogEntity
+                    db.query(AuditLogEntity).filter(AuditLogEntity.user_id.in_(del_ids)).update({AuditLogEntity.user_id: None}, synchronize_session=False)
+                    db.query(UserEntity).filter(UserEntity.id.in_(del_ids)).delete(synchronize_session=False)
 
             db.commit()
         except Exception as err:

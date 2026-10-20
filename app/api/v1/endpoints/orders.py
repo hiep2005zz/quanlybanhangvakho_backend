@@ -520,28 +520,42 @@ def validate_dealer_overdue_debt(
 
 def _get_customer_dealer(current_user: UserResponse):
     customer_dealer = DEALERS_DB.get(current_user.id)
-    if not customer_dealer:
+    if not customer_dealer and current_user.email:
         for d in DEALERS_DB.values():
-            if (d.email and current_user.email and d.email.lower() == current_user.email.lower()) or \
-               (d.phone and current_user.phone and d.phone == current_user.phone) or \
-               (d.code and current_user.username and d.code.lower() == current_user.username.lower()) or \
-               (d.name and current_user.full_name and d.name.lower() == current_user.full_name.lower()):
+            if d.email and d.email.strip().lower() == current_user.email.strip().lower():
+                customer_dealer = d
+                break
+    if not customer_dealer and current_user.username:
+        for d in DEALERS_DB.values():
+            if d.code and d.code.strip().lower() == current_user.username.strip().lower():
+                customer_dealer = d
+                break
+    if not customer_dealer and current_user.full_name:
+        for d in DEALERS_DB.values():
+            if d.name and d.name.strip().lower() == current_user.full_name.strip().lower():
+                customer_dealer = d
+                break
+    if not customer_dealer and current_user.phone:
+        for d in DEALERS_DB.values():
+            if d.phone and d.phone.strip() == current_user.phone.strip():
                 customer_dealer = d
                 break
     if not customer_dealer:
         try:
             from app.core.database import SessionLocal
             from app.models.entities import DealerEntity
-            from sqlalchemy import or_
             with SessionLocal() as db_session:
-                conds = [DealerEntity.id == current_user.id]
+                db_d = None
                 if current_user.email:
-                    conds.append(DealerEntity.email == current_user.email)
-                if current_user.phone:
-                    conds.append(DealerEntity.phone == current_user.phone)
-                if current_user.username:
-                    conds.append(DealerEntity.code == current_user.username)
-                db_d = db_session.query(DealerEntity).filter(or_(*conds)).first()
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.email == current_user.email.strip()).first()
+                if not db_d and current_user.username:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.code == current_user.username.strip()).first()
+                if not db_d and current_user.full_name:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.name == current_user.full_name.strip()).first()
+                if not db_d and current_user.phone:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.phone == current_user.phone.strip()).first()
+                if not db_d:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.id == current_user.id).first()
                 if db_d:
                     from app.models.dealer import Dealer
                     customer_dealer = Dealer(
@@ -4212,6 +4226,7 @@ def cleanup_expired_reservations_endpoint(
     """
     from app.services.inventory_reservation_service import release_expired_reservations
     results = release_expired_reservations(db)
+    db.commit()
     return {
         "status": "success",
         "expired_orders_count": len(results),

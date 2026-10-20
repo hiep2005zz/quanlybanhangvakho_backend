@@ -89,9 +89,10 @@ def test_confirm_delivery_success_with_pod_and_sprint7_invoice_trigger(client, w
     db = SessionLocal()
     now = datetime.now(timezone.utc)
     try:
-        # Tạo Order mẫu
+        ts = int(now.timestamp())
+        order_code = f"DH-TEST-POD-{ts}"
         order = OrderEntity(
-            order_code="DH-TEST-POD-001",
+            order_code=order_code,
             dealer_id=1,
             dealer_name="Đại Lý Test POD",
             created_by="sale_admin",
@@ -207,7 +208,7 @@ def test_record_delivery_failure_with_reason_and_awaiting_return(client, warehou
         stop = DeliveryStopEntity(
             trip_id=trip.id,
             stop_order=1,
-            order_code="DH-TEST-FAIL-001",
+            order_code=f"DH-TEST-FAIL-{now.strftime('%Y%m%d%H%M%S')}",
             dealer_name="Đại Lý Thất Bại Test",
             delivery_point="500 Quang Trung, Hà Đông, Hà Nội",
             amount=12000000.0,

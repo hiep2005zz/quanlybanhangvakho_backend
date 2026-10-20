@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timedelta
 from fastapi.testclient import TestClient
 from app.main import app
 from app.models.user import USERS_DB, UserInDB, DEFAULT_HASH, save_users_db
@@ -166,7 +167,7 @@ def test_customer_sales_entry_and_assigned_sales_approval():
     payload = {
         "dealer_id": 1,
         "delivery_point": "Chi nhánh giao hàng số 1",
-        "desired_delivery_date": "2026-10-20",
+        "desired_delivery_date": (datetime.now().date() + timedelta(days=2)).isoformat(),
         "note": "Đơn test duyệt bởi sales phụ trách",
         "items": [
             {

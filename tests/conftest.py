@@ -5,6 +5,9 @@ from pathlib import Path
 # CẤU HÌNH KIỂM THỬ:
 # Bắt buộc sử dụng Microsoft SQL Server
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+from dotenv import load_dotenv
+load_dotenv(BACKEND_DIR / ".env")
+
 DEFAULT_MSSQL_URL = "mssql+pyodbc://localhost/quanlybanhang?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes"
 os.environ["DATABASE_URL"] = os.getenv("TEST_DATABASE_URL", os.getenv("DATABASE_URL", DEFAULT_MSSQL_URL))
 
@@ -106,12 +109,14 @@ def reset_test_state():
             OrderDispatchEntity,
         )
         try:
+            from app.models.invoice import InvoiceDeliveryNoteEntity
             db.query(DeliveryTripDispatchEntity).delete(synchronize_session=False)
             db.query(DeliveryTripStopEntity).delete(synchronize_session=False)
             db.query(DeliveryStopEntity).delete(synchronize_session=False)
             db.query(DeliveryTripEntity).filter(
                 (DeliveryTripEntity.trip_code.like(r"TRIP-%", escape="\\")) | (DeliveryTripEntity.trip_code.like(r"TEST-%", escape="\\"))
             ).delete(synchronize_session=False)
+            db.query(InvoiceDeliveryNoteEntity).delete(synchronize_session=False)
             db.query(OrderDispatchEntity).filter(
                 (OrderDispatchEntity.dispatch_code.like(r"PXK-%", escape="\\")) | (OrderDispatchEntity.dispatch_code.like(r"TEST-%", escape="\\"))
             ).delete(synchronize_session=False)
@@ -129,13 +134,17 @@ def reset_test_state():
         ).all()
         if test_prods:
             test_prod_ids = [p.id for p in test_prods]
-            db.query(ReturnOrderItemEntity).filter(ReturnOrderItemEntity.product_id.in_(test_prod_ids)).delete(synchronize_session=False)
-            db.query(OrderItemEntity).filter(OrderItemEntity.product_id.in_(test_prod_ids)).delete(synchronize_session=False)
-            db.query(InventoryLedgerEntity).filter(InventoryLedgerEntity.product_id.in_(test_prod_ids)).delete(synchronize_session=False)
-            db.query(ProductBatchEntity).filter(ProductBatchEntity.product_id.in_(test_prod_ids)).delete(synchronize_session=False)
-            db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id.in_(test_prod_ids)).delete(synchronize_session=False)
-            db.query(InventoryTransactionEntity).filter(InventoryTransactionEntity.product_id.in_(test_prod_ids)).delete(synchronize_session=False)
-            db.query(ProductEntity).filter(ProductEntity.id.in_(test_prod_ids)).delete(synchronize_session=False)
+            chunk_size = 1000
+            for i in range(0, len(test_prod_ids), chunk_size):
+                chunk = test_prod_ids[i:i + chunk_size]
+                db.query(ReturnOrderItemEntity).filter(ReturnOrderItemEntity.product_id.in_(chunk)).delete(synchronize_session=False)
+                db.query(OrderItemEntity).filter(OrderItemEntity.product_id.in_(chunk)).delete(synchronize_session=False)
+                db.query(InventoryLedgerEntity).filter(InventoryLedgerEntity.product_id.in_(chunk)).delete(synchronize_session=False)
+                db.query(ProductBatchEntity).filter(ProductBatchEntity.product_id.in_(chunk)).delete(synchronize_session=False)
+                db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id.in_(chunk)).delete(synchronize_session=False)
+                db.query(InventoryTransactionEntity).filter(InventoryTransactionEntity.product_id.in_(chunk)).delete(synchronize_session=False)
+                db.query(ProductEntity).filter(ProductEntity.id.in_(chunk)).delete(synchronize_session=False)
+            db.commit()
         from app.api.v1.endpoints.products import RAW_PRODUCTS
         RAW_PRODUCTS[:] = [p for p in RAW_PRODUCTS if not p.get("code", "").startswith("SP_") and p.get("code") != "SSOJSH"]
 

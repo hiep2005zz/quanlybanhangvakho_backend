@@ -159,8 +159,8 @@ class ReturnOrderItemEntity(Base):
     quantity = Column(Integer, default=1, nullable=False)
     refund_amount = Column(Float, default=0.0, nullable=False)
     line_total = Column(Float, default=0.0, nullable=False)
-    return_reason = Column(Unicode(255), nullable=True)
-    reason = Column(Unicode(255), nullable=True)
+    return_reason = Column(Unicode(255), default="", nullable=True)
+    reason = Column(Unicode(255), default="", nullable=True)
     is_damaged = Column(Boolean, default=False, nullable=False)
 
     target_warehouse_id = Column(Integer, nullable=True)
@@ -174,6 +174,9 @@ class ReturnOrderItemEntity(Base):
     created_at = Column(DateTime, default=get_utc_now)
 
     def __init__(self, **kwargs):
+        val_reason = kwargs.get("return_reason") or kwargs.get("reason") or ""
+        kwargs["return_reason"] = val_reason
+        kwargs["reason"] = val_reason
         if "return_quantity" in kwargs and "quantity" not in kwargs:
             kwargs["quantity"] = kwargs["return_quantity"]
         elif "quantity" in kwargs and "return_quantity" not in kwargs:
@@ -182,13 +185,26 @@ class ReturnOrderItemEntity(Base):
             kwargs["line_total"] = kwargs["refund_amount"]
         elif "line_total" in kwargs and "refund_amount" not in kwargs:
             kwargs["refund_amount"] = kwargs["line_total"]
-        if "return_reason" in kwargs and "reason" not in kwargs:
-            kwargs["reason"] = kwargs["return_reason"]
-        elif "reason" in kwargs and "return_reason" not in kwargs:
-            kwargs["return_reason"] = kwargs["reason"]
         if "original_quantity" not in kwargs:
             kwargs["original_quantity"] = kwargs.get("return_quantity", kwargs.get("quantity", 0))
         super().__init__(**kwargs)
 
     # Relationships
     return_order = relationship("ReturnOrderEntity", back_populates="items")
+
+
+@event.listens_for(ReturnOrderItemEntity, "before_insert")
+@event.listens_for(ReturnOrderItemEntity, "before_update")
+def sync_return_order_item_fields(mapper, connection, target):
+    val_reason = target.return_reason or target.reason or ""
+    target.return_reason = val_reason
+    target.reason = val_reason
+    if target.quantity is not None and (target.return_quantity is None or target.return_quantity == 0):
+        target.return_quantity = target.quantity
+    elif target.return_quantity is not None and (target.quantity is None or target.quantity == 0):
+        target.quantity = target.return_quantity
+    if target.line_total is not None and (target.refund_amount is None or target.refund_amount == 0.0):
+        target.refund_amount = target.line_total
+    elif target.refund_amount is not None and (target.line_total is None or target.line_total == 0.0):
+        target.line_total = target.refund_amount
+
