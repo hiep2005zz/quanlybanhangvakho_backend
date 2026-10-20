@@ -27,9 +27,16 @@ class Settings:
     MAIL_PORT: int = int(os.getenv("MAIL_PORT", "587"))
     MAIL_SERVER: str = os.getenv("MAIL_SERVER", "smtp.gmail.com")
     MAIL_TLS: bool = os.getenv("MAIL_TLS", "True").lower() in ("true", "1", "yes")
-    DATABASE_URL: str = os.getenv(
+    _raw_db_url: str = os.getenv(
         "DATABASE_URL",
         "mssql+pyodbc://localhost/quanlybanhang?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes"
     )
+    if not _raw_db_url or not _raw_db_url.strip().startswith("mssql"):
+        raise ValueError(
+            f"LỖI CẤU HÌNH DATABASE: Toàn bộ hệ thống bắt buộc phải chạy Microsoft SQL Server (mssql+pyodbc). "
+            f"Cơ sở dữ liệu được cấu hình '{_raw_db_url}' không được hỗ trợ. "
+            f"Vui lòng cấu hình DATABASE_URL trỏ đến SQL Server."
+        )
+    DATABASE_URL: str = _raw_db_url
 
 settings = Settings()

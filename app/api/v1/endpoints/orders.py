@@ -1509,7 +1509,7 @@ def get_orders(
             detail="Chức năng chỉ dành cho Quản trị viên, Quản lý kinh doanh, Nhân viên kinh doanh và Đại lý."
         )
 
-    # 1. AC: Tự động chạy migration an toàn bổ sung cột SQLite (tránh lỗi 500)
+    # 1. AC: Đảm bảo tương thích schema các cột cần thiết
     try:
         _ensure_legacy_columns(db.get_bind())
     except Exception:

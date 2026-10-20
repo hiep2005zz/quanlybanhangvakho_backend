@@ -211,24 +211,8 @@ def _ensure_legacy_columns(bind=engine):
             "reason": ("NVARCHAR(255) NULL", "NVARCHAR(255) NULL"),
         },
     }
-    dialect_name = bind.dialect.name
-    if dialect_name == "sqlite":
-        try:
-            ins = inspect(bind)
-            if ins.has_table("return_orders"):
-                cols = {c["name"] for c in ins.get_columns("return_orders")}
-                if "return_code" not in cols:
-                    with bind.begin() as connection:
-                        row_count = connection.execute(text("SELECT count(*) FROM return_orders")).scalar() or 0
-                        if row_count == 0:
-                            connection.execute(text("DROP TABLE IF EXISTS return_order_items"))
-                            connection.execute(text("DROP TABLE IF EXISTS return_orders"))
-                            ReturnOrderEntity.__table__.create(connection)
-                            ReturnOrderItemEntity.__table__.create(connection)
-        except Exception:
-            pass
-
     inspector = inspect(bind)
+    dialect_name = bind.dialect.name
     for table_name, columns_to_add in additions.items():
         if not inspector.has_table(table_name):
             continue
@@ -236,8 +220,8 @@ def _ensure_legacy_columns(bind=engine):
         for column_name, (sqlite_definition, sql_server_definition) in columns_to_add.items():
             if column_name in existing_columns:
                 continue
-            definition = sqlite_definition if dialect_name == "sqlite" else sql_server_definition
-            add_column = "ADD COLUMN" if dialect_name == "sqlite" else "ADD"
+            definition = sql_server_definition if dialect_name == "mssql" else sqlite_definition
+            add_column = "ADD" if dialect_name == "mssql" else "ADD COLUMN"
             with bind.begin() as connection:
                 connection.execute(
                     text(f"ALTER TABLE {table_name} {add_column} {column_name} {definition}")
@@ -270,16 +254,20 @@ def _ensure_legacy_columns(bind=engine):
 
 
 def init_db():
-    print(f"Initializing database tables using {engine.dialect.name}...")
+    if engine.dialect.name != "mssql":
+        raise RuntimeError(
+            f"LỖI KHỞI TẠO CSDL: Toàn bộ hệ thống bắt buộc phải chạy Microsoft SQL Server (mssql). "
+            f"Dialect hiện tại '{engine.dialect.name}' không được phép!"
+        )
+
+    print(f"Initializing database tables using Microsoft SQL Server ({engine.dialect.name})...")
     # Tạo các bảng nếu chưa có
     Base.metadata.create_all(bind=engine)
     _ensure_dealer_credit_limit_column(engine)
     _ensure_legacy_columns(engine)
-    print("Tables created successfully.")
-    # Tự động migrate thêm cột nếu bảng đã tồn tại từ trước
-    is_sqlite = engine.url.drivername.startswith("sqlite")
+    # Tự động migrate thêm cột và chỉ mục cho SQL Server
     with engine.connect() as conn:
-        if is_sqlite:
+        if False:
             # Kiểm tra và thêm cột cho SQLite
             user_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(users)")).fetchall()]
             if "avatar_url" not in user_cols:

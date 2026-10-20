@@ -2,16 +2,11 @@ import os
 import shutil
 from pathlib import Path
 
-# CÔ LẬP TOÀN DIỆN MÔI TRƯỜNG TEST:
-# Pytest chạy trên database test riêng biệt, TUYỆT ĐỐI KHÔNG can thiệp quanlybanhang.db của môi trường Web dev
+# CẤU HÌNH KIỂM THỬ:
+# Bắt buộc sử dụng Microsoft SQL Server
 BACKEND_DIR = Path(__file__).resolve().parent.parent
-TEST_DB_PATH = BACKEND_DIR / "test_quanlybanhang.db"
-DEV_DB_PATH = BACKEND_DIR / "quanlybanhang.db"
-
-if DEV_DB_PATH.exists():
-    shutil.copyfile(DEV_DB_PATH, TEST_DB_PATH)
-
-os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH.as_posix()}"
+DEFAULT_MSSQL_URL = "mssql+pyodbc://localhost/quanlybanhang?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes"
+os.environ["DATABASE_URL"] = os.getenv("TEST_DATABASE_URL", os.getenv("DATABASE_URL", DEFAULT_MSSQL_URL))
 
 import json
 import pytest
@@ -32,13 +27,13 @@ if DEV_USERS_JSON.exists():
 app.models.user.DB_FILE_PATH = str(TEST_USERS_JSON)
 
 from sqlalchemy import create_engine
-from sqlalchemy.pool import NullPool
 import app.core.database
 app.core.database.engine = create_engine(
     app.core.database.settings.DATABASE_URL,
     echo=False,
-    poolclass=NullPool,
-    connect_args={"check_same_thread": False} if "sqlite" in str(app.core.database.settings.DATABASE_URL) else {}
+    fast_executemany=True,
+    pool_pre_ping=True,
+    connect_args={"timeout": 30}
 )
 app.core.database.SessionLocal.configure(bind=app.core.database.engine)
 
