@@ -391,15 +391,15 @@ def get_sales_multidimensional_report(
             return reg, None, reg, "Địa bàn kinh doanh"
 
         elif dimension == "dealer":
-            d_name = order.get("dealer_name") or d_info.get("name") or f"Đại lý #{d_id}"
-            d_code = d_info.get("code") or f"DL{d_id:03d}"
-            return str(d_id), d_code, d_name, d_info.get("region") or ""
+            d_name = order.get("dealer_name") or d_info.get("name") or (f"Đại lý #{d_id}" if d_id else "Đại lý vãng lai")
+            d_code = d_info.get("code") or (f"DL{d_id:03d}" if isinstance(d_id, int) else (str(d_id) if d_id else "N/A"))
+            return str(d_id or "0"), d_code, d_name, d_info.get("region") or ""
 
         elif dimension == "sku":
-            p_code = p_info.get("code") or f"SP{p_id:03d}"
-            p_name = item.get("product_name") or p_info.get("name") or f"Sản phẩm #{p_id}"
+            p_code = p_info.get("code") or (f"SP{p_id:03d}" if isinstance(p_id, int) else (str(p_id) if p_id else "SP-KHAC"))
+            p_name = item.get("product_name") or p_info.get("name") or (f"Sản phẩm #{p_id}" if p_id else "Sản phẩm khác")
             cat_name = p_info.get("category") or "Khác"
-            return str(p_id), p_code, p_name, cat_name
+            return str(p_id or "0"), p_code, p_name, cat_name
 
         else:  # category
             cat_name = p_info.get("category") or "Khác"

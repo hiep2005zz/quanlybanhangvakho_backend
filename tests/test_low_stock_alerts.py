@@ -12,7 +12,8 @@ def get_token(username: str = "admin", password: str = "123") -> str:
 
 
 def test_get_warehouses_list():
-    resp = client.get("/api/v1/inventory/warehouses")
+    token = get_token("admin")
+    resp = client.get("/api/v1/inventory/warehouses", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     warehouses = resp.json()
     assert len(warehouses) >= 3

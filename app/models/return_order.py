@@ -6,12 +6,10 @@ from sqlalchemy import (
     Integer,
     String,
     Float,
-    Boolean,
     DateTime,
     Unicode,
     UnicodeText,
     ForeignKey,
-    Index,
 )
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -23,81 +21,134 @@ def get_utc_now():
 
 class ReturnOrderEntity(Base):
     """
-    Bảng Phiếu trả hàng từ đại lý (Sales Return / RMA)
-    Quy trình 2 bước:
-      - Nhân viên kinh doanh tạo phiếu -> status = 'PENDING_WAREHOUSE' (Chưa cộng tồn kho)
-      - Quản lý kho / Thủ kho xác nhận nhận hàng -> status = 'COMPLETED' (Cộng tồn kho)
-      - Có thể hủy phiếu khi còn ở PENDING_WAREHOUSE -> status = 'CANCELLED'
+    Bảng return_orders: Phiếu trả hàng / đổi trả (Sales Return).
+    Ghi nhận hàng trả lại từ khách hàng / đại lý đã xác nhận nhập hoàn kho.
     """
     __tablename__ = "return_orders"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    code = Column(String(50), unique=True, index=True, nullable=False)  # Ví dụ: RMA00001
-    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False, index=True)
+    return_code = Column(String(50), unique=True, index=True, nullable=False)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=True, index=True)
     order_code = Column(String(50), nullable=False, index=True)
+    original_invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True, index=True)
+    original_invoice_code = Column(String(50), nullable=False, index=True)
     dealer_id = Column(Integer, ForeignKey("dealers.id"), nullable=False, index=True)
     dealer_name = Column(Unicode(255), nullable=False)
-    status = Column(String(30), default="PENDING_WAREHOUSE", nullable=False, index=True)
-    # Trạng thái: PENDING_WAREHOUSE (Chờ kho xác nhận) | COMPLETED (Đã nhập kho) | CANCELLED (Đã hủy)
-
-    total_items = Column(Integer, default=0, nullable=False)
-    total_quantity = Column(Integer, default=0, nullable=False)
-    total_refund_amount = Column(Float, default=0.0, nullable=False)
-    note = Column(UnicodeText, nullable=True)
-
+    warehouse_id = Column(String(50), nullable=True)
+    warehouse_name = Column(Unicode(255), nullable=True)
+    status = Column(String(30), default="CONFIRMED", nullable=False)  # PENDING_WAREHOUSE | CONFIRMED | COMPLETED | CANCELLED
+    reason = Column(Unicode(500), nullable=False)
+    note = Column(Unicode(500), nullable=True)
+    subtotal_amount = Column(Float, default=0.0, nullable=False)
+    tax_amount = Column(Float, default=0.0, nullable=False)
+    total_amount = Column(Float, default=0.0, nullable=False)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_by = Column(Unicode(100), nullable=False)
-    created_at = Column(DateTime, default=get_utc_now, index=True)
-
+    created_by_name = Column(Unicode(150), nullable=True)
     confirmed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    confirmed_by = Column(Unicode(100), nullable=True)
-    confirmed_at = Column(DateTime, nullable=True)
+    confirmed_by_name = Column(Unicode(150), nullable=True)
+    confirmed_at = Column(DateTime, default=get_utc_now)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 
-    cancelled_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    cancelled_by = Column(Unicode(100), nullable=True)
-    cancelled_at = Column(DateTime, nullable=True)
-    cancel_reason = Column(UnicodeText, nullable=True)
+    # Backward compatibility properties
+    @property
+    def code(self):
+        return self.return_code
+
+    @code.setter
+    def code(self, val):
+        self.return_code = val
+
+    @property
+    def created_by(self):
+        return self.created_by_name
+
+    @created_by.setter
+    def created_by(self, val):
+        self.created_by_name = val
+
+    @property
+    def confirmed_by(self):
+        return self.confirmed_by_name
+
+    @confirmed_by.setter
+    def confirmed_by(self, val):
+        self.confirmed_by_name = val
+
+    @property
+    def total_refund_amount(self):
+        return self.total_amount
+
+    @total_refund_amount.setter
+    def total_refund_amount(self, val):
+        self.total_amount = val
+
+    @property
+    def total_items(self):
+        return len(self.items) if self.items else 0
+
+    @property
+    def total_quantity(self):
+        return sum(it.quantity for it in self.items) if self.items else 0
 
     # Relationships
-    order = relationship("OrderEntity", foreign_keys=[order_id])
-    dealer = relationship("DealerEntity", foreign_keys=[dealer_id])
-    items = relationship("ReturnOrderItemEntity", back_populates="return_order", cascade="all, delete-orphan")
+    items = relationship(
+        "ReturnOrderItemEntity",
+        back_populates="return_order",
+        cascade="all, delete-orphan",
+        order_by="ReturnOrderItemEntity.id",
+    )
 
 
 class ReturnOrderItemEntity(Base):
     """
-    Bảng Chi tiết dòng hàng trong Phiếu trả hàng.
+    Bảng return_order_items: Chi tiết mặt hàng trong Phiếu trả hàng.
     """
     __tablename__ = "return_order_items"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     return_order_id = Column(Integer, ForeignKey("return_orders.id"), nullable=False, index=True)
-    order_item_id = Column(Integer, nullable=True, index=True)
-    product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
-    product_code = Column(String(50), nullable=True, index=True)
+    product_id = Column(Integer, nullable=False, index=True)
+    product_code = Column(String(50), nullable=False)
     product_name = Column(Unicode(255), nullable=False)
-    unit_name = Column(Unicode(50), default="Cái", nullable=False)
+    unit_name = Column(Unicode(50), nullable=True)
+    quantity = Column(Integer, default=1, nullable=False)
     unit_price = Column(Float, default=0.0, nullable=False)
-    original_quantity = Column(Integer, default=0, nullable=False)  # Số lượng xuất trên đơn gốc
-    return_quantity = Column(Integer, nullable=False, default=1)     # Số lượng trả lần này
-    refund_amount = Column(Float, default=0.0, nullable=False)       # = return_quantity * unit_price
-    return_reason = Column(Unicode(255), nullable=False)             # Lý do trả hàng (bắt buộc)
-    is_damaged = Column(Boolean, default=False, nullable=False)      # Cờ phân loại hàng lỗi/hư hỏng
+    line_total = Column(Float, default=0.0, nullable=False)
+    reason = Column(Unicode(255), nullable=True)
 
-    # Điều hướng kho nhận lại:
-    target_warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True)
-    target_warehouse_code = Column(String(50), nullable=True)
-    target_warehouse_name = Column(Unicode(255), nullable=True)
+    # Backward compatibility properties
+    @property
+    def return_quantity(self):
+        return self.quantity
 
-    # Quản lý Lô nếu SKU có quản lý lô:
-    batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True)
-    batch_number = Column(String(100), nullable=True)
+    @return_quantity.setter
+    def return_quantity(self, val):
+        self.quantity = val
 
-    note = Column(UnicodeText, nullable=True)
-    created_at = Column(DateTime, default=get_utc_now)
+    @property
+    def original_quantity(self):
+        return self.quantity
+
+    @original_quantity.setter
+    def original_quantity(self, val):
+        pass
+
+    @property
+    def refund_amount(self):
+        return self.line_total
+
+    @refund_amount.setter
+    def refund_amount(self, val):
+        self.line_total = val
+
+    @property
+    def return_reason(self):
+        return self.reason
+
+    @return_reason.setter
+    def return_reason(self, val):
+        self.reason = val
 
     # Relationships
     return_order = relationship("ReturnOrderEntity", back_populates="items")
-    product = relationship("ProductEntity", foreign_keys=[product_id])
-    target_warehouse = relationship("WarehouseEntity", foreign_keys=[target_warehouse_id])
-    batch = relationship("ProductBatchEntity", foreign_keys=[batch_id])
