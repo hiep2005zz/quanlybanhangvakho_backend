@@ -191,9 +191,44 @@ def _ensure_legacy_columns(bind=engine):
             "return_status": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
             "items_detail": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
         },
+        "return_orders": {
+            "return_code": ("VARCHAR(50) NULL", "VARCHAR(50) NULL"),
+            "original_invoice_id": ("INTEGER NULL", "INT NULL"),
+            "original_invoice_code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
+            "warehouse_id": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
+            "warehouse_name": ("VARCHAR(255) NULL", "NVARCHAR(255) NULL"),
+            "reason": ("NVARCHAR(500) DEFAULT ''", "NVARCHAR(500) DEFAULT ''"),
+            "subtotal_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "tax_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "total_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "created_by_name": ("NVARCHAR(150) NULL", "NVARCHAR(150) NULL"),
+            "confirmed_by_name": ("NVARCHAR(150) NULL", "NVARCHAR(150) NULL"),
+            "updated_at": ("DATETIME NULL", "DATETIME NULL"),
+        },
+        "return_order_items": {
+            "quantity": ("INTEGER DEFAULT 1", "INT DEFAULT 1"),
+            "line_total": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "reason": ("NVARCHAR(255) NULL", "NVARCHAR(255) NULL"),
+        },
     }
-    inspector = inspect(bind)
     dialect_name = bind.dialect.name
+    if dialect_name == "sqlite":
+        try:
+            ins = inspect(bind)
+            if ins.has_table("return_orders"):
+                cols = {c["name"] for c in ins.get_columns("return_orders")}
+                if "return_code" not in cols:
+                    with bind.begin() as connection:
+                        row_count = connection.execute(text("SELECT count(*) FROM return_orders")).scalar() or 0
+                        if row_count == 0:
+                            connection.execute(text("DROP TABLE IF EXISTS return_order_items"))
+                            connection.execute(text("DROP TABLE IF EXISTS return_orders"))
+                            ReturnOrderEntity.__table__.create(connection)
+                            ReturnOrderItemEntity.__table__.create(connection)
+        except Exception:
+            pass
+
+    inspector = inspect(bind)
     for table_name, columns_to_add in additions.items():
         if not inspector.has_table(table_name):
             continue
@@ -207,6 +242,31 @@ def _ensure_legacy_columns(bind=engine):
                 connection.execute(
                     text(f"ALTER TABLE {table_name} {add_column} {column_name} {definition}")
                 )
+
+    try:
+        updated_inspector = inspect(bind)
+        if updated_inspector.has_table("return_orders"):
+            cols = {c["name"] for c in updated_inspector.get_columns("return_orders")}
+            with bind.begin() as connection:
+                if "code" in cols and "return_code" in cols:
+                    connection.execute(text("UPDATE return_orders SET return_code = code WHERE (return_code IS NULL OR return_code = '') AND code IS NOT NULL"))
+                if "total_refund_amount" in cols and "total_amount" in cols:
+                    connection.execute(text("UPDATE return_orders SET total_amount = total_refund_amount WHERE (total_amount IS NULL OR total_amount = 0.0) AND total_refund_amount IS NOT NULL"))
+                if "created_by" in cols and "created_by_name" in cols:
+                    connection.execute(text("UPDATE return_orders SET created_by_name = created_by WHERE (created_by_name IS NULL OR created_by_name = '') AND created_by IS NOT NULL"))
+                if "confirmed_by" in cols and "confirmed_by_name" in cols:
+                    connection.execute(text("UPDATE return_orders SET confirmed_by_name = confirmed_by WHERE (confirmed_by_name IS NULL OR confirmed_by_name = '') AND confirmed_by IS NOT NULL"))
+        if updated_inspector.has_table("return_order_items"):
+            cols = {c["name"] for c in updated_inspector.get_columns("return_order_items")}
+            with bind.begin() as connection:
+                if "return_quantity" in cols and "quantity" in cols:
+                    connection.execute(text("UPDATE return_order_items SET quantity = return_quantity WHERE (quantity IS NULL OR quantity = 0) AND return_quantity IS NOT NULL"))
+                if "refund_amount" in cols and "line_total" in cols:
+                    connection.execute(text("UPDATE return_order_items SET line_total = refund_amount WHERE (line_total IS NULL OR line_total = 0.0) AND refund_amount IS NOT NULL"))
+                if "return_reason" in cols and "reason" in cols:
+                    connection.execute(text("UPDATE return_order_items SET reason = return_reason WHERE (reason IS NULL OR reason = '') AND return_reason IS NOT NULL"))
+    except Exception:
+        pass
 
 
 def init_db():
@@ -1003,7 +1063,6 @@ def init_db():
         if db.query(OrderEntity).count() == 0:
             print("Seeding initial orders...")
             from app.api.v1.endpoints.orders import ORDERS_DB
-            from datetime import datetime, timezone
             for o_id, mem_order in ORDERS_DB.items():
                 ocode = mem_order.get("order_code")
                 dt_str = mem_order.get("created_at")
@@ -1072,7 +1131,6 @@ def init_db():
                         )
 
                     if ret_items:
-                        from datetime import datetime, timezone
                         now_utc = datetime.now(timezone.utc)
                         today_s = now_utc.strftime("%Y%m%d")
                         ret_order = ReturnOrderEntity(

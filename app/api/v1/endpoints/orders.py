@@ -3457,15 +3457,15 @@ def approve_order(
             detail=f"Không tìm thấy đơn hàng có mã hoặc ID {order_code}."
         )
 
-    assigned_id = target.get("assigned_sale_id") if target else (db_order.assigned_sale_id if db_order else None)
-    dealer_id = target.get("dealer_id") if target else (db_order.dealer_id if db_order else None)
+    assigned_id = (target.get("assigned_sale_id") if target else None) or (db_order.assigned_sale_id if db_order else None)
+    dealer_id = (target.get("dealer_id") if target else None) or (db_order.dealer_id if db_order else None)
     if not assigned_id and dealer_id:
         d_ent = DEALERS_DB.get(dealer_id) or (db.get(DealerEntity, dealer_id) if db else None)
         if d_ent:
             assigned_id = getattr(d_ent, "assigned_sale_id", None)
 
-    created_by = target.get("created_by") if target else (db_order.created_by if db_order else "")
-    approval_reason = (target.get("approval_reason") if target else (db_order.approval_reason if db_order else "")) or ""
+    created_by = (target.get("created_by") if target else None) or (db_order.created_by if db_order else "")
+    approval_reason = ((target.get("approval_reason") if target else None) or (db_order.approval_reason if db_order else "")) or ""
     is_floor_price_order = "giá sàn" in approval_reason.lower()
     is_discount_order = "chiết khấu" in approval_reason.lower()
 
@@ -3678,7 +3678,7 @@ def reject_order(
         if d_ent:
             assigned_id = getattr(d_ent, "assigned_sale_id", None)
 
-    created_by = target.get("created_by") or ""
+    created_by = (target.get("created_by") if target else None) or (db_order.created_by if db_order else "")
 
     if is_sales and not is_admin_or_sm:
         created_by_str = (created_by or "").lower()
@@ -3831,8 +3831,8 @@ def return_order_for_edit(
         }
         ORDERS_DB[db_order.id] = target
 
-    assigned_id = target.get("assigned_sale_id")
-    created_by = target.get("created_by") or ""
+    assigned_id = (target.get("assigned_sale_id") if target else None) or (db_order.assigned_sale_id if db_order else None)
+    created_by = (target.get("created_by") if target else None) or (db_order.created_by if db_order else "")
 
     if is_sales and not is_admin_or_sm:
         creator_user = USERS_DB.get(created_by.lower()) if created_by else None
