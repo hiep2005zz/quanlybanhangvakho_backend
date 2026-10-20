@@ -385,3 +385,32 @@ def sync_dealer_for_user(user_id: int, full_name: str, email: Optional[str], pho
     else:
         # Nếu không còn là customer nữa thì không cần thiết xóa, nhưng có thể khóa lại nếu muốn
         pass
+
+
+RECEIPT_VOUCHERS_JSON_PATH = os.path.join(
+    os.path.dirname(__file__), "receipt_vouchers_data.json"
+)
+RECEIPT_VOUCHERS_DB: Dict[str, Dict[str, Any]] = {}
+
+
+def save_receipt_vouchers_db():
+    try:
+        with open(RECEIPT_VOUCHERS_JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(RECEIPT_VOUCHERS_DB, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Error saving receipt vouchers db: {e}")
+
+
+def load_receipt_vouchers_db():
+    if os.path.exists(RECEIPT_VOUCHERS_JSON_PATH):
+        try:
+            with open(RECEIPT_VOUCHERS_JSON_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                RECEIPT_VOUCHERS_DB.clear()
+                RECEIPT_VOUCHERS_DB.update(data)
+        except Exception as e:
+            print(f"Error loading receipt vouchers db: {e}")
+
+
+load_receipt_vouchers_db()
+

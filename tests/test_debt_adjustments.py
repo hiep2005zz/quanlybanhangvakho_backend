@@ -265,8 +265,9 @@ def test_post_debt_adjustment_acid_transaction(
 
     adj_txs = [tx for tx in st_data["transactions"] if tx["doc_type"] == "DEBT_ADJUSTMENT"]
     assert len(adj_txs) >= 1
-    assert adj_txs[0]["doc_code"] == created_adj["adjustment_code"]
-    assert adj_txs[0]["decrease_amount"] == 450000.0
+    target_tx = next((tx for tx in adj_txs if tx["doc_code"] == created_adj["adjustment_code"]), None)
+    assert target_tx is not None
+    assert target_tx["decrease_amount"] == 450000.0
 
     # 4. Verify Export PDF endpoint returns formatted accounting data
     adj_id = created_adj["id"]
