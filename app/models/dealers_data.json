@@ -22,7 +22,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:03:47.797000",
+    "last_credit_evaluated_at": "2026-10-20T05:38:16.893000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -49,7 +49,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:03:47.827000",
+    "last_credit_evaluated_at": "2026-10-20T05:38:16.927000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -76,7 +76,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:03:47.847000",
+    "last_credit_evaluated_at": "2026-10-20T05:38:16.947000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -103,7 +103,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:03:47.867000",
+    "last_credit_evaluated_at": "2026-10-20T05:38:16.963000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -130,7 +130,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:03:47.883000",
+    "last_credit_evaluated_at": "2026-10-20T05:38:16.980000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -157,7 +157,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:03:47.900000",
+    "last_credit_evaluated_at": "2026-10-20T05:38:16.993000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -184,7 +184,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:03:47.920000",
+    "last_credit_evaluated_at": "2026-10-20T05:38:17.010000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -211,7 +211,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:03:47.937000",
+    "last_credit_evaluated_at": "2026-10-20T05:38:17.027000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -238,7 +238,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:03:47.953000",
+    "last_credit_evaluated_at": "2026-10-20T05:38:17.047000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -265,7 +265,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:03:47.972228Z",
+    "last_credit_evaluated_at": "2026-10-20T05:38:17.061613Z",
     "warehouse_id": null,
     "warehouse_name": null
   }
