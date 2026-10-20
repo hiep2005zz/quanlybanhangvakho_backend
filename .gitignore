@@ -114,3 +114,8 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 uploads/pod/
+
+# SQLite databases (deprecated - system exclusively uses Microsoft SQL Server)
+*.db
+*.db*
+deprecated_sqlite_archive/

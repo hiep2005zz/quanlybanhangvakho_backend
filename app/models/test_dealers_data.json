@@ -4,14 +4,14 @@
     "code": "DL001",
     "name": "Đại Lý Phân Phối Miền Bắc - Sao Mai",
     "tax_code": null,
-    "phone": "0912345678",
+    "phone": "0987654321",
     "email": "saomai@daily.vn",
-    "address": "120 Cầu Giấy, Hà Nội",
+    "address": "888 Đường Mới, Hà Nội",
     "region": "Hà Nội",
     "assigned_sale_id": 3,
     "credit_limit": 100000000.0,
     "max_debt_days": 30,
-    "overdue_days_allowed": 30,
+    "overdue_days_allowed": 9999,
     "customer_group": "dai_ly_cap_1",
     "status": "Đang hoạt động",
     "lock_reason": null,
@@ -21,10 +21,10 @@
     "is_over_credit_limit": true,
     "is_overdue": false,
     "credit_warning_flag": true,
-    "credit_flag_reason": "Vượt hạn mức công nợ: 269,208,000 đ > 100,000,000 đ",
-    "last_credit_evaluated_at": "2026-10-19T16:00:42.552358",
-    "warehouse_id": null,
-    "warehouse_name": null
+    "credit_flag_reason": "Vượt hạn mức (428,732,000 đ > 100,000,000 đ)",
+    "last_credit_evaluated_at": "2026-10-20T18:56:42.110000",
+    "warehouse_id": "2",
+    "warehouse_name": "Kho Chi Nhánh Đà Nẵng"
   },
   "2": {
     "id": 2,
@@ -49,7 +49,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:00:11.698459",
+    "last_credit_evaluated_at": "2026-10-20T18:47:44.647000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -76,7 +76,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:00:05.882736",
+    "last_credit_evaluated_at": "2026-10-20T18:47:44.680000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -94,7 +94,7 @@
     "max_debt_days": 30,
     "overdue_days_allowed": 30,
     "customer_group": "khach_le",
-    "status": "Tạm ngừng",
+    "status": "T?m ng?ng",
     "lock_reason": null,
     "locked_at": null,
     "locked_by": null,
@@ -103,7 +103,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:00:05.902227",
+    "last_credit_evaluated_at": "2026-10-20T18:47:44.703000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -130,7 +130,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-19T16:00:05.921946",
+    "last_credit_evaluated_at": "2026-10-20T18:47:44.727000",
     "warehouse_id": null,
     "warehouse_name": null
   }

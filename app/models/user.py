@@ -63,8 +63,9 @@ USERS_DB: dict[str, UserInDB] = {
     "admin": UserInDB(
         id=1,
         username="admin",
-        full_name="Nguyễn Quản Trị",
-        email="admin@congty.vn",
+        full_name="Đào Ngọc Hiệp",
+        email="daongochiep645@gmail.com",
+        phone="0998887766",
         role=Role.SYSTEM_ADMIN.value,
         roles=[Role.SYSTEM_ADMIN.value],
         hashed_password=DEFAULT_HASH,
@@ -174,7 +175,12 @@ def save_users_db():
             # Xóa các user trong DB nếu đã bị xóa khỏi USERS_DB
             existing_ids = [u.id for u in USERS_DB.values()]
             if existing_ids:
-                db.query(UserEntity).filter(~UserEntity.id.in_(existing_ids)).delete(synchronize_session=False)
+                to_delete = db.query(UserEntity.id).filter(~UserEntity.id.in_(existing_ids)).all()
+                if to_delete:
+                    del_ids = [t[0] for t in to_delete]
+                    from app.models.entities import AuditLogEntity
+                    db.query(AuditLogEntity).filter(AuditLogEntity.user_id.in_(del_ids)).update({AuditLogEntity.user_id: None}, synchronize_session=False)
+                    db.query(UserEntity).filter(UserEntity.id.in_(del_ids)).delete(synchronize_session=False)
 
             db.commit()
         except Exception as err:
@@ -237,9 +243,12 @@ def load_users_db():
             with open(DB_FILE_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 for k, v in data.items():
-                    USERS_DB[k] = UserInDB(**v)
+                    if k.lower() != "quanlybanhang":
+                        USERS_DB[k] = UserInDB(**v)
         except Exception as e:
             print(f"Error loading users db from json: {e}")
+
+    USERS_DB.pop("quanlybanhang", None)
 
 def get_next_user_id() -> int:
     """Tự động sinh ID tăng dần cho user mới."""

@@ -32,7 +32,7 @@ from app.core.database import get_db
 from app.core.rbac import Permission, Role
 from app.schemas.auth import UserResponse
 from app.api.v1.endpoints.products import RAW_PRODUCTS
-from app.models.dealer import DEALERS_DB, save_dealers_db, load_dealers_db
+from app.models.dealer import DEALERS_DB, save_dealers_db, load_dealers_db, compute_dealer_unified_debt, parse_tx_date
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 
 from app.models.user import USERS_DB
@@ -305,92 +305,117 @@ class DealerCreditInfoResponse(BaseModel):
 
 def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
     """
-    Tính toán chi tiết công nợ hiện tại, tuổi nợ và trạng thái nợ quá hạn của đại lý.
-    Đồng bộ dữ liệu đơn hàng và cấn trừ các phiếu thu tiền (payment collections) đã xác nhận.
+    Đồng bộ chuẩn xác với Sổ chi tiết công nợ (S31-DN), hóa đơn và phiếu thu.
     """
     now = datetime.now(timezone.utc)
-    # 1. Tự động đồng bộ các đơn hàng từ SQL database vào orders_db nếu chưa có
+    payments_by_order: dict[str, float] = {}
+    unallocated_payments: float = 0.0
+    adj_by_order: dict[str, float] = {}
+    seen_receipt_codes = set()
     try:
         from app.core.database import SessionLocal
         from app.models.entities import OrderEntity
-        with SessionLocal() as db_session:
-            for db_order in db_session.query(OrderEntity).filter(OrderEntity.dealer_id == dealer.id).all():
-                if db_order.id not in orders_db:
-                    orders_db[db_order.id] = {
-                        "id": db_order.id,
-                        "order_code": db_order.order_code,
-                        "dealer_id": db_order.dealer_id,
-                        "dealer_name": db_order.dealer_name,
-                        "total_amount": db_order.total_amount,
-                        "status": db_order.status,
-                        "created_at": db_order.created_at.isoformat() if db_order.created_at else now.isoformat(),
-                    }
-    except Exception:
-        pass
-
-    # 2. Truy vấn tổng số tiền từ các phiếu thu tiền đã xác nhận (Payment collections)
-    extra_paid = 0.0
-    try:
-        from app.core.database import SessionLocal
+        from app.models.receipt_voucher import ReceiptVoucherEntity
         from app.models.payment_collection import PaymentCollectionEntity
+        from app.models.debt_adjustment import DebtAdjustmentEntity
+        from app.models.invoice import InvoiceEntity
+
         with SessionLocal() as db_session:
-            pcs = db_session.query(PaymentCollectionEntity).filter(
-                PaymentCollectionEntity.dealer_id == dealer.id,
-                PaymentCollectionEntity.status == "CONFIRMED"
-            ).all()
-            for pc in pcs:
-                extra_paid += float(getattr(pc, "amount", getattr(pc, "amount_collected", 0.0)) or 0.0)
+            # 1. Tự động đồng bộ các đơn hàng từ SQL database vào orders_db nếu chưa có
+            for db_order in db_session.query(OrderEntity).filter(OrderEntity.dealer_id == dealer.id).all():
+                orders_db[db_order.id] = {
+                    "id": db_order.id,
+                    "order_code": db_order.order_code,
+                    "dealer_id": db_order.dealer_id,
+                    "dealer_name": db_order.dealer_name,
+                    "total_amount": float(db_order.total_amount or 0.0),
+                    "status": db_order.status,
+                    "created_at": db_order.created_at.isoformat() if db_order.created_at else now.isoformat(),
+                    "dt_obj": parse_tx_date(db_order.created_at),
+                }
+
+            # 2. Toàn bộ phiếu thu từ ReceiptVoucherEntity
+            try:
+                sql_vouchers = db_session.query(ReceiptVoucherEntity).filter(ReceiptVoucherEntity.dealer_id == dealer.id).all()
+                for v in sql_vouchers:
+                    seen_receipt_codes.add(v.receipt_code)
+                    amt = float(v.amount or 0.0)
+                    if v.order_code and v.order_code.strip():
+                        oc = v.order_code.strip()
+                        payments_by_order[oc] = payments_by_order.get(oc, 0.0) + amt
+                    else:
+                        unallocated_payments += amt
+            except Exception:
+                pass
+
+            # 3. Thu tiền theo tuyến từ PaymentCollectionEntity
+            try:
+                sql_pcols = db_session.query(PaymentCollectionEntity).filter(
+                    PaymentCollectionEntity.dealer_id == dealer.id,
+                    PaymentCollectionEntity.status == "CONFIRMED"
+                ).all()
+                for pc in sql_pcols:
+                    amt = float(pc.amount or 0.0)
+                    if pc.order_code and pc.order_code.strip():
+                        oc = pc.order_code.strip()
+                        payments_by_order[oc] = payments_by_order.get(oc, 0.0) + amt
+                    else:
+                        unallocated_payments += amt
+            except Exception:
+                pass
+
+            # 4. Giảm trừ công nợ do trả hàng từ DebtAdjustmentEntity
+            try:
+                adjustments = db_session.query(DebtAdjustmentEntity).filter(
+                    DebtAdjustmentEntity.dealer_id == dealer.id,
+                    DebtAdjustmentEntity.status == "POSTED",
+                ).all()
+                for adj in adjustments:
+                    ord_c = (adj.original_invoice_code or "").replace("HD-", "").strip()
+                    adj_by_order[ord_c] = adj_by_order.get(ord_c, 0.0) + float(adj.total_adjusted_amount or 0.0)
+            except Exception:
+                pass
+
+            # 5. Đồng bộ trạng thái đã thanh toán từ hóa đơn SQL Server nếu có
+            try:
+                invoices = db_session.query(InvoiceEntity).filter(InvoiceEntity.dealer_id == dealer.id).all()
+                for inv in invoices:
+                    if inv.order_id and inv.order_id in orders_db:
+                        if inv.remaining_debt <= 0:
+                            orders_db[inv.order_id]["status"] = "PAID"
+            except Exception:
+                pass
     except Exception:
         pass
 
-    # 3. Thu thập danh sách các đơn hàng chưa thanh toán
-    unpaid_orders = []
-    for o in orders_db.values():
-        if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED", "REJECTED"):
-            amt = float(o.get("total_amount", 0.0) or 0.0)
-            created_at_val = o.get("created_at")
-            order_date = now
-            if created_at_val:
-                try:
-                    if isinstance(created_at_val, str):
-                        s = created_at_val.replace("Z", "+00:00")
-                        order_date = datetime.fromisoformat(s)
-                        if not order_date.tzinfo:
-                            order_date = order_date.replace(tzinfo=timezone.utc)
-                    elif isinstance(created_at_val, datetime):
-                        order_date = created_at_val if created_at_val.tzinfo else created_at_val.replace(tzinfo=timezone.utc)
-                    else:
-                        order_date = now
-                except Exception:
-                    pass
-            unpaid_orders.append({
-                "amount": amt,
-                "order_date": order_date
-            })
+    # 6. Đồng bộ thêm từ RECEIPT_VOUCHERS_DB in-memory / JSON
+    try:
+        from app.models.dealer import RECEIPT_VOUCHERS_DB, load_receipt_vouchers_db
+        load_receipt_vouchers_db()
+        for v_code, v in RECEIPT_VOUCHERS_DB.items():
+            if v.get("dealer_id") == dealer.id and v_code not in seen_receipt_codes:
+                amt = float(v.get("amount", 0.0) or 0.0)
+                oc = v.get("order_code")
+                if oc and oc.strip():
+                    oc_clean = oc.strip()
+                    payments_by_order[oc_clean] = payments_by_order.get(oc_clean, 0.0) + amt
+                else:
+                    unallocated_payments += amt
+    except Exception:
+        pass
 
-    # 4. Sắp xếp đơn hàng theo thứ tự thời gian tăng dần (FIFO)
-    unpaid_orders.sort(key=lambda x: x["order_date"])
+    # 7. Thu thập toàn bộ đơn hàng của đại lý này
+    dealer_orders = [o for o in orders_db.values() if o.get("dealer_id") == dealer.id]
 
-    # 5. Cấn trừ số tiền đã thu (extra_paid) vào các đơn hàng cũ trước theo FIFO
-    rem_paid = extra_paid
-    for uo in unpaid_orders:
-        if rem_paid <= 0:
-            break
-        deduct = min(uo["amount"], rem_paid)
-        uo["amount"] -= deduct
-        rem_paid -= deduct
-
-    current_debt = sum(uo["amount"] for uo in unpaid_orders)
-    still_unpaid = [uo for uo in unpaid_orders if uo["amount"] > 0]
-    if still_unpaid:
-        first_date = still_unpaid[0]["order_date"]
-        first_date_dt = first_date.date() if hasattr(first_date, 'date') else first_date
-        now_dt = now.date() if hasattr(now, 'date') else now
-        cal_days = max(0, (now_dt - first_date_dt).days)
-        tim_days = max(0, (now - first_date).days)
-        max_debt_age = max(cal_days, tim_days)
-    else:
-        max_debt_age = 0
+    # 8. Tính toán số dư công nợ và tuổi nợ thực tế
+    current_debt, max_debt_age = compute_dealer_unified_debt(
+        dealer.id,
+        dealer_orders,
+        payments_by_order,
+        unallocated_payments,
+        adj_by_order,
+        now,
+    )
 
     credit_limit = float(getattr(dealer, "credit_limit", 50000000.0) or 50000000.0)
     allowed_days = int(getattr(dealer, "overdue_days_allowed", getattr(dealer, "max_debt_days", 30)) or 30)
@@ -495,28 +520,42 @@ def validate_dealer_overdue_debt(
 
 def _get_customer_dealer(current_user: UserResponse):
     customer_dealer = DEALERS_DB.get(current_user.id)
-    if not customer_dealer:
+    if not customer_dealer and current_user.email:
         for d in DEALERS_DB.values():
-            if (d.email and current_user.email and d.email.lower() == current_user.email.lower()) or \
-               (d.phone and current_user.phone and d.phone == current_user.phone) or \
-               (d.code and current_user.username and d.code.lower() == current_user.username.lower()) or \
-               (d.name and current_user.full_name and d.name.lower() == current_user.full_name.lower()):
+            if d.email and d.email.strip().lower() == current_user.email.strip().lower():
+                customer_dealer = d
+                break
+    if not customer_dealer and current_user.username:
+        for d in DEALERS_DB.values():
+            if d.code and d.code.strip().lower() == current_user.username.strip().lower():
+                customer_dealer = d
+                break
+    if not customer_dealer and current_user.full_name:
+        for d in DEALERS_DB.values():
+            if d.name and d.name.strip().lower() == current_user.full_name.strip().lower():
+                customer_dealer = d
+                break
+    if not customer_dealer and current_user.phone:
+        for d in DEALERS_DB.values():
+            if d.phone and d.phone.strip() == current_user.phone.strip():
                 customer_dealer = d
                 break
     if not customer_dealer:
         try:
             from app.core.database import SessionLocal
             from app.models.entities import DealerEntity
-            from sqlalchemy import or_
             with SessionLocal() as db_session:
-                conds = [DealerEntity.id == current_user.id]
+                db_d = None
                 if current_user.email:
-                    conds.append(DealerEntity.email == current_user.email)
-                if current_user.phone:
-                    conds.append(DealerEntity.phone == current_user.phone)
-                if current_user.username:
-                    conds.append(DealerEntity.code == current_user.username)
-                db_d = db_session.query(DealerEntity).filter(or_(*conds)).first()
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.email == current_user.email.strip()).first()
+                if not db_d and current_user.username:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.code == current_user.username.strip()).first()
+                if not db_d and current_user.full_name:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.name == current_user.full_name.strip()).first()
+                if not db_d and current_user.phone:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.phone == current_user.phone.strip()).first()
+                if not db_d:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.id == current_user.id).first()
                 if db_d:
                     from app.models.dealer import Dealer
                     customer_dealer = Dealer(
@@ -1484,7 +1523,7 @@ def get_orders(
             detail="Chức năng chỉ dành cho Quản trị viên, Quản lý kinh doanh, Nhân viên kinh doanh và Đại lý."
         )
 
-    # 1. AC: Tự động chạy migration an toàn bổ sung cột SQLite (tránh lỗi 500)
+    # 1. AC: Đảm bảo tương thích schema các cột cần thiết
     try:
         _ensure_legacy_columns(db.get_bind())
     except Exception:
@@ -3432,15 +3471,15 @@ def approve_order(
             detail=f"Không tìm thấy đơn hàng có mã hoặc ID {order_code}."
         )
 
-    assigned_id = target.get("assigned_sale_id") if target else (db_order.assigned_sale_id if db_order else None)
-    dealer_id = target.get("dealer_id") if target else (db_order.dealer_id if db_order else None)
+    assigned_id = (target.get("assigned_sale_id") if target else None) or (db_order.assigned_sale_id if db_order else None)
+    dealer_id = (target.get("dealer_id") if target else None) or (db_order.dealer_id if db_order else None)
     if not assigned_id and dealer_id:
         d_ent = DEALERS_DB.get(dealer_id) or (db.get(DealerEntity, dealer_id) if db else None)
         if d_ent:
             assigned_id = getattr(d_ent, "assigned_sale_id", None)
 
-    created_by = target.get("created_by") if target else (db_order.created_by if db_order else "")
-    approval_reason = (target.get("approval_reason") if target else (db_order.approval_reason if db_order else "")) or ""
+    created_by = (target.get("created_by") if target else None) or (db_order.created_by if db_order else "")
+    approval_reason = ((target.get("approval_reason") if target else None) or (db_order.approval_reason if db_order else "")) or ""
     is_floor_price_order = "giá sàn" in approval_reason.lower()
     is_discount_order = "chiết khấu" in approval_reason.lower()
 
@@ -3653,7 +3692,7 @@ def reject_order(
         if d_ent:
             assigned_id = getattr(d_ent, "assigned_sale_id", None)
 
-    created_by = target.get("created_by") or ""
+    created_by = (target.get("created_by") if target else None) or (db_order.created_by if db_order else "")
 
     if is_sales and not is_admin_or_sm:
         created_by_str = (created_by or "").lower()
@@ -3806,8 +3845,8 @@ def return_order_for_edit(
         }
         ORDERS_DB[db_order.id] = target
 
-    assigned_id = target.get("assigned_sale_id")
-    created_by = target.get("created_by") or ""
+    assigned_id = (target.get("assigned_sale_id") if target else None) or (db_order.assigned_sale_id if db_order else None)
+    created_by = (target.get("created_by") if target else None) or (db_order.created_by if db_order else "")
 
     if is_sales and not is_admin_or_sm:
         creator_user = USERS_DB.get(created_by.lower()) if created_by else None
@@ -4187,6 +4226,7 @@ def cleanup_expired_reservations_endpoint(
     """
     from app.services.inventory_reservation_service import release_expired_reservations
     results = release_expired_reservations(db)
+    db.commit()
     return {
         "status": "success",
         "expired_orders_count": len(results),
@@ -4251,6 +4291,12 @@ def edit_or_cancel_invoice(
     new_status = data.status.upper() if data.status else target["status"]
     new_note = data.note if data.note is not None else target.get("note")
     if new_status != target["status"]:
+        user_roles_lower = [str(r).lower() for r in user_roles if r]
+        if not any(r in ["admin", "sales_manager"] for r in user_roles_lower):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Chỉ Quản trị viên hoặc Quản lý kinh doanh mới có quyền thay đổi trạng thái đơn hàng."
+            )
         new_val["status"] = new_status
     if new_note != target.get("note"):
         new_val["note"] = new_note

@@ -376,8 +376,8 @@ def _get_product_transaction_count(product_id: int, db: Session) -> int:
 @router.get("", response_model=ProductListResponse)
 def get_products(
     page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
-    page_size: Optional[int] = Query(None, ge=1, description="Số lượng mục mỗi trang"),
-    limit: Optional[int] = Query(None, ge=1, le=100, description="Alias cho page_size"),
+    page_size: Optional[int] = Query(None, ge=1, le=1000, description="Số lượng mục mỗi trang"),
+    limit: Optional[int] = Query(None, ge=1, le=1000, description="Alias cho page_size"),
     skip: Optional[int] = Query(None, ge=0, description="Số lượng mục bỏ qua"),
     search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
     category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),
@@ -837,7 +837,7 @@ def update_product_details(
     if payload.status is not None:
         target["status"] = payload.status
 
-    # Đồng bộ lưu vào SQLite
+    # Đồng bộ lưu vào CSDL SQL Server
     try:
         from app.models.entities import ProductEntity
         db_prod = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
@@ -973,7 +973,7 @@ def update_product_category(
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Danh mục không tồn tại")
             category_name = category.name
             
-        # 1. Update in SQLite Database
+        # 1. Update in SQL Server Database
         from app.models.entities import ProductEntity
         db_product = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
         if db_product:
@@ -1228,7 +1228,7 @@ def create_product(
     RAW_PRODUCTS.append(new_product_dict)
     invalidate_tx_counts_cache()
 
-    # Đồng bộ lưu vào SQLite ProductEntity và khởi tạo kho
+    # Đồng bộ lưu vào SQL Server ProductEntity và khởi tạo kho
     try:
         from app.models.entities import ProductEntity, WarehouseStockEntity
         from app.services.inventory_availability_service import DEFAULT_WAREHOUSES

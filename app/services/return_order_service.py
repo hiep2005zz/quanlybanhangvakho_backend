@@ -15,6 +15,7 @@ from app.models.entities import (
     WarehouseStockEntity,
     InventoryTransactionEntity,
     AuditLogEntity,
+    UserEntity,
 )
 from app.models.goods_receipt import (
     WarehouseEntity,
@@ -36,6 +37,14 @@ from app.schemas.return_order import (
 
 def get_utc_now():
     return datetime.now(timezone.utc)
+
+
+def _safe_user_id(db: Session, user_id: Optional[int]) -> Optional[int]:
+    """Trả về user_id nếu tồn tại trong database bảng users, ngược lại trả về None để tránh lỗi khóa ngoại (FK) trên SQL Server."""
+    if not user_id:
+        return None
+    exists = db.query(UserEntity.id).filter(UserEntity.id == user_id).first()
+    return user_id if exists else None
 
 
 def is_reason_damaged(reason: str) -> bool:
@@ -353,6 +362,7 @@ def create_return_order(
 
     return_order = ReturnOrderEntity(
         code=new_code,
+        return_code=new_code,
         order_id=order.id,
         order_code=order.order_code,
         dealer_id=order.dealer_id,
@@ -361,9 +371,12 @@ def create_return_order(
         total_items=0,
         total_quantity=0,
         total_refund_amount=0.0,
+        total_amount=0.0,
+        subtotal_amount=0.0,
         note=data.note,
-        created_by_id=current_user.id,
+        created_by_id=_safe_user_id(db, current_user.id),
         created_by=current_user.full_name or current_user.username,
+        created_by_name=current_user.full_name or current_user.username,
         created_at=now_utc,
     )
     db.add(return_order)
@@ -485,11 +498,13 @@ def create_return_order(
     return_order.total_items = len(item_entities)
     return_order.total_quantity = total_qty
     return_order.total_refund_amount = round(total_refund, 2)
+    return_order.total_amount = round(total_refund, 2)
+    return_order.subtotal_amount = round(total_refund, 2)
 
     # Ghi Audit Log khởi tạo phiếu trả
     try:
         audit = AuditLogEntity(
-            user_id=current_user.id,
+            user_id=_safe_user_id(db, current_user.id),
             user_name=current_user.full_name or current_user.username,
             action_type="RETURN_ORDER_CREATE",
             entity_type="ReturnOrder",
@@ -551,7 +566,7 @@ def confirm_return_receipt(
         # 1. Chuyển trạng thái phiếu sang COMPLETED
         return_order.status = "COMPLETED"
         return_order.confirmed_by = user_display_name
-        return_order.confirmed_by_id = current_user.id
+        return_order.confirmed_by_id = _safe_user_id(db, current_user.id)
         return_order.confirmed_at = now_utc
         if note:
             return_order.note = ((return_order.note + " | ") if return_order.note else "") + f"Xác nhận kho: {note}"
@@ -713,7 +728,7 @@ def confirm_return_receipt(
         # 3. Ghi Audit Log xác nhận nhập kho thành công
         try:
             audit = AuditLogEntity(
-                user_id=current_user.id,
+                user_id=_safe_user_id(db, current_user.id),
                 user_name=user_display_name,
                 action_type="RETURN_ORDER_CONFIRM",
                 entity_type="ReturnOrder",
@@ -762,13 +777,13 @@ def cancel_return_order(
     now_utc = get_utc_now()
     return_order.status = "CANCELLED"
     return_order.cancelled_by = current_user.full_name or current_user.username
-    return_order.cancelled_by_id = current_user.id
+    return_order.cancelled_by_id = _safe_user_id(db, current_user.id)
     return_order.cancelled_at = now_utc
     return_order.cancel_reason = reason.strip()
 
     try:
         audit = AuditLogEntity(
-            user_id=current_user.id,
+            user_id=_safe_user_id(db, current_user.id),
             user_name=current_user.full_name or current_user.username,
             action_type="RETURN_ORDER_CANCEL",
             entity_type="ReturnOrder",
@@ -808,21 +823,30 @@ def list_return_orders(
     query = db.query(ReturnOrderEntity)
 
     if status_filter and status_filter.upper() != "ALL":
-        query = query.filter(ReturnOrderEntity.status == status_filter.upper())
+        if status_filter.upper() == "COMPLETED":
+            query = query.filter(ReturnOrderEntity.status.in_(["COMPLETED", "CONFIRMED"]))
+        else:
+            query = query.filter(ReturnOrderEntity.status == status_filter.upper())
 
     if dealer_id:
         query = query.filter(ReturnOrderEntity.dealer_id == dealer_id)
 
     if search and search.strip():
         term = f"%{search.strip()}%"
-        query = query.filter(
-            or_(
-                ReturnOrderEntity.code.ilike(term),
-                ReturnOrderEntity.order_code.ilike(term),
-                ReturnOrderEntity.dealer_name.ilike(term),
-                ReturnOrderEntity.created_by.ilike(term),
-            )
-        )
+        # Dùng các mapped Column thực sự của entity để tránh lỗi 'property' object has no attribute 'ilike'
+        code_col = getattr(ReturnOrderEntity, "return_code", getattr(ReturnOrderEntity, "code", None))
+        created_by_col = getattr(ReturnOrderEntity, "created_by_name", getattr(ReturnOrderEntity, "created_by", None))
+        
+        search_clauses = [
+            ReturnOrderEntity.order_code.ilike(term),
+            ReturnOrderEntity.dealer_name.ilike(term),
+        ]
+        if code_col is not None and hasattr(code_col, "ilike"):
+            search_clauses.append(code_col.ilike(term))
+        if created_by_col is not None and hasattr(created_by_col, "ilike"):
+            search_clauses.append(created_by_col.ilike(term))
+            
+        query = query.filter(or_(*search_clauses))
 
     total = query.count()
     items = (
@@ -835,50 +859,110 @@ def list_return_orders(
 
 
 def to_response_dto(ro: ReturnOrderEntity) -> ReturnOrderResponse:
-    """Chuyển entity sang ReturnOrderResponse DTO."""
-    items_dto = [
-        ReturnOrderItemResponse(
-            id=item.id,
-            return_order_id=item.return_order_id,
-            order_item_id=item.order_item_id,
-            product_id=item.product_id,
-            product_code=item.product_code,
-            product_name=item.product_name,
-            unit_name=item.unit_name,
-            unit_price=float(item.unit_price or 0.0),
-            original_quantity=item.original_quantity,
-            return_quantity=item.return_quantity,
-            refund_amount=float(item.refund_amount or 0.0),
-            return_reason=item.return_reason,
-            is_damaged=item.is_damaged,
-            target_warehouse_id=item.target_warehouse_id,
-            target_warehouse_code=item.target_warehouse_code,
-            target_warehouse_name=item.target_warehouse_name,
-            batch_id=item.batch_id,
-            batch_number=item.batch_number,
-            note=item.note,
-        )
-        for item in (ro.items or [])
-    ]
+    """Chuyển entity sang ReturnOrderResponse DTO an toàn, chống crash 500 do thiếu thuộc tính hoặc giá trị Null."""
+    items_dto = []
+    for item in (ro.items or []):
+        try:
+            r_qty = getattr(item, "return_quantity", None)
+            if r_qty is None or r_qty <= 0:
+                r_qty = getattr(item, "quantity", 1) or 1
+
+            orig_qty = getattr(item, "original_quantity", None)
+            if orig_qty is None or orig_qty == 0:
+                orig_qty = r_qty
+
+            ref_amt = getattr(item, "refund_amount", None)
+            if ref_amt is None:
+                ref_amt = getattr(item, "line_total", 0.0) or 0.0
+
+            r_reason = (
+                getattr(item, "return_reason", None)
+                or getattr(item, "reason", None)
+                or getattr(ro, "reason", None)
+                or getattr(ro, "note", None)
+                or "Trả hàng đại lý"
+            )
+
+            items_dto.append(
+                ReturnOrderItemResponse(
+                    id=item.id,
+                    return_order_id=item.return_order_id,
+                    order_item_id=getattr(item, "order_item_id", None),
+                    product_id=item.product_id,
+                    product_code=getattr(item, "product_code", None),
+                    product_name=str(getattr(item, "product_name", "") or "Sản phẩm"),
+                    unit_name=str(getattr(item, "unit_name", "") or "Cái"),
+                    unit_price=float(getattr(item, "unit_price", 0.0) or 0.0),
+                    original_quantity=int(orig_qty or 0),
+                    return_quantity=int(r_qty or 1),
+                    refund_amount=float(ref_amt or 0.0),
+                    return_reason=str(r_reason),
+                    is_damaged=bool(getattr(item, "is_damaged", False)),
+                    target_warehouse_id=getattr(item, "target_warehouse_id", None),
+                    target_warehouse_code=getattr(item, "target_warehouse_code", None),
+                    target_warehouse_name=getattr(item, "target_warehouse_name", None),
+                    batch_id=getattr(item, "batch_id", None),
+                    batch_number=getattr(item, "batch_number", None),
+                    note=getattr(item, "note", None),
+                )
+            )
+        except Exception:
+            continue
+
+    code_val = (
+        getattr(ro, "code", None)
+        or getattr(ro, "return_code", None)
+        or f"RMA{getattr(ro, 'id', 1):05d}"
+    )
+    order_id_val = getattr(ro, "order_id", None) or 0
+    order_code_val = getattr(ro, "order_code", None) or ""
+    dealer_id_val = getattr(ro, "dealer_id", None) or 0
+    dealer_name_val = getattr(ro, "dealer_name", None) or "Đại lý"
+    status_val = getattr(ro, "status", None) or "PENDING_WAREHOUSE"
+
+    total_items_val = getattr(ro, "total_items", None)
+    if total_items_val is None or total_items_val == 0:
+        total_items_val = len(items_dto)
+
+    total_qty_val = getattr(ro, "total_quantity", None)
+    if total_qty_val is None or total_qty_val == 0:
+        total_qty_val = sum(it.return_quantity for it in items_dto)
+
+    refund_amt_val = getattr(ro, "total_refund_amount", None)
+    if refund_amt_val is None or refund_amt_val == 0.0:
+        refund_amt_val = getattr(ro, "total_amount", 0.0) or sum(it.refund_amount for it in items_dto)
+
+    created_by_val = getattr(ro, "created_by", None) or getattr(ro, "created_by_name", None) or "Hệ thống"
+    created_at_dt = getattr(ro, "created_at", None)
+    created_at_str = created_at_dt.strftime("%d/%m/%Y %H:%M") if created_at_dt and hasattr(created_at_dt, "strftime") else ""
+
+    confirmed_by_val = getattr(ro, "confirmed_by", None) or getattr(ro, "confirmed_by_name", None)
+    confirmed_at_dt = getattr(ro, "confirmed_at", None)
+    confirmed_at_str = confirmed_at_dt.strftime("%d/%m/%Y %H:%M") if confirmed_at_dt and hasattr(confirmed_at_dt, "strftime") else None
+
+    cancelled_by_val = getattr(ro, "cancelled_by", None) or getattr(ro, "cancelled_by_name", None)
+    cancelled_at_dt = getattr(ro, "cancelled_at", None)
+    cancelled_at_str = cancelled_at_dt.strftime("%d/%m/%Y %H:%M") if cancelled_at_dt and hasattr(cancelled_at_dt, "strftime") else None
+    cancel_reason_val = getattr(ro, "cancel_reason", None)
 
     return ReturnOrderResponse(
         id=ro.id,
-        code=ro.code,
-        order_id=ro.order_id,
-        order_code=ro.order_code,
-        dealer_id=ro.dealer_id,
-        dealer_name=ro.dealer_name,
-        status=ro.status,
-        total_items=ro.total_items,
-        total_quantity=ro.total_quantity,
-        total_refund_amount=float(ro.total_refund_amount or 0.0),
-        note=ro.note,
-        created_by=ro.created_by,
-        created_at=ro.created_at.strftime("%d/%m/%Y %H:%M") if ro.created_at else "",
-        confirmed_by=ro.confirmed_by,
-        confirmed_at=ro.confirmed_at.strftime("%d/%m/%Y %H:%M") if ro.confirmed_at else None,
-        cancelled_by=ro.cancelled_by,
-        cancelled_at=ro.cancelled_at.strftime("%d/%m/%Y %H:%M") if ro.cancelled_at else None,
-        cancel_reason=ro.cancel_reason,
+        code=str(code_val),
+        order_id=int(order_id_val),
+        order_code=str(order_code_val),
+        dealer_id=int(dealer_id_val),
+        dealer_name=str(dealer_name_val),
+        status=str(status_val),
+        total_items=int(total_items_val or 0),
+        total_quantity=int(total_qty_val or 0),
+        total_refund_amount=float(refund_amt_val or 0.0),
+        note=getattr(ro, "note", None) or getattr(ro, "reason", None),
+        created_by=str(created_by_val),
+        created_at=str(created_at_str),
+        confirmed_by=confirmed_by_val,
+        confirmed_at=confirmed_at_str,
+        cancelled_by=cancelled_by_val,
+        cancelled_at=cancelled_at_str,
+        cancel_reason=cancel_reason_val,
         items=items_dto,
     )

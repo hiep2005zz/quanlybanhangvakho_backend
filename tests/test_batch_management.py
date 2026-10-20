@@ -76,9 +76,16 @@ def setup_users_and_products(db_session: Session):
             status="active",
         )
         db_session.add(p_nobatch)
+        db_session.commit()
+        db_session.refresh(p_nobatch)
     else:
         p_nobatch.cost_price = 20000.0
         p_nobatch.sell_price = 30000.0
+        p_nobatch.stock = 100
+        p_nobatch.is_batch_managed = False
+
+    db_session.query(ProductBatchEntity).filter(ProductBatchEntity.product_id == p_nobatch.id).delete()
+    db_session.commit()
 
     # 4. Product with batch management ON
     p_batch = db_session.query(ProductEntity).filter(ProductEntity.code == "SKU-BATCH-01").first()
@@ -94,13 +101,16 @@ def setup_users_and_products(db_session: Session):
             status="active",
         )
         db_session.add(p_batch)
+        db_session.commit()
+        db_session.refresh(p_batch)
     else:
         p_batch.cost_price = 45000.0
         p_batch.sell_price = 65000.0
+        p_batch.stock = 50
+        p_batch.is_batch_managed = True
 
+    db_session.query(ProductBatchEntity).filter(ProductBatchEntity.product_id == p_batch.id).delete()
     db_session.commit()
-    db_session.refresh(p_nobatch)
-    db_session.refresh(p_batch)
 
     # 5. Add initial warehouse stock if not present
     for p in [p_nobatch, p_batch]:
@@ -118,13 +128,21 @@ def setup_users_and_products(db_session: Session):
                     quantity_on_hand=p.stock,
                 )
             )
+        else:
+            ws.actual_stock = p.stock
+            ws.quantity_on_hand = p.stock
     db_session.commit()
 
-    return {
+    yield {
         "tokens": tokens,
         "product_nobatch_id": p_nobatch.id,
         "product_batch_id": p_batch.id,
     }
+
+    db_session.query(ProductBatchEntity).filter(ProductBatchEntity.product_id.in_([p_nobatch.id, p_batch.id])).delete()
+    p_nobatch.is_batch_managed = False
+    p_batch.is_batch_managed = True
+    db_session.commit()
 
 
 # =====================================================================

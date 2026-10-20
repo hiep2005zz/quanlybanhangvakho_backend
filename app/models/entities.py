@@ -614,7 +614,7 @@ class DeliveryStopEntity(Base):
     failure_reason = Column(Unicode(500), nullable=True)
     pod_image_url = Column(Unicode(500), nullable=True)
     delivery_status = Column(String(30), nullable=True)
-    return_status = Column(String(50), nullable=True)
+    return_status = Column(Unicode(50), nullable=True)
     items_detail = Column(UnicodeText, nullable=True)
     note = Column(UnicodeText, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)

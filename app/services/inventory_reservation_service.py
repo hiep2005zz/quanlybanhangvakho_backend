@@ -102,12 +102,8 @@ def atomic_db_transaction(db: Session):
 
 
 def _lock_database_for_concurrency(db: Session):
-    """Khóa cấp DB cho SQLite nếu chạy SQLite (BEGIN IMMEDIATE)."""
-    if db.bind and db.bind.dialect.name == "sqlite":
-        try:
-            db.connection().execute(text("BEGIN IMMEDIATE"))
-        except Exception:
-            pass
+    """SQL Server sử dụng row-level locking (UPDLOCK) trên từng bản ghi."""
+    pass
 
 
 # ==========================================
@@ -593,8 +589,12 @@ def release_expired_reservations(db: Session) -> List[Dict[str, Any]]:
                 "message": "Đã tự động giải phóng tồn kho do quá hạn giữ chỗ."
             })
             logger.info(f"Successfully released expired reservation for order {ord_code}")
-
         except Exception as exc:
             logger.error(f"Failed to release expired reservation for order {ord_code}: {exc}", exc_info=True)
+
+    try:
+        db.commit()
+    except Exception:
+        pass
 
     return released_results

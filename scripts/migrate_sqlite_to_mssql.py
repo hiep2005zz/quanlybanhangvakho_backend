@@ -12,12 +12,15 @@ if hasattr(sys.stdout, "reconfigure"):
 BASE_DIR = Path(__file__).resolve().parent.parent
 SQLITE_DB_PATH = BASE_DIR / "quanlybanhang.db"
 
-MSSQL_SERVER = os.getenv("MSSQL_SERVER", "(localdb)\\MSSQLLocalDB")
-MSSQL_CONN_STR = (
-    "DRIVER={ODBC Driver 17 for SQL Server};"
-    f"SERVER={MSSQL_SERVER};"
-    "DATABASE=quanlybanhang;"
-    "Trusted_Connection=yes;"
+MSSQL_SERVER = os.getenv("MSSQL_SERVER", "localhost")
+MSSQL_CONN_STR = os.getenv(
+    "MSSQL_CONN_STR",
+    (
+        "DRIVER={ODBC Driver 17 for SQL Server};"
+        f"SERVER={MSSQL_SERVER};"
+        "DATABASE=quanlybanhang;"
+        "Trusted_Connection=yes;"
+    )
 )
 
 def parse_val(val, col_type):
