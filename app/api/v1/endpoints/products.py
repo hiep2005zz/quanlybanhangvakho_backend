@@ -201,17 +201,88 @@ def invalidate_tx_counts_cache():
     _TX_COUNTS_CACHE = None
     _TX_COUNTS_CACHE_TIME = 0.0
 
-def _get_all_product_transaction_counts(db: Session) -> dict[int, int]:
+def _get_all_product_transaction_counts(db: Session, target_pids: Optional[list[int]] = None) -> dict[int, int]:
     """
     Tối ưu hóa hiệu năng O(1) theo lô (Bulk batching):
-    Thay vì chạy 20.000 câu query trong vòng lặp N+1 làm đứng hệ thống khi có 10.000 sản phẩm,
-    hàm này gom nhóm tính toán transaction_count cho TẤT CẢ sản phẩm chỉ trong 1 lần duyệt (0.01s),
-    kết hợp in-memory TTL cache 2s.
+    Khi có target_pids, chỉ query và tính toán cho đúng danh sách sản phẩm trang đó (<0.005s).
+    Nếu không truyền target_pids, gom nhóm tính toán và cache TTL 60s.
     """
     import time
     global _TX_COUNTS_CACHE, _TX_COUNTS_CACHE_TIME
     now = time.time()
-    if _TX_COUNTS_CACHE is not None and (now - _TX_COUNTS_CACHE_TIME) < 2:
+
+    if target_pids is not None:
+        pids_set = set(target_pids)
+        if not pids_set:
+            return {}
+        from app.api.v1.endpoints.orders import ORDERS_DB
+        from app.api.v1.endpoints.inventory import INVENTORY_TRANSACTIONS
+        from app.models.entities import OrderEntity, InventoryTransactionEntity
+        from collections import defaultdict
+        from sqlalchemy import func
+        import json
+
+        res = defaultdict(int)
+        for order_key, order in ORDERS_DB.items():
+            for item in order.get("items", []):
+                item_pid = item.get("product_id")
+                if item_pid is not None:
+                    try:
+                        ipid = int(item_pid)
+                        if ipid in pids_set:
+                            res[ipid] += 1
+                    except (ValueError, TypeError):
+                        pass
+
+        if db:
+            try:
+                order_rows = db.query(OrderEntity.items_json).all()
+                for (items_json,) in order_rows:
+                    if items_json:
+                        try:
+                            data = json.loads(items_json)
+                            items_list = data if isinstance(data, list) else (data.get("items", []) if isinstance(data, dict) else [])
+                            for item in items_list:
+                                item_pid = item.get("product_id")
+                                if item_pid is not None:
+                                    try:
+                                        ipid = int(item_pid)
+                                        if ipid in pids_set:
+                                            res[ipid] += 1
+                                    except (ValueError, TypeError):
+                                        pass
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        for tx in INVENTORY_TRANSACTIONS:
+            tx_pid = getattr(tx, "product_id", None) or (tx.get("product_id") if isinstance(tx, dict) else None)
+            if tx_pid is not None:
+                try:
+                    ipid = int(tx_pid)
+                    if ipid in pids_set:
+                        res[ipid] += 1
+                except (ValueError, TypeError):
+                    pass
+
+        if db:
+            try:
+                rows = db.query(
+                    InventoryTransactionEntity.product_id,
+                    func.count(InventoryTransactionEntity.id)
+                ).filter(InventoryTransactionEntity.product_id.in_(list(pids_set))).group_by(InventoryTransactionEntity.product_id).all()
+                for pid, count_val in rows:
+                    if pid is not None:
+                        try:
+                            res[int(pid)] += int(count_val)
+                        except (ValueError, TypeError):
+                            pass
+            except Exception:
+                pass
+        return res
+
+    if _TX_COUNTS_CACHE is not None and (now - _TX_COUNTS_CACHE_TIME) < 60:
         return _TX_COUNTS_CACHE
 
     from app.api.v1.endpoints.orders import ORDERS_DB
@@ -514,7 +585,8 @@ def get_products(
         except Exception:
             pass
 
-    tx_counts_map = _get_all_product_transaction_counts(db)
+    page_pids = [db_p.id for db_p in page_products if getattr(db_p, "id", None) is not None]
+    tx_counts_map = _get_all_product_transaction_counts(db, target_pids=page_pids)
     raw_map = {p["id"]: p for p in RAW_PRODUCTS if isinstance(p, dict) and "id" in p}
 
     # 6. Chuẩn hóa danh sách sản phẩm trả về tầng Schema/DTO & bảo vệ dữ liệu nhạy cảm RBAC

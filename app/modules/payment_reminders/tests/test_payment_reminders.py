@@ -195,6 +195,11 @@ def test_application_lifespan_starts_and_stops_background_tasks(monkeypatch):
     monkeypatch.setattr(main, "init_db", lambda: events.append("database"))
     monkeypatch.setattr(
         main,
+        "upgrade_payment_reminder_schema",
+        lambda: events.append("reminder-schema"),
+    )
+    monkeypatch.setattr(
+        main,
         "run_daily_scheduler",
         lambda: fake_task("reminders"),
     )
@@ -210,11 +215,13 @@ def test_application_lifespan_starts_and_stops_background_tasks(monkeypatch):
             await asyncio.sleep(0)
             assert events == [
                 "database",
+                "reminder-schema",
                 "reminders-started",
                 "credit-policy-started",
             ]
         assert events == [
             "database",
+            "reminder-schema",
             "reminders-started",
             "credit-policy-started",
             "reminders-stopped",
@@ -400,6 +407,55 @@ def test_dry_run_does_not_send_or_write_logs(db_session, monkeypatch):
     assert result["dry_run"] is True
     assert result["candidates"] == 1
     assert db_session.query(PaymentReminderLog).count() == 0
+    assert db_session.query(PaymentReminderNotification).count() == 0
+
+
+def test_dry_run_does_not_retry_previous_failures(db_session, monkeypatch):
+    today = date(2026, 10, 16)
+    dealer = add_dealer(db_session)
+    failed_invoice = add_invoice(
+        db_session,
+        dealer,
+        invoice_code="DRY-RUN-FAILED",
+        due_date=today + timedelta(days=2),
+    )
+    current_invoice = add_invoice(
+        db_session,
+        dealer,
+        invoice_code="DRY-RUN-CURRENT",
+        due_date=today + timedelta(days=3),
+    )
+    failed_log_id = service.repository.claim_reminder(
+        db_session,
+        failed_invoice.id,
+        dealer.id,
+        "DUE_SOON_3D",
+        "email",
+        today - timedelta(days=1),
+    )
+    service.repository.begin_attempt(db_session, failed_log_id)
+    service.repository.set_log_status(
+        db_session, failed_log_id, "failed", error_message="SMTP temporarily unavailable"
+    )
+    monkeypatch.setattr(
+        notifiers,
+        "send_email_reminder",
+        lambda *_args: pytest.fail("Dry run must not retry failed email"),
+    )
+    monkeypatch.setattr(
+        notifiers,
+        "create_in_app_notification",
+        lambda *_args: pytest.fail("Dry run must not create notifications"),
+    )
+
+    result = service.run_daily_reminders(db_session, today=today, dry_run=True)
+
+    failed_log = db_session.get(PaymentReminderLog, failed_log_id)
+    assert result["dry_run"] is True
+    assert result["candidates"] == 1
+    assert db_session.get(InvoiceEntity, current_invoice.id) is not None
+    assert failed_log.status == "failed"
+    assert failed_log.attempts == 1
     assert db_session.query(PaymentReminderNotification).count() == 0
 
 

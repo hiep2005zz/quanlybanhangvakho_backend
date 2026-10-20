@@ -114,7 +114,9 @@ def run_daily_reminders(
     session = db or SessionLocal()
     reminder_date = today or today_in_ict()
     try:
-        failed_reminders = repository.failed_reminders(session, reminder_date)
+        failed_reminders = (
+            [] if is_dry_run else repository.failed_reminders(session, reminder_date)
+        )
         for log in failed_reminders:
             invoice = repository.get_eligible_invoice(
                 session,
