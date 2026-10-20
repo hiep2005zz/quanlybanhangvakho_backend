@@ -137,20 +137,28 @@ def list_return_orders_endpoint(
     current_user: UserResponse = Depends(get_current_user),
 ):
     """Danh sách phiếu trả hàng có phân trang và bộ lọc."""
-    items, total = list_return_orders(
-        db=db,
-        status_filter=status,
-        search=search,
-        dealer_id=dealer_id,
-        page=page,
-        page_size=page_size,
-    )
-    return ReturnOrderListResponse(
-        items=[to_response_dto(i) for i in items],
-        total=total,
-        page=page,
-        page_size=page_size,
-    )
+    try:
+        items, total = list_return_orders(
+            db=db,
+            status_filter=status,
+            search=search,
+            dealer_id=dealer_id,
+            page=page,
+            page_size=page_size,
+        )
+        return ReturnOrderListResponse(
+            items=[to_response_dto(i) for i in items],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Lỗi khi tải danh sách phiếu trả hàng: {str(e)}"
+        )
 
 
 @router.get("/{return_order_id}", response_model=ReturnOrderResponse)

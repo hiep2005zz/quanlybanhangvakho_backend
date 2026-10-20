@@ -654,7 +654,7 @@ def issue_sales_invoice(
         # 1. Truy vấn và kiểm tra lại phiếu
         dispatches = db.query(OrderDispatchEntity).filter(
             OrderDispatchEntity.id.in_(payload.dispatch_ids)
-        ).with_for_update(nowait=False).all() if db.bind.name != "sqlite" else db.query(OrderDispatchEntity).filter(OrderDispatchEntity.id.in_(payload.dispatch_ids)).all()
+        ).with_for_update(nowait=False).all()
 
         if len(dispatches) != len(set(payload.dispatch_ids)):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Một số phiếu giao hàng không tồn tại.")

@@ -17,11 +17,11 @@ from app.models.entities import (
     WarehouseStockEntity,
     StockAuditEntity,
     StockTransferEntity,
-    CreditPolicyConfigEntity,
-    DealerPaymentEntity,
     DeliveryTripEntity,
     DeliveryStopEntity,
     StockAdjustmentEntity,
+    CreditPolicyConfigEntity,
+    DealerPaymentEntity,
     OrderDispatchEntity,
     DriverEntity,
     VehicleEntity,
@@ -48,13 +48,19 @@ from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 from app.models.discount import DiscountPolicyEntity, DiscountTierEntity
 from app.models.sales_target import SalesTargetEntity
 from app.models.invoice import InvoiceEntity, InvoiceDeliveryNoteEntity, InvoiceItemEntity, InvoiceAdjustmentEntity
-from app.models.return_order import ReturnOrderEntity, ReturnOrderItemEntity
 from app.models.debt_payment import (
     PaymentReceiptEntity,
     PaymentAllocationEntity,
     PaymentAdjustmentEntity,
 )
 from app.models.debt_reconciliation import DebtReconciliationEntity
+from app.models.debt_adjustment import (
+    DebtAdjustmentEntity,
+    DebtAdjustmentItemEntity,
+    ReturnOrderEntity,
+    ReturnOrderItemEntity,
+)
+from app.models.receipt_voucher import ReceiptVoucherEntity
 from app.core.security import get_password_hash
 from app.core.rbac import Role
 
@@ -89,6 +95,7 @@ def _ensure_legacy_columns(bind=engine):
             "status": ("VARCHAR(50) DEFAULT 'active'", "NVARCHAR(50) DEFAULT 'active'"),
             "is_batch_managed": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
             "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
+            "floor_price": ("FLOAT NULL", "FLOAT NULL"),
         },
         "warehouse_stocks": {
             "min_stock": ("INTEGER DEFAULT 10", "INT DEFAULT 10"),
@@ -137,13 +144,11 @@ def _ensure_legacy_columns(bind=engine):
             "parent_id": ("INTEGER NULL", "INT NULL"),
             "product_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
             "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
-            "warehouse_type": ("VARCHAR(50) DEFAULT 'DEFAULT'", "NVARCHAR(50) DEFAULT 'DEFAULT'"),
         },
         "warehouses": {
             "manager_name": ("VARCHAR(100)", "NVARCHAR(100)"),
             "phone": ("VARCHAR(50)", "NVARCHAR(50)"),
             "status": ("VARCHAR(50) DEFAULT 'Đang hoạt động'", "NVARCHAR(50) DEFAULT N'Đang hoạt động'"),
-            "warehouse_type": ("VARCHAR(50) DEFAULT 'DEFAULT'", "NVARCHAR(50) DEFAULT 'DEFAULT'"),
         },
         "stock_audits": {
             "discrepancy_items_count": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
@@ -177,12 +182,6 @@ def _ensure_legacy_columns(bind=engine):
             "completed_at": ("DATETIME NULL", "DATETIME NULL"),
             "note": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
             "created_by": ("VARCHAR(100) DEFAULT ''", "NVARCHAR(100) DEFAULT ''"),
-            "delivery_date": ("VARCHAR(20) NULL", "NVARCHAR(20) NULL"),
-            "driver_id": ("INTEGER NULL", "INT NULL"),
-            "vehicle_id": ("INTEGER NULL", "INT NULL"),
-            "vehicle_type": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
-            "total_stops": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
-            "total_dispatches": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
         },
         "delivery_stops": {
             "actual_delivery_time": ("DATETIME NULL", "DATETIME NULL"),
@@ -192,17 +191,41 @@ def _ensure_legacy_columns(bind=engine):
             "return_status": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
             "items_detail": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
         },
-        "invoices": {
-            "source_type": ("VARCHAR(50) DEFAULT 'ORDER'", "NVARCHAR(50) DEFAULT 'ORDER'"),
-            "issue_status": ("VARCHAR(30) DEFAULT 'ISSUED'", "NVARCHAR(30) DEFAULT 'ISSUED'"),
-            "template_code": ("VARCHAR(50) DEFAULT '1/001'", "NVARCHAR(50) DEFAULT '1/001'"),
-            "invoice_series": ("VARCHAR(20) DEFAULT 'C26TAA'", "NVARCHAR(20) DEFAULT 'C26TAA'"),
+        "return_orders": {
+            "return_code": ("VARCHAR(50) NULL", "VARCHAR(50) NULL"),
+            "original_invoice_id": ("INTEGER NULL", "INT NULL"),
+            "original_invoice_code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
+            "warehouse_id": ("VARCHAR(50) NULL", "NVARCHAR(50) NULL"),
+            "warehouse_name": ("VARCHAR(255) NULL", "NVARCHAR(255) NULL"),
+            "reason": ("NVARCHAR(500) DEFAULT ''", "NVARCHAR(500) DEFAULT ''"),
             "subtotal_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
-            "vat_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
-            "discount_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
-            "issued_by": ("VARCHAR(100) NULL", "NVARCHAR(100) NULL"),
-            "delivery_dispatches_summary": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
-            "currency": ("VARCHAR(10) DEFAULT 'VND'", "NVARCHAR(10) DEFAULT 'VND'"),
+            "tax_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "total_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "created_by_name": ("NVARCHAR(150) NULL", "NVARCHAR(150) NULL"),
+            "confirmed_by_name": ("NVARCHAR(150) NULL", "NVARCHAR(150) NULL"),
+            "cancelled_by_id": ("INTEGER NULL", "INT NULL"),
+            "cancelled_by_name": ("NVARCHAR(150) NULL", "NVARCHAR(150) NULL"),
+            "cancelled_at": ("DATETIME NULL", "DATETIME NULL"),
+            "cancel_reason": ("NVARCHAR(500) NULL", "NVARCHAR(500) NULL"),
+            "updated_at": ("DATETIME NULL", "DATETIME NULL"),
+        },
+        "return_order_items": {
+            "order_item_id": ("INTEGER NULL", "INT NULL"),
+            "original_quantity": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "return_quantity": ("INTEGER DEFAULT 1", "INT DEFAULT 1"),
+            "refund_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "return_reason": ("NVARCHAR(255) NULL", "NVARCHAR(255) NULL"),
+            "is_damaged": ("BOOLEAN DEFAULT 0", "BIT DEFAULT 0"),
+            "target_warehouse_id": ("INTEGER NULL", "INT NULL"),
+            "target_warehouse_code": ("VARCHAR(50) NULL", "VARCHAR(50) NULL"),
+            "target_warehouse_name": ("NVARCHAR(255) NULL", "NVARCHAR(255) NULL"),
+            "batch_id": ("INTEGER NULL", "INT NULL"),
+            "batch_number": ("VARCHAR(100) NULL", "VARCHAR(100) NULL"),
+            "note": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
+            "created_at": ("DATETIME NULL", "DATETIME NULL"),
+            "quantity": ("INTEGER DEFAULT 1", "INT DEFAULT 1"),
+            "line_total": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "reason": ("NVARCHAR(255) NULL", "NVARCHAR(255) NULL"),
         },
     }
     inspector = inspect(bind)
@@ -214,27 +237,91 @@ def _ensure_legacy_columns(bind=engine):
         for column_name, (sqlite_definition, sql_server_definition) in columns_to_add.items():
             if column_name in existing_columns:
                 continue
-            definition = sqlite_definition if dialect_name == "sqlite" else sql_server_definition
-            add_column = "ADD COLUMN" if dialect_name == "sqlite" else "ADD"
+            definition = sql_server_definition if dialect_name == "mssql" else sqlite_definition
+            add_column = "ADD" if dialect_name == "mssql" else "ADD COLUMN"
             with bind.begin() as connection:
                 connection.execute(
                     text(f"ALTER TABLE {table_name} {add_column} {column_name} {definition}")
                 )
 
+    try:
+        updated_inspector = inspect(bind)
+        if updated_inspector.has_table("return_orders"):
+            cols = {c["name"] for c in updated_inspector.get_columns("return_orders")}
+            with bind.begin() as connection:
+                if "code" in cols and "return_code" in cols:
+                    connection.execute(text("UPDATE return_orders SET return_code = code WHERE (return_code IS NULL OR return_code = '') AND code IS NOT NULL"))
+                    connection.execute(text("UPDATE return_orders SET code = return_code WHERE (code IS NULL OR code = '') AND return_code IS NOT NULL"))
+                if "total_refund_amount" in cols and "total_amount" in cols:
+                    connection.execute(text("UPDATE return_orders SET total_amount = total_refund_amount WHERE (total_amount IS NULL OR total_amount = 0.0) AND total_refund_amount IS NOT NULL"))
+                    connection.execute(text("UPDATE return_orders SET total_refund_amount = total_amount WHERE (total_refund_amount IS NULL OR total_refund_amount = 0.0) AND total_amount IS NOT NULL"))
+                if "created_by" in cols and "created_by_name" in cols:
+                    connection.execute(text("UPDATE return_orders SET created_by_name = created_by WHERE (created_by_name IS NULL OR created_by_name = '') AND created_by IS NOT NULL"))
+                    connection.execute(text("UPDATE return_orders SET created_by = created_by_name WHERE (created_by IS NULL OR created_by = '') AND created_by_name IS NOT NULL"))
+                if "confirmed_by" in cols and "confirmed_by_name" in cols:
+                    connection.execute(text("UPDATE return_orders SET confirmed_by_name = confirmed_by WHERE (confirmed_by_name IS NULL OR confirmed_by_name = '') AND confirmed_by IS NOT NULL"))
+                    connection.execute(text("UPDATE return_orders SET confirmed_by = confirmed_by_name WHERE (confirmed_by IS NULL OR confirmed_by = '') AND confirmed_by_name IS NOT NULL"))
+                if "cancelled_by" in cols and "cancelled_by_name" in cols:
+                    connection.execute(text("UPDATE return_orders SET cancelled_by_name = cancelled_by WHERE (cancelled_by_name IS NULL OR cancelled_by_name = '') AND cancelled_by IS NOT NULL"))
+        if updated_inspector.has_table("return_order_items"):
+            cols = {c["name"] for c in updated_inspector.get_columns("return_order_items")}
+            with bind.begin() as connection:
+                if "return_quantity" in cols and "quantity" in cols:
+                    connection.execute(text("UPDATE return_order_items SET quantity = return_quantity WHERE (quantity IS NULL OR quantity = 0) AND return_quantity IS NOT NULL"))
+                    connection.execute(text("UPDATE return_order_items SET return_quantity = quantity WHERE (return_quantity IS NULL OR return_quantity = 0) AND quantity IS NOT NULL"))
+                if "refund_amount" in cols and "line_total" in cols:
+                    connection.execute(text("UPDATE return_order_items SET line_total = refund_amount WHERE (line_total IS NULL OR line_total = 0.0) AND refund_amount IS NOT NULL"))
+                    connection.execute(text("UPDATE return_order_items SET refund_amount = line_total WHERE (refund_amount IS NULL OR refund_amount = 0.0) AND line_total IS NOT NULL"))
+                if "return_reason" in cols and "reason" in cols:
+                    connection.execute(text("UPDATE return_order_items SET reason = return_reason WHERE (reason IS NULL OR reason = '') AND return_reason IS NOT NULL"))
+                    connection.execute(text("UPDATE return_order_items SET return_reason = reason WHERE (return_reason IS NULL OR return_reason = '') AND reason IS NOT NULL"))
+                if "original_quantity" in cols:
+                    if "return_quantity" in cols:
+                        connection.execute(text("UPDATE return_order_items SET original_quantity = return_quantity WHERE (original_quantity IS NULL OR original_quantity = 0) AND return_quantity IS NOT NULL"))
+                    elif "quantity" in cols:
+                        connection.execute(text("UPDATE return_order_items SET original_quantity = quantity WHERE (original_quantity IS NULL OR original_quantity = 0) AND quantity IS NOT NULL"))
+    except Exception:
+        pass
 
-def init_db(bind=None):
-    from app.core.database import engine as default_engine
-    target_engine = bind if bind is not None else default_engine
-    print(f"Initializing database tables using {target_engine.dialect.name}...")
+
+def _ensure_mssql_column_types(bind):
+    if bind.dialect.name != "mssql":
+        return
+    with bind.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE dealers ALTER COLUMN status NVARCHAR(50) NULL;"))
+            conn.execute(text("UPDATE dealers SET status = N'Đã khóa' WHERE status LIKE '%khóa%' OR status LIKE '%khoá%' OR status LIKE '%?%' OR LOWER(status) LIKE '%lock%';"))
+            conn.execute(text("UPDATE dealers SET status = N'Đang hoạt động' WHERE status LIKE '%ho?t%' OR status LIKE '%Ðang%' OR status = 'ACTIVE';"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE drivers ALTER COLUMN status NVARCHAR(50) NOT NULL;"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE delivery_trips ALTER COLUMN driver_name NVARCHAR(150) NULL;"))
+            conn.execute(text("ALTER TABLE delivery_trips ALTER COLUMN vehicle_plate NVARCHAR(50) NULL;"))
+            conn.execute(text("ALTER TABLE delivery_trips ALTER COLUMN dispatched_at DATETIME NULL;"))
+        except Exception:
+            pass
+
+
+def init_db():
+    if engine.dialect.name != "mssql":
+        raise RuntimeError(
+            f"LỖI KHỞI TẠO CSDL: Toàn bộ hệ thống bắt buộc phải chạy Microsoft SQL Server (mssql). "
+            f"Dialect hiện tại '{engine.dialect.name}' không được phép!"
+        )
+
+    print(f"Initializing database tables using Microsoft SQL Server ({engine.dialect.name})...")
     # Tạo các bảng nếu chưa có
-    Base.metadata.create_all(bind=target_engine)
-    _ensure_dealer_credit_limit_column(target_engine)
-    _ensure_legacy_columns(target_engine)
-    print("Tables created successfully.")
-    # Tự động migrate thêm cột nếu bảng đã tồn tại từ trước
-    is_sqlite = target_engine.url.drivername.startswith("sqlite")
-    with target_engine.connect() as conn:
-        if is_sqlite:
+    Base.metadata.create_all(bind=engine)
+    _ensure_dealer_credit_limit_column(engine)
+    _ensure_legacy_columns(engine)
+    _ensure_mssql_column_types(engine)
+    # Tự động migrate thêm cột và chỉ mục cho SQL Server
+    with engine.connect() as conn:
+        if False:
             # Kiểm tra và thêm cột cho SQLite
             user_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(users)")).fetchall()]
             if "avatar_url" not in user_cols:
@@ -342,36 +429,6 @@ def init_db(bind=None):
                     conn.commit()
                 except Exception as ex:
                     print(f"SQLite migration notice (dealers.max_debt_days): {ex}")
-            if "is_over_credit_limit" not in dealer_cols:
-                try:
-                    conn.execute(text("ALTER TABLE dealers ADD COLUMN is_over_credit_limit BOOLEAN DEFAULT 0;"))
-                    conn.commit()
-                except Exception as ex:
-                    print(f"SQLite migration notice (dealers.is_over_credit_limit): {ex}")
-            if "is_overdue" not in dealer_cols:
-                try:
-                    conn.execute(text("ALTER TABLE dealers ADD COLUMN is_overdue BOOLEAN DEFAULT 0;"))
-                    conn.commit()
-                except Exception as ex:
-                    print(f"SQLite migration notice (dealers.is_overdue): {ex}")
-            if "credit_warning_flag" not in dealer_cols:
-                try:
-                    conn.execute(text("ALTER TABLE dealers ADD COLUMN credit_warning_flag BOOLEAN DEFAULT 0;"))
-                    conn.commit()
-                except Exception as ex:
-                    print(f"SQLite migration notice (dealers.credit_warning_flag): {ex}")
-            if "credit_flag_reason" not in dealer_cols:
-                try:
-                    conn.execute(text("ALTER TABLE dealers ADD COLUMN credit_flag_reason TEXT;"))
-                    conn.commit()
-                except Exception as ex:
-                    print(f"SQLite migration notice (dealers.credit_flag_reason): {ex}")
-            if "last_credit_evaluated_at" not in dealer_cols:
-                try:
-                    conn.execute(text("ALTER TABLE dealers ADD COLUMN last_credit_evaluated_at DATETIME;"))
-                    conn.commit()
-                except Exception as ex:
-                    print(f"SQLite migration notice (dealers.last_credit_evaluated_at): {ex}")
 
             tx_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(inventory_transactions)")).fetchall()]
             if "unit_name" not in tx_cols:
@@ -521,6 +578,7 @@ def init_db(bind=None):
         else:
             for sql_statement in [
                 "IF COL_LENGTH('users', 'avatar_url') IS NULL ALTER TABLE users ADD avatar_url NVARCHAR(500);",
+                "IF COL_LENGTH('products', 'category_id') IS NULL ALTER TABLE products ADD category_id INT NULL;",
                 "IF COL_LENGTH('products', 'base_unit') IS NULL ALTER TABLE products ADD base_unit NVARCHAR(50) DEFAULT N'Cái';",
                 "IF COL_LENGTH('products', 'floor_price') IS NULL ALTER TABLE products ADD floor_price FLOAT DEFAULT 0.0;",
                 "IF COL_LENGTH('products', 'units_json') IS NULL ALTER TABLE products ADD units_json NVARCHAR(MAX);",
@@ -549,9 +607,9 @@ def init_db(bind=None):
                 "IF COL_LENGTH('discount_tiers', 'discount_type') IS NULL ALTER TABLE discount_tiers ADD discount_type NVARCHAR(20) DEFAULT 'percent';",
                 "UPDATE warehouse_stocks SET quantity_on_hand = actual_stock WHERE quantity_on_hand IS NULL OR quantity_on_hand = 0;",
                 "UPDATE warehouse_stocks SET reserved_quantity = reserved_stock WHERE reserved_quantity IS NULL;",
-                "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL AND COL_LENGTH('delivery_trips', 'vehicle_plate') IS NOT NULL EXEC('UPDATE delivery_trips SET vehicle_plate = license_plate WHERE (vehicle_plate IS NULL OR vehicle_plate = '''''') AND license_plate IS NOT NULL');",
-                "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'dispatched_at') IS NOT NULL EXEC('UPDATE delivery_trips SET dispatched_at = departure_time WHERE dispatched_at IS NULL AND departure_time IS NOT NULL');",
-                "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'estimated_delivery_time') IS NOT NULL EXEC('UPDATE delivery_trips SET estimated_delivery_time = expected_completion_time WHERE estimated_delivery_time IS NULL AND expected_completion_time IS NOT NULL');",
+                "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL AND COL_LENGTH('delivery_trips', 'vehicle_plate') IS NOT NULL EXEC('UPDATE delivery_trips SET vehicle_plate = license_plate WHERE (vehicle_plate IS NULL OR vehicle_plate = '''') AND license_plate IS NOT NULL;');",
+                "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'dispatched_at') IS NOT NULL EXEC('UPDATE delivery_trips SET dispatched_at = departure_time WHERE dispatched_at IS NULL AND departure_time IS NOT NULL;');",
+                "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL AND COL_LENGTH('delivery_trips', 'estimated_delivery_time') IS NOT NULL EXEC('UPDATE delivery_trips SET estimated_delivery_time = expected_completion_time WHERE estimated_delivery_time IS NULL AND expected_completion_time IS NOT NULL;');",
                 "IF COL_LENGTH('delivery_trips', 'license_plate') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN license_plate;",
                 "IF COL_LENGTH('delivery_trips', 'departure_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN departure_time;",
                 "IF COL_LENGTH('delivery_trips', 'expected_completion_time') IS NOT NULL ALTER TABLE delivery_trips DROP COLUMN expected_completion_time;",
@@ -584,43 +642,71 @@ def init_db(bind=None):
                 UserEntity(
                     id=1,
                     username="admin",
-                    password_hash=get_password_hash("admin123"),
-                    full_name="Quản Trị Viên",
-                    role=Role.ADMIN.value,
-                    roles_json=json.dumps([Role.ADMIN.value]),
+                    hashed_password=get_password_hash("123"),
+                    full_name="Đào Ngọc Hiệp",
+                    email="daongochiep645@gmail.com",
+                    phone="0998887766",
+                    role=Role.SYSTEM_ADMIN.value,
+                    roles_json=json.dumps([Role.SYSTEM_ADMIN.value]),
                     is_active=True,
                 ),
                 UserEntity(
                     id=2,
                     username="sales_manager",
-                    password_hash=get_password_hash("manager123"),
-                    full_name="Trưởng Phòng Kinh Doanh",
+                    hashed_password=get_password_hash("123"),
+                    full_name="Phạm Trưởng Phòng Sales",
+                    email="sales.manager@congty.vn",
+                    phone="0822516998",
                     role=Role.SALES_MANAGER.value,
                     roles_json=json.dumps([Role.SALES_MANAGER.value]),
                     is_active=True,
                 ),
                 UserEntity(
                     id=3,
-                    username="sales_user",
-                    password_hash=get_password_hash("sales123"),
-                    full_name="Nhân Viên Bán Hàng",
+                    username="sales",
+                    hashed_password=get_password_hash("123"),
+                    full_name="Trần Bán Hàng",
+                    email="sales@congty.vn",
                     role=Role.SALES.value,
                     roles_json=json.dumps([Role.SALES.value]),
                     is_active=True,
                 ),
                 UserEntity(
                     id=4,
-                    username="warehouse_user",
-                    password_hash=get_password_hash("kho123"),
-                    full_name="Thủ Kho",
-                    role=Role.WAREHOUSE.value,
-                    roles_json=json.dumps([Role.WAREHOUSE.value]),
+                    username="kho",
+                    hashed_password=get_password_hash("123"),
+                    full_name="Lê Thủ Kho",
+                    email="kho@congty.vn",
+                    role=Role.WAREHOUSE_STAFF.value,
+                    roles_json=json.dumps([Role.WAREHOUSE_STAFF.value]),
                     is_active=True,
                 ),
             ]
             db.add_all(initial_users)
             db.commit()
             print("Users seeded successfully.")
+
+        # Đồng bộ và chuẩn hóa tài khoản Quản trị viên chính thức duy nhất: Đào Ngọc Hiệp
+        try:
+            admin_ent = db.query(UserEntity).filter(UserEntity.username == "admin").first()
+            if admin_ent:
+                admin_ent.full_name = "Đào Ngọc Hiệp"
+                admin_ent.email = "daongochiep645@gmail.com"
+                admin_ent.phone = "0998887766"
+                admin_ent.role = Role.SYSTEM_ADMIN.value
+                db.commit()
+
+            # Dọn dẹp triệt để tài khoản quản trị ảo / trùng lặp trên SQL Server
+            dup_admins = db.query(UserEntity).filter(
+                (UserEntity.username.in_(["quanlybanhang", "admin_virtual", "admin_mock"])) |
+                ((UserEntity.role == "admin") & (UserEntity.username != "admin"))
+            ).all()
+            for dup in dup_admins:
+                db.delete(dup)
+            if dup_admins:
+                db.commit()
+        except Exception as u_sync_err:
+            print(f"Notice syncing admin user: {u_sync_err}")
 
         # 2. Seed Categories nếu chưa có
         if db.query(CategoryEntity).count() == 0:
@@ -913,10 +999,13 @@ def init_db(bind=None):
             policies = [
                 DiscountPolicyEntity(
                     id=1,
-                    code="CK-POLO",
+                    code="CK-SL-001",
                     name="Chiết khấu số lượng Áo Thun Polo",
+                    title="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP001",
                     description="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP001",
+                    category="ALL",
                     is_active=True,
+                    status="active",
                     tiers=[
                         DiscountTierEntity(min_quantity=10, max_quantity=29, discount_percent=5.0),
                         DiscountTierEntity(min_quantity=30, max_quantity=99, discount_percent=10.0),
@@ -925,10 +1014,13 @@ def init_db(bind=None):
                 ),
                 DiscountPolicyEntity(
                     id=2,
-                    code="CK-JEANS",
+                    code="CK-SL-002",
                     name="Chiết khấu số lượng Quần Jeans Slimfit",
+                    title="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP002",
                     description="Ưu đãi bậc thang khi mua số lượng lớn cho mã SP002",
+                    category="ALL",
                     is_active=True,
+                    status="active",
                     tiers=[
                         DiscountTierEntity(min_quantity=20, max_quantity=49, discount_percent=8.0),
                         DiscountTierEntity(min_quantity=50, max_quantity=None, discount_percent=12.0),
@@ -1004,185 +1096,152 @@ def init_db(bind=None):
                 if p.id in wh_map and wh_map[p.id] is not None:
                     if p.stock != wh_map[p.id]:
                         p.stock = wh_map[p.id]
-            # Đảm bảo Kho Hàng Lỗi & Chờ Xử Lý (DAMAGED WAREHOUSE) luôn tồn tại
-            wh_damaged = db.query(WarehouseEntity).filter(
-                (WarehouseEntity.code == "KHO_LOI") | (WarehouseEntity.warehouse_type == "DAMAGED")
-            ).first()
-            if not wh_damaged:
-                wh_damaged = WarehouseEntity(
-                    code="KHO_LOI",
-                    name="Kho Hàng Lỗi & Chờ Xử Lý",
-                    warehouse_type="DAMAGED",
-                    status="Đang hoạt động",
-                    is_active=True,
-                    address="Khu vực lưu trữ hàng lỗi / cách ly kỹ thuật",
-                    manager_name="Thủ Kho Hàng Lỗi",
-                    phone="0900000000",
-                )
-                db.add(wh_damaged)
-                db.flush()
             db.commit()
             print("Product stocks synchronized from warehouses successfully.")
         except Exception as sync_err:
             print(f"Error syncing product stocks from warehouses: {sync_err}")
-        # Seed Credit Policy Config (S7-04)
+
+        # 10.5. Seed initial orders if empty
+        if db.query(OrderEntity).count() == 0:
+            print("Seeding initial orders...")
+            from app.api.v1.endpoints.orders import ORDERS_DB
+            for o_id, mem_order in ORDERS_DB.items():
+                ocode = mem_order.get("order_code")
+                dt_str = mem_order.get("created_at")
+                c_at = datetime.fromisoformat(dt_str.replace("Z", "+00:00")) if dt_str else datetime.now(timezone.utc)
+                db.add(OrderEntity(
+                    order_code=ocode,
+                    dealer_id=mem_order.get("dealer_id", 1),
+                    dealer_name=mem_order.get("dealer_name", ""),
+                    created_by=mem_order.get("created_by", "sales"),
+                    assigned_sale_id=mem_order.get("assigned_sale_id"),
+                    assigned_sale_name=mem_order.get("assigned_sale_name"),
+                    total_amount=mem_order.get("total_amount", 0.0),
+                    status=mem_order.get("status", "CONFIRMED"),
+                    note=mem_order.get("note"),
+                    delivery_point_id=mem_order.get("delivery_point_id"),
+                    discount_rate=mem_order.get("discount_percent", 0.0),
+                    discount_amount=mem_order.get("discount_amount", 0.0),
+                    requires_approval=mem_order.get("requires_approval", False),
+                    approval_reason=mem_order.get("approval_reason"),
+                    items_json=json.dumps(mem_order.get("items", []), ensure_ascii=False),
+                    created_at=c_at,
+                ))
+            db.commit()
+            print("Initial orders seeded successfully.")
+
+        # 11. Seed sample confirmed Return Order (Phiếu trả hàng hoàn kho) nếu chưa có
         try:
-            if db.query(CreditPolicyConfigEntity).count() == 0:
-                default_policy = CreditPolicyConfigEntity(
-                    id=1,
-                    over_limit_action="REQUIRE_APPROVAL",
-                    overdue_action="BLOCK",
-                    auto_eval_enabled=True,
-                    updated_by="Hệ thống",
+            if db.query(ReturnOrderEntity).count() == 0:
+                print("Seeding initial confirmed return order...")
+                # Tìm đơn hàng của đại lý 1 hoặc 2
+                sample_order = (
+                    db.query(OrderEntity)
+                    .filter(~OrderEntity.status.in_(["CANCELLED", "DRAFT", "REJECTED"]))
+                    .order_by(OrderEntity.id.asc())
+                    .first()
                 )
-                db.add(default_policy)
-                db.commit()
-                print("Credit policy configuration seeded successfully.")
-        except Exception as policy_err:
-            print(f"Error seeding credit policy: {policy_err}")
+                if sample_order:
+                    sample_dealer = db.query(DealerEntity).filter(DealerEntity.id == sample_order.dealer_id).first()
+                    if sample_dealer:
+                        from app.services.invoice_service import sync_dealer_invoices_from_orders
+                        sync_dealer_invoices_from_orders(sample_dealer, db)
+                    inv_code = f"HD-{sample_order.order_code}"
+                    sample_inv = db.query(InvoiceEntity).filter(InvoiceEntity.invoice_code == inv_code).first()
 
-                # 11. Khởi tạo danh sách tài xế và phương tiện vận chuyển mẫu nếu chưa có
+                    # Lấy sản phẩm từ đơn hàng
+                    from app.services.debt_adjustment_service import extract_original_sold_items_map
+                    items_map = extract_original_sold_items_map(sample_inv, sample_order, db)
+                    ret_items = []
+                    subtotal = 0.0
+                    for pid, item_info in list(items_map.items())[:2]:
+                        qty = max(1, min(2, item_info.get("sold_quantity", 1)))
+                        uprice = float(item_info.get("unit_price", 0.0))
+                        ltot = qty * uprice
+                        subtotal += ltot
+                        ret_items.append(
+                            ReturnOrderItemEntity(
+                                product_id=pid,
+                                product_code=item_info["product_code"],
+                                product_name=item_info["product_name"],
+                                unit_name=item_info["unit_name"],
+                                quantity=qty,
+                                return_quantity=qty,
+                                original_quantity=qty,
+                                unit_price=uprice,
+                                refund_amount=ltot,
+                                line_total=ltot,
+                                reason="Hàng giao sai quy cách theo phản ánh của đại lý",
+                                return_reason="Hàng giao sai quy cách theo phản ánh của đại lý",
+                            )
+                        )
+
+                    if ret_items:
+                        now_utc = datetime.now(timezone.utc)
+                        today_s = now_utc.strftime("%Y%m%d")
+                        ret_order = ReturnOrderEntity(
+                            return_code=f"TH-{today_s}-001",
+                            order_id=sample_order.id,
+                            order_code=sample_order.order_code,
+                            original_invoice_id=sample_inv.id if sample_inv else None,
+                            original_invoice_code=inv_code,
+                            dealer_id=sample_order.dealer_id,
+                            dealer_name=sample_order.dealer_name,
+                            warehouse_id="WH01",
+                            warehouse_name="Kho Tổng Hà Nội",
+                            status="CONFIRMED",
+                            reason="Khách trả lại do sai quy cách sản phẩm, kho đã kiểm nhận hoàn kho",
+                            note="Phiếu trả hàng đã hoàn tất thủ tục nhập kho",
+                            subtotal_amount=subtotal,
+                            tax_amount=0.0,
+                            total_amount=subtotal,
+                            created_by_id=1,
+                            created_by_name="Quản trị viên",
+                            confirmed_by_id=1,
+                            confirmed_by_name="Quản trị viên",
+                            confirmed_at=now_utc,
+                            items=ret_items,
+                        )
+                        db.add(ret_order)
+                        db.commit()
+                        print(f"Sample return order {ret_order.return_code} seeded successfully.")
+        except Exception as ro_err:
+            print(f"Notice: Return order seed skipped: {ro_err}")
+
+        # 12. Seed Receipt Vouchers (Phiếu thu tiền đại lý) trên SQL Server nếu chưa có
         try:
-            if db.query(DriverEntity).count() == 0:
-                default_drivers = [
-                    DriverEntity(code="TX001", name="Nguyễn Văn Hùng", phone="0912345678", license_number="B2-12345678", status="ACTIVE"),
-                    DriverEntity(code="TX002", name="Trần Quốc Tài", phone="0987654321", license_number="C-87654321", status="ACTIVE"),
-                    DriverEntity(code="TX003", name="Lê Hoàng Long", phone="0905112233", license_number="C-45678912", status="ACTIVE"),
-                    DriverEntity(code="TX004", name="Phạm Minh Tuấn", phone="0938445566", license_number="D-98761234", status="ACTIVE"),
-                ]
-                db.add_all(default_drivers)
-                db.commit()
-                print("Default drivers seeded successfully.")
-
-            if db.query(VehicleEntity).count() == 0:
-                default_vehicles = [
-                    VehicleEntity(plate_number="29C-888.99", vehicle_type="Xe tải 1.5 tấn", capacity_kg=1500.0, status="ACTIVE"),
-                    VehicleEntity(plate_number="29C-678.90", vehicle_type="Xe tải 2.5 tấn", capacity_kg=2500.0, status="ACTIVE"),
-                    VehicleEntity(plate_number="51D-999.88", vehicle_type="Xe tải 3.5 tấn", capacity_kg=3500.0, status="ACTIVE"),
-                    VehicleEntity(plate_number="29B-123.45", vehicle_type="Xe Van 850kg", capacity_kg=850.0, status="ACTIVE"),
-                ]
-                db.add_all(default_vehicles)
-                db.commit()
-                print("Default vehicles seeded successfully.")
-        except Exception as seed_trip_err:
-            print(f"Error seeding drivers/vehicles: {seed_trip_err}")
-
-        # 12. Khởi tạo danh sách Lô hàng & Hạn sử dụng (Product Batches) mẫu nếu chưa có
-        try:
-            if db.query(ProductBatchEntity).count() == 0:
-                p_beer = db.query(ProductEntity).filter(ProductEntity.code == "SP-BEER").first()
-                if not p_beer:
-                    p_beer = ProductEntity(
-                        code="SP-BEER",
-                        name="Bia Tiger Crystal Lon 330ml",
-                        stock=428,
-                        cost_price=12000.0,
-                        sell_price=18000.0,
-                        base_unit="Lon",
-                        is_batch_managed=True,
-                        status="active",
-                    )
-                    db.add(p_beer)
-                    db.flush()
-                else:
-                    p_beer.is_batch_managed = True
-                    p_beer.base_unit = "Lon"
-
-                p_amox = db.query(ProductEntity).filter(ProductEntity.code == "SKU-BATCH-01").first()
-                if not p_amox:
-                    p_amox = ProductEntity(
-                        code="SKU-BATCH-01",
-                        name="Thuốc Kháng Sinh Amoxicillin 500mg",
-                        stock=150,
-                        cost_price=45000.0,
-                        sell_price=65000.0,
-                        base_unit="Hộp",
-                        is_batch_managed=True,
-                        status="active",
-                    )
-                    db.add(p_amox)
-                    db.flush()
-                else:
-                    p_amox.is_batch_managed = True
-
-                now_utc = datetime.now(timezone.utc)
-                default_batches = [
-                    ProductBatchEntity(
-                        product_id=p_beer.id,
-                        warehouse_id=1,
-                        batch_number="LOT-2026-TIGER-01",
-                        manufacturing_date=now_utc - timedelta(days=90),
-                        expiry_date=now_utc + timedelta(days=180),
-                        quantity=180.0,
-                        created_at=now_utc,
-                        updated_at=now_utc,
-                    ),
-                    ProductBatchEntity(
-                        product_id=p_beer.id,
-                        warehouse_id=1,
-                        batch_number="LOT-2026-TIGER-NEAR",
-                        manufacturing_date=now_utc - timedelta(days=330),
-                        expiry_date=now_utc + timedelta(days=18),
-                        quantity=80.0,
-                        created_at=now_utc,
-                        updated_at=now_utc,
-                    ),
-                    ProductBatchEntity(
-                        product_id=p_beer.id,
-                        warehouse_id=1,
-                        batch_number="LOT-2025-TIGER-EXP",
-                        manufacturing_date=now_utc - timedelta(days=400),
-                        expiry_date=now_utc - timedelta(days=10),
-                        quantity=45.0,
-                        created_at=now_utc,
-                        updated_at=now_utc,
-                    ),
-                    ProductBatchEntity(
-                        product_id=p_beer.id,
-                        warehouse_id=2,
-                        batch_number="LOT-2026-TIGER-DN01",
-                        manufacturing_date=now_utc - timedelta(days=60),
-                        expiry_date=now_utc + timedelta(days=240),
-                        quantity=123.0,
-                        created_at=now_utc,
-                        updated_at=now_utc,
-                    ),
-                    ProductBatchEntity(
-                        product_id=p_amox.id,
-                        warehouse_id=1,
-                        batch_number="LOT-AMOX-2026-A1",
-                        manufacturing_date=now_utc - timedelta(days=60),
-                        expiry_date=now_utc + timedelta(days=300),
-                        quantity=100.0,
-                        created_at=now_utc,
-                        updated_at=now_utc,
-                    ),
-                    ProductBatchEntity(
-                        product_id=p_amox.id,
-                        warehouse_id=1,
-                        batch_number="LOT-AMOX-2026-WARN",
-                        manufacturing_date=now_utc - timedelta(days=340),
-                        expiry_date=now_utc + timedelta(days=22),
-                        quantity=30.0,
-                        created_at=now_utc,
-                        updated_at=now_utc,
-                    ),
-                    ProductBatchEntity(
-                        product_id=p_amox.id,
-                        warehouse_id=1,
-                        batch_number="LOT-AMOX-2025-EXP",
-                        manufacturing_date=now_utc - timedelta(days=500),
-                        expiry_date=now_utc - timedelta(days=15),
-                        quantity=20.0,
-                        created_at=now_utc,
-                        updated_at=now_utc,
-                    ),
-                ]
-                db.add_all(default_batches)
-                db.commit()
-                print("Default product batches seeded successfully.")
-        except Exception as seed_batch_err:
-            print(f"Error seeding product batches: {seed_batch_err}")
+            if db.query(ReceiptVoucherEntity).count() == 0:
+                print("Seeding initial receipt vouchers into SQL Server...")
+                from app.models.dealer import RECEIPT_VOUCHERS_JSON_PATH
+                if os.path.exists(RECEIPT_VOUCHERS_JSON_PATH):
+                    with open(RECEIPT_VOUCHERS_JSON_PATH, "r", encoding="utf-8") as rf:
+                        v_data = json.load(rf)
+                        for r_code, v in v_data.items():
+                            c_dt_str = v.get("created_at")
+                            c_dt = datetime.fromisoformat(c_dt_str.replace("Z", "+00:00")) if c_dt_str else datetime.now(timezone.utc)
+                            db.add(ReceiptVoucherEntity(
+                                receipt_code=r_code,
+                                dealer_id=v.get("dealer_id", 1),
+                                dealer_code=v.get("dealer_code", "DL001"),
+                                dealer_name=v.get("dealer_name", ""),
+                                dealer_address=v.get("dealer_address"),
+                                dealer_phone=v.get("dealer_phone"),
+                                dealer_tax_code=v.get("dealer_tax_code"),
+                                order_code=v.get("order_code"),
+                                amount=float(v.get("amount", 0.0) or 0.0),
+                                amount_in_words=v.get("amount_in_words"),
+                                payment_method=v.get("payment_method", "Tiền mặt"),
+                                reason=v.get("reason"),
+                                payer_name=v.get("payer_name"),
+                                collector_name=v.get("collector_name"),
+                                collector_role=v.get("collector_role"),
+                                created_at=c_dt,
+                                note=v.get("note"),
+                            ))
+                        db.commit()
+                        print("Initial receipt vouchers seeded into SQL Server successfully.")
+        except Exception as rv_err:
+            print(f"Notice: Receipt vouchers seed notice: {rv_err}")
 
         # S7-02: Tự động đồng bộ hoá đơn từ đơn hàng và công nợ CSDL hiện có
         try:
@@ -1191,6 +1250,14 @@ def init_db(bind=None):
             print("Dealer invoices synchronized successfully.")
         except Exception as inv_err:
             print(f"Notice on syncing invoices: {inv_err}")
+
+        # 13. Tự động đồng bộ chuẩn hóa dữ liệu công nợ trên SQL Server
+        try:
+            from app.services.invoice_service import resync_all_debts_sql
+            resync_all_debts_sql(db)
+            print("All debt data synchronized on SQL Server successfully.")
+        except Exception as sync_err:
+            print(f"Notice: SQL Server debt resync notice: {sync_err}")
 
         print("Database initialization completed successfully.")
     except Exception as e:

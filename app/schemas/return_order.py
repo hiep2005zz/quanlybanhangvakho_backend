@@ -27,14 +27,14 @@ class ReturnOrderItemResponse(BaseModel):
     order_item_id: Optional[int] = None
     product_id: int
     product_code: Optional[str] = None
-    product_name: str
-    unit_name: str
-    unit_price: float
-    original_quantity: int
-    return_quantity: int
-    refund_amount: float
-    return_reason: str
-    is_damaged: bool
+    product_name: str = "Sản phẩm"
+    unit_name: Optional[str] = "Cái"
+    unit_price: float = 0.0
+    original_quantity: int = 0
+    return_quantity: int = 1
+    refund_amount: float = 0.0
+    return_reason: str = "Trả hàng đại lý"
+    is_damaged: bool = False
     target_warehouse_id: Optional[int] = None
     target_warehouse_code: Optional[str] = None
     target_warehouse_name: Optional[str] = None
@@ -46,17 +46,17 @@ class ReturnOrderItemResponse(BaseModel):
 class ReturnOrderResponse(BaseModel):
     id: int
     code: str
-    order_id: int
-    order_code: str
-    dealer_id: int
-    dealer_name: str
-    status: str
-    total_items: int
-    total_quantity: int
-    total_refund_amount: float
+    order_id: Optional[int] = 0
+    order_code: Optional[str] = ""
+    dealer_id: Optional[int] = 0
+    dealer_name: Optional[str] = "Đại lý"
+    status: str = "PENDING_WAREHOUSE"
+    total_items: int = 0
+    total_quantity: int = 0
+    total_refund_amount: float = 0.0
     note: Optional[str] = None
-    created_by: str
-    created_at: str
+    created_by: Optional[str] = "Hệ thống"
+    created_at: str = ""
     confirmed_by: Optional[str] = None
     confirmed_at: Optional[str] = None
     cancelled_by: Optional[str] = None

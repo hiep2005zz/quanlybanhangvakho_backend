@@ -26,7 +26,13 @@ def test_sales_manager_approval_workflow():
         if d:
             d.customer_group = "Dai_ly_cap_1"
             d.credit_limit = 10_000_000_000.0
+            d.overdue_days_allowed = 9999
             db.commit()
+        from app.models.dealer import DEALERS_DB
+        if 1 in DEALERS_DB:
+            DEALERS_DB[1].customer_group = "Dai_ly_cap_1"
+            DEALERS_DB[1].credit_limit = 10_000_000_000.0
+            DEALERS_DB[1].overdue_days_allowed = 9999
 
         # Tạo bảng giá có giá sàn
         pb = PriceBookEntity(
@@ -65,7 +71,7 @@ def test_sales_manager_approval_workflow():
             },
             headers={"Authorization": f"Bearer {sales_token}"}
         )
-        assert res_create.status_code == 201
+        assert res_create.status_code == 201, f"Tạo đơn thất bại: {res_create.status_code} {res_create.text}"
         order_data = res_create.json()
         assert order_data["status"] == "PENDING_APPROVAL"
         assert order_data["requires_approval"] is True

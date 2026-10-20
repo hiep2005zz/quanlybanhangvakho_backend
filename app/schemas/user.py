@@ -76,6 +76,8 @@ class CustomerCreateResponse(BaseModel):
     user: "UserItemResponse"
     email_sent: bool
     message: str
+    temporary_password: Optional[str] = None
+    activation_code: Optional[str] = None
 
 class UserItemResponse(BaseModel):
     id: int

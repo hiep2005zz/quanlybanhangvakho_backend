@@ -52,6 +52,32 @@ def get_all_dealers_debt_summary_endpoint(
     return results
 
 
+from sqlalchemy import or_
+
+def _get_customer_dealer_id(current_user: UserResponse, db: Session) -> Optional[int]:
+    user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
+    roles = {str(r).lower() for r in user_roles if r}
+    is_customer = "customer" in roles and not any(r in ["admin", "sales_manager", "sales", "accountant"] for r in roles)
+    if not is_customer:
+        return None
+    conds = [DealerEntity.id == current_user.id]
+    if current_user.email:
+        conds.append(DealerEntity.email == current_user.email)
+    if current_user.phone:
+        conds.append(DealerEntity.phone == current_user.phone)
+    if current_user.username:
+        conds.append(DealerEntity.code == current_user.username)
+    if current_user.full_name:
+        conds.append(DealerEntity.name == current_user.full_name)
+    dealer = db.query(DealerEntity).filter(or_(*conds)).first()
+    if not dealer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy hồ sơ đại lý liên kết với tài khoản của bạn.",
+        )
+    return dealer.id
+
+
 @router.get("/dealers/{dealer_id}/summary", response_model=DealerDebtSummaryResponse)
 def get_single_dealer_debt_summary_endpoint(
     dealer_id: int,
@@ -63,6 +89,9 @@ def get_single_dealer_debt_summary_endpoint(
     """
     Tiêu chí 1: Hiển thị ngay thông tin tổng hợp công nợ của đại lý khi chọn đại lý.
     """
+    cust_dealer_id = _get_customer_dealer_id(current_user, db)
+    if cust_dealer_id is not None and cust_dealer_id != dealer_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tài khoản đại lý chỉ được phép xem công nợ của chính mình.")
     return get_dealer_debt_summary(dealer_id, db)
 
 
@@ -78,6 +107,9 @@ def get_dealer_invoices_for_allocation_endpoint(
     Tiêu chí 2: Lấy danh sách toàn bộ hoá đơn của đại lý phục vụ Kế toán xem và đối trừ.
     Hiển thị chính xác đại lý còn nợ hoá đơn nào, sắp xếp theo thứ tự hoá đơn cũ nhất xếp trước.
     """
+    cust_dealer_id = _get_customer_dealer_id(current_user, db)
+    if cust_dealer_id is not None and cust_dealer_id != dealer_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tài khoản đại lý chỉ được phép xem hóa đơn của chính mình.")
     return get_dealer_invoices_for_allocation(dealer_id, db)
 
 
@@ -128,6 +160,9 @@ def get_payment_receipts_endpoint(
     """
     Lấy danh sách các khoản thanh toán / phiếu thu nợ đã ghi nhận trên hệ thống.
     """
+    cust_dealer_id = _get_customer_dealer_id(current_user, db)
+    if cust_dealer_id is not None:
+        dealer_id = cust_dealer_id
     return get_payment_receipts_list(dealer_id, db)
 
 
@@ -142,7 +177,11 @@ def get_payment_receipt_by_id_endpoint(
     """
     Xem chi tiết phiếu thu nợ và chi tiết phân bổ hoá đơn.
     """
-    return get_payment_receipt_detail(receipt_id, db)
+    receipt = get_payment_receipt_detail(receipt_id, db)
+    cust_dealer_id = _get_customer_dealer_id(current_user, db)
+    if cust_dealer_id is not None and receipt.dealer_id != cust_dealer_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tài khoản đại lý chỉ được phép xem phiếu thu của chính mình.")
+    return receipt
 
 
 @router.delete("/{receipt_id}")
