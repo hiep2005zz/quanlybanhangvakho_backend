@@ -51,6 +51,13 @@ def _resolve_authenticated_dealer(current_user: UserResponse, db: Session, targe
         return dealer
 
     # Dành cho Quản trị viên / Kế toán / Sales
+    allowed_staff = {"admin", "sales_manager", "sales", "accountant"}
+    if not (set([r.lower() for r in user_roles]) & allowed_staff):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bạn không có quyền truy cập thông tin công nợ đại lý.",
+        )
+
     if target_dealer_id is not None:
         dealer = db.query(DealerEntity).filter(DealerEntity.id == target_dealer_id).first()
         if not dealer:

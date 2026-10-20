@@ -202,5 +202,5 @@ def get_admin_contact():
     """
     admin_user = USERS_DB.get("admin")
     admin_email = (admin_user.email if admin_user and admin_user.email else None) or settings.MAIL_FROM or "daongochiep645@gmail.com"
-    admin_name = admin_user.full_name if admin_user else "Nguyễn Quản Trị"
+    admin_name = admin_user.full_name if admin_user else "Đào Ngọc Hiệp"
     return {"admin_email": admin_email, "admin_name": admin_name}

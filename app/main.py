@@ -91,6 +91,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Register routers
@@ -135,10 +136,11 @@ app.include_router(inventory_reports.router, prefix="/api/v1/inventory", tags=["
 app.include_router(deliveries.router, prefix="/api/v1/deliveries", tags=["Deliveries"])
 app.include_router(stock_adjustments.router, prefix="/api/v1/stock-adjustments", tags=["Stock Adjustments"])
 app.include_router(payment_collections.router, prefix="/api/v1/payment-collections", tags=["Payment Collections"])
-from app.api.v1.endpoints import sales_invoices, return_orders, debt_reconciliations
+from app.api.v1.endpoints import sales_invoices, return_orders, debt_reconciliations, debt_adjustments
 app.include_router(sales_invoices.router, prefix="/api/v1/sales-invoices", tags=["Sales Invoices"])
 app.include_router(return_orders.router, prefix="/api/v1/return-orders", tags=["Return Orders / RMA"])
 app.include_router(debt_reconciliations.router, prefix="/api/v1/debt-reconciliations", tags=["Debt Reconciliations"])
+app.include_router(debt_adjustments.router, prefix="/api/v1/debt-adjustments", tags=["Debt Adjustments"])
 
 # Mount static folder for user avatars / media uploads
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")

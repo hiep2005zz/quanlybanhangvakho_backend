@@ -389,13 +389,7 @@ def validate_and_reserve_order_stock(
 
     warehouse_id, warehouse_name = resolve_dealer_warehouse(dealer)
 
-    # Đảm bảo Database Transaction Lock (Đối với SQLite: BEGIN IMMEDIATE; đối với Postgres/SQL Server: with_for_update)
-    from sqlalchemy import text
-    if db.bind and db.bind.dialect.name == "sqlite":
-        try:
-            db.connection().execute(text("BEGIN IMMEDIATE"))
-        except Exception:
-            pass
+    # Khóa hàng cấp dòng (Row-Level Locking với with_for_update) trên SQL Server
 
     # Sắp xếp theo product_id để tránh deadlock khi khóa nhiều hàng
     sorted_items = sorted(items, key=lambda x: x["product_id"])
