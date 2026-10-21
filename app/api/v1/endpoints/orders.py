@@ -8,11 +8,22 @@ Nếu tài khoản nhân viên đang ở trạng thái LOCKED, từ chối tạo
 """
 import json
 from uuid import uuid4
-from app.models.entities import DealerDeliveryPointEntity, DealerEntity, OrderEntity, Order, ProductEntity, OrderItemEntity, OrderStatus
+from app.models.entities import (
+    DealerDeliveryPointEntity,
+    DealerEntity,
+    OrderEntity,
+    Order,
+    ProductEntity,
+    OrderItemEntity,
+    OrderStatus,
+    OrderDispatchEntity,
+    InventoryTransactionEntity,
+    WarehouseStockEntity,
+)
 from typing import List, Optional, Union
 from datetime import date, datetime, timezone, timedelta
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status, status as http_status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, status as http_status, Request, Response, Query
 from sqlalchemy import func, case, or_, and_
 from sqlalchemy.orm import Session
 from app.db.init_db import _ensure_legacy_columns
@@ -21,12 +32,13 @@ from app.core.database import get_db
 from app.core.rbac import Permission, Role
 from app.schemas.auth import UserResponse
 from app.api.v1.endpoints.products import RAW_PRODUCTS
-from app.models.dealer import DEALERS_DB, save_dealers_db, load_dealers_db
+from app.models.dealer import DEALERS_DB, save_dealers_db, load_dealers_db, compute_dealer_unified_debt, parse_tx_date
 from app.models.price_book import PriceBookEntity, PriceBookItemEntity
 
 from app.models.user import USERS_DB
 from app.services.audit_service import log_audit_event
 from app.api.v1.endpoints.discounts import resolve_best_discount
+from app.services.inventory_availability_service import resolve_dealer_warehouse, get_or_create_warehouse_stock
 
 router = APIRouter()
 
@@ -56,7 +68,7 @@ class OrderResponse(BaseModel):
     order_code: str
     dealer_id: int
     dealer_name: str
-    created_by: str
+    created_by: Optional[str] = "admin"
     assigned_sale_id: Optional[int] = None
     assigned_sale_name: Optional[str] = None
     total_amount: float
@@ -67,6 +79,10 @@ class OrderResponse(BaseModel):
     created_at: str
     approved_by: Optional[str] = None
     approved_at: Optional[str] = None
+    picking_at: Optional[str] = None
+    exported_at: Optional[str] = None
+    shipped_at: Optional[str] = None
+    delivered_at: Optional[str] = None
     subtotal_amount: Optional[float] = 0.0
     discount_percent: float = 0.0
     discount_rate: Optional[float] = 0.0
@@ -281,61 +297,145 @@ class DealerCreditInfoResponse(BaseModel):
     max_debt_age: int
     is_overdue: bool
     is_over_limit: bool
+    credit_warning_flag: Optional[bool] = False
+    credit_flag_reason: Optional[str] = None
+    last_credit_evaluated_at: Optional[Union[str, datetime]] = None
+    over_limit_action: Optional[str] = "REQUIRE_APPROVAL"
+    overdue_action: Optional[str] = "BLOCK"
 
 def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
     """
-    Tính toán chi tiết công nợ hiện tại, tuổi nợ và trạng thái nợ quá hạn của đại lý.
+    Đồng bộ chuẩn xác với Sổ chi tiết công nợ (S31-DN), hóa đơn và phiếu thu.
     """
-    current_debt = 0.0
-    max_debt_age = 0
-    # Tự động đồng bộ các đơn hàng từ SQL database vào orders_db nếu chưa có
+    now = datetime.now(timezone.utc)
+    payments_by_order: dict[str, float] = {}
+    unallocated_payments: float = 0.0
+    adj_by_order: dict[str, float] = {}
+    seen_receipt_codes = set()
     try:
         from app.core.database import SessionLocal
         from app.models.entities import OrderEntity
+        from app.models.receipt_voucher import ReceiptVoucherEntity
+        from app.models.payment_collection import PaymentCollectionEntity
+        from app.models.debt_adjustment import DebtAdjustmentEntity
+        from app.models.invoice import InvoiceEntity
+
         with SessionLocal() as db_session:
+            # 1. Tự động đồng bộ các đơn hàng từ SQL database vào orders_db nếu chưa có
             for db_order in db_session.query(OrderEntity).filter(OrderEntity.dealer_id == dealer.id).all():
-                if db_order.id not in orders_db:
-                    orders_db[db_order.id] = {
-                        "id": db_order.id,
-                        "order_code": db_order.order_code,
-                        "dealer_id": db_order.dealer_id,
-                        "dealer_name": db_order.dealer_name,
-                        "total_amount": db_order.total_amount,
-                        "status": db_order.status,
-                        "created_at": db_order.created_at.isoformat() if db_order.created_at else now.isoformat(),
-                    }
+                orders_db[db_order.id] = {
+                    "id": db_order.id,
+                    "order_code": db_order.order_code,
+                    "dealer_id": db_order.dealer_id,
+                    "dealer_name": db_order.dealer_name,
+                    "total_amount": float(db_order.total_amount or 0.0),
+                    "status": db_order.status,
+                    "created_at": db_order.created_at.isoformat() if db_order.created_at else now.isoformat(),
+                    "dt_obj": parse_tx_date(db_order.created_at),
+                }
+
+            # 2. Toàn bộ phiếu thu từ ReceiptVoucherEntity
+            try:
+                sql_vouchers = db_session.query(ReceiptVoucherEntity).filter(ReceiptVoucherEntity.dealer_id == dealer.id).all()
+                for v in sql_vouchers:
+                    seen_receipt_codes.add(v.receipt_code)
+                    amt = float(v.amount or 0.0)
+                    if v.order_code and v.order_code.strip():
+                        oc = v.order_code.strip()
+                        payments_by_order[oc] = payments_by_order.get(oc, 0.0) + amt
+                    else:
+                        unallocated_payments += amt
+            except Exception:
+                pass
+
+            # 3. Thu tiền theo tuyến từ PaymentCollectionEntity
+            try:
+                sql_pcols = db_session.query(PaymentCollectionEntity).filter(
+                    PaymentCollectionEntity.dealer_id == dealer.id,
+                    PaymentCollectionEntity.status == "CONFIRMED"
+                ).all()
+                for pc in sql_pcols:
+                    amt = float(pc.amount or 0.0)
+                    if pc.order_code and pc.order_code.strip():
+                        oc = pc.order_code.strip()
+                        payments_by_order[oc] = payments_by_order.get(oc, 0.0) + amt
+                    else:
+                        unallocated_payments += amt
+            except Exception:
+                pass
+
+            # 4. Giảm trừ công nợ do trả hàng từ DebtAdjustmentEntity
+            try:
+                adjustments = db_session.query(DebtAdjustmentEntity).filter(
+                    DebtAdjustmentEntity.dealer_id == dealer.id,
+                    DebtAdjustmentEntity.status == "POSTED",
+                ).all()
+                for adj in adjustments:
+                    ord_c = (adj.original_invoice_code or "").replace("HD-", "").strip()
+                    adj_by_order[ord_c] = adj_by_order.get(ord_c, 0.0) + float(adj.total_adjusted_amount or 0.0)
+            except Exception:
+                pass
+
+            # 5. Đồng bộ trạng thái đã thanh toán từ hóa đơn SQL Server nếu có
+            try:
+                invoices = db_session.query(InvoiceEntity).filter(InvoiceEntity.dealer_id == dealer.id).all()
+                for inv in invoices:
+                    if inv.order_id and inv.order_id in orders_db:
+                        if inv.remaining_debt <= 0:
+                            orders_db[inv.order_id]["status"] = "PAID"
+            except Exception:
+                pass
     except Exception:
         pass
 
-    now = datetime.now(timezone.utc)
-    for o in orders_db.values():
-        if o.get("dealer_id") == dealer.id and o.get("status") not in ("PAID", "CANCELLED"):
-            current_debt += float(o.get("total_amount", 0.0) or 0.0)
-            created_at_val = o.get("created_at")
-            if created_at_val:
-                try:
-                    if isinstance(created_at_val, str):
-                        s = created_at_val.replace("Z", "+00:00")
-                        order_date = datetime.fromisoformat(s)
-                        if not order_date.tzinfo:
-                            order_date = order_date.replace(tzinfo=timezone.utc)
-                    elif isinstance(created_at_val, datetime):
-                        order_date = created_at_val if created_at_val.tzinfo else created_at_val.replace(tzinfo=timezone.utc)
-                    else:
-                        order_date = now
-                    days_old = max(0, (now - order_date).days)
-                    if days_old > max_debt_age:
-                        max_debt_age = days_old
-                except Exception:
-                    pass
+    # 6. Đồng bộ thêm từ RECEIPT_VOUCHERS_DB in-memory / JSON
+    try:
+        from app.models.dealer import RECEIPT_VOUCHERS_DB, load_receipt_vouchers_db
+        load_receipt_vouchers_db()
+        for v_code, v in RECEIPT_VOUCHERS_DB.items():
+            if v.get("dealer_id") == dealer.id and v_code not in seen_receipt_codes:
+                amt = float(v.get("amount", 0.0) or 0.0)
+                oc = v.get("order_code")
+                if oc and oc.strip():
+                    oc_clean = oc.strip()
+                    payments_by_order[oc_clean] = payments_by_order.get(oc_clean, 0.0) + amt
+                else:
+                    unallocated_payments += amt
+    except Exception:
+        pass
+
+    # 7. Thu thập toàn bộ đơn hàng của đại lý này
+    dealer_orders = [o for o in orders_db.values() if o.get("dealer_id") == dealer.id]
+
+    # 8. Tính toán số dư công nợ và tuổi nợ thực tế
+    current_debt, max_debt_age = compute_dealer_unified_debt(
+        dealer.id,
+        dealer_orders,
+        payments_by_order,
+        unallocated_payments,
+        adj_by_order,
+        now,
+    )
 
     credit_limit = float(getattr(dealer, "credit_limit", 50000000.0) or 50000000.0)
     allowed_days = int(getattr(dealer, "overdue_days_allowed", getattr(dealer, "max_debt_days", 30)) or 30)
     remaining_credit = max(0.0, credit_limit - current_debt)
-    is_overdue = max_debt_age > allowed_days
+    is_overdue = (current_debt > 0 and max_debt_age >= allowed_days) if (allowed_days is not None and allowed_days > 0) else (current_debt > 0)
     is_over_limit = current_debt > credit_limit
+    has_warning_flag = is_over_limit or is_overdue or bool(getattr(dealer, "credit_warning_flag", False))
+    reasons = []
+    if is_over_limit:
+        reasons.append(f"Vượt hạn mức ({current_debt:,.0f} đ > {credit_limit:,.0f} đ)")
+    if is_overdue:
+        reasons.append(f"Quá hạn thanh toán ({max_debt_age} ngày >= {allowed_days} ngày)")
+    warning_reason = " | ".join(reasons) if reasons else getattr(dealer, "credit_flag_reason", None)
 
-    return {
+    dealer.is_over_credit_limit = is_over_limit
+    dealer.is_overdue = is_overdue
+    dealer.credit_warning_flag = has_warning_flag
+    dealer.credit_flag_reason = warning_reason
+
+    res_dict = {
         "dealer_id": dealer.id,
         "dealer_code": dealer.code,
         "dealer_name": dealer.name,
@@ -351,46 +451,111 @@ def calculate_dealer_debt_summary(dealer, orders_db: dict) -> dict:
         "max_debt_age": max_debt_age,
         "is_overdue": is_overdue,
         "is_over_limit": is_over_limit,
+        "credit_warning_flag": has_warning_flag,
+        "credit_flag_reason": warning_reason,
+        "last_credit_evaluated_at": getattr(dealer, "last_credit_evaluated_at", None),
+        "over_limit_action": "REQUIRE_APPROVAL",
+        "overdue_action": "BLOCK",
     }
+    try:
+        from app.services.credit_policy_service import get_credit_policy_config
+        from app.core.database import SessionLocal
+        with SessionLocal() as db_session:
+            cfg = get_credit_policy_config(db_session)
+            if cfg:
+                res_dict["over_limit_action"] = cfg.over_limit_action
+                res_dict["overdue_action"] = cfg.overdue_action
+    except Exception:
+        pass
+    return res_dict
 
-def validate_dealer_overdue_debt(dealer, orders_db: dict) -> dict:
+def validate_dealer_overdue_debt(
+    dealer,
+    orders_db: dict,
+    db: Optional[Session] = None,
+    is_admin: bool = False,
+    is_customer: bool = False,
+    skip_policy_block: bool = False,
+) -> dict:
     """
-    Tiêu chí 3: Hard Block (Chặn tuyệt đối) khi đại lý có nợ quá hạn vượt số ngày cho phép.
-    So sánh số ngày quá hạn thực tế với số ngày nợ cho phép cấu hình theo đại lý.
-    Nếu phát hiện khoản nợ vượt quá số ngày cho phép: Bắt buộc chặn đứng luồng tạo đơn (HTTP 400).
+    S7-04 (AC2): Kiểm tra hạn mức công nợ & nợ quá hạn theo cấu hình chính sách công nợ:
+    - Ở trang admin (Admin hoặc nhân viên tạo đơn): không bị chặn bởi cấu hình (skip_policy_block=True hoặc is_admin=True).
+    - Chỉ áp dụng cấu hình CHẶN khi mua hàng ở trang đại lý (is_customer) hoặc khi không skip_policy_block.
     """
+    from app.services.credit_policy_service import get_credit_policy_config
     debt_summary = calculate_dealer_debt_summary(dealer, orders_db)
-    if debt_summary.get("is_overdue"):
+    
+    # Nếu là Admin hoặc được cấu hình bỏ qua chặn cấu hình công nợ ở trang admin:
+    if is_admin or skip_policy_block:
+        return debt_summary
+
+    # Lấy cấu hình chính sách
+    config = None
+    if db:
+        config = get_credit_policy_config(db)
+    else:
+        from app.core.database import SessionLocal
+        with SessionLocal() as local_db:
+            config = get_credit_policy_config(local_db)
+
+    # 1. Chặn nếu có nợ quá hạn và cấu hình là BLOCK
+    if debt_summary.get("is_overdue") and getattr(config, "overdue_action", "BLOCK") == "BLOCK":
+        max_debt_age = debt_summary.get("max_debt_age", 0)
+        overdue_days_allowed = debt_summary.get("overdue_days_allowed", getattr(dealer, "max_debt_days", 30))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Đại lý đang có khoản nợ quá hạn vượt mức cho phép. Tạm khóa quyền lên đơn mới.",
+            detail=f"Đại lý '{dealer.name}' đang có khoản nợ quá hạn {max_debt_age} ngày (vượt quá {overdue_days_allowed} ngày cho phép). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
         )
+
+    # 2. Chặn nếu đại lý hiện tại đã vượt hạn mức và cấu hình là BLOCK
+    if (debt_summary.get("is_over_limit") or getattr(dealer, "is_over_credit_limit", False)) and getattr(config, "over_limit_action", "REQUIRE_APPROVAL") == "BLOCK":
+        cur_debt = debt_summary.get("current_debt", 0.0)
+        c_limit = debt_summary.get("credit_limit", 0.0)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đại lý '{dealer.name}' hiện đang vượt hạn mức công nợ cho phép (Dư nợ hiện tại {cur_debt:,.0f} đ > Hạn mức {c_limit:,.0f} đ). Hệ thống đang cấu hình CHẶN tạo đơn hoàn toàn theo chính sách rủi ro công nợ.",
+        )
+
     return debt_summary
 
 def _get_customer_dealer(current_user: UserResponse):
     customer_dealer = DEALERS_DB.get(current_user.id)
-    if not customer_dealer:
+    if not customer_dealer and current_user.email:
         for d in DEALERS_DB.values():
-            if (d.email and current_user.email and d.email.lower() == current_user.email.lower()) or \
-               (d.phone and current_user.phone and d.phone == current_user.phone) or \
-               (d.code and current_user.username and d.code.lower() == current_user.username.lower()) or \
-               (d.name and current_user.full_name and d.name.lower() == current_user.full_name.lower()):
+            if d.email and d.email.strip().lower() == current_user.email.strip().lower():
+                customer_dealer = d
+                break
+    if not customer_dealer and current_user.username:
+        for d in DEALERS_DB.values():
+            if d.code and d.code.strip().lower() == current_user.username.strip().lower():
+                customer_dealer = d
+                break
+    if not customer_dealer and current_user.full_name:
+        for d in DEALERS_DB.values():
+            if d.name and d.name.strip().lower() == current_user.full_name.strip().lower():
+                customer_dealer = d
+                break
+    if not customer_dealer and current_user.phone:
+        for d in DEALERS_DB.values():
+            if d.phone and d.phone.strip() == current_user.phone.strip():
                 customer_dealer = d
                 break
     if not customer_dealer:
         try:
             from app.core.database import SessionLocal
             from app.models.entities import DealerEntity
-            from sqlalchemy import or_
             with SessionLocal() as db_session:
-                conds = [DealerEntity.id == current_user.id]
+                db_d = None
                 if current_user.email:
-                    conds.append(DealerEntity.email == current_user.email)
-                if current_user.phone:
-                    conds.append(DealerEntity.phone == current_user.phone)
-                if current_user.username:
-                    conds.append(DealerEntity.code == current_user.username)
-                db_d = db_session.query(DealerEntity).filter(or_(*conds)).first()
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.email == current_user.email.strip()).first()
+                if not db_d and current_user.username:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.code == current_user.username.strip()).first()
+                if not db_d and current_user.full_name:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.name == current_user.full_name.strip()).first()
+                if not db_d and current_user.phone:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.phone == current_user.phone.strip()).first()
+                if not db_d:
+                    db_d = db_session.query(DealerEntity).filter(DealerEntity.id == current_user.id).first()
                 if db_d:
                     from app.models.dealer import Dealer
                     customer_dealer = Dealer(
@@ -414,9 +579,13 @@ def _get_customer_dealer(current_user: UserResponse):
 
 @router.get("/dealers")
 def get_order_dealers(
+    search: Optional[str] = Query(None, description="Tìm kiếm theo mã, tên, SĐT hoặc địa chỉ đại lý"),
+    page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
+    page_size: Optional[int] = Query(None, ge=1, le=100, description="Số lượng đại lý mỗi trang"),
+    response: Response = None,
     current_user: UserResponse = Depends(require_permission(Permission.ORDER_WRITE.value))
 ):
-    """Return dealers available for order entry, restricted to the assigned salesperson or customer."""
+    """Return dealers available for order entry, restricted to the assigned salesperson or customer, with search and pagination support."""
     load_dealers_db()
     dealers = list(DEALERS_DB.values())
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
@@ -434,8 +603,30 @@ def get_order_dealers(
             )
         dealers = [dealer for dealer in dealers if dealer.assigned_sale_id == assigned_user.id]
 
+    # Tìm kiếm theo search query nếu có
+    if search and search.strip():
+        q = search.strip().lower()
+        dealers = [
+            d for d in dealers
+            if (
+                q in (getattr(d, "name", "") or "").lower()
+                or q in (getattr(d, "code", "") or "").lower()
+                or q in (getattr(d, "phone", "") or "").lower()
+                or q in (getattr(d, "address", "") or "").lower()
+            )
+        ]
+
+    sorted_dealers = sorted(dealers, key=lambda item: (item.name or "").lower())
+    total_count = len(sorted_dealers)
+
+    if page is not None and page_size is not None:
+        offset = (page - 1) * page_size
+        paged_dealers = sorted_dealers[offset:offset + page_size]
+    else:
+        paged_dealers = sorted_dealers
+
     res = []
-    for dealer in sorted(dealers, key=lambda item: item.name.lower()):
+    for dealer in paged_dealers:
         debt_info = calculate_dealer_debt_summary(dealer, ORDERS_DB)
         res.append({
             "id": dealer.id,
@@ -455,13 +646,24 @@ def get_order_dealers(
             "max_debt_age": debt_info["max_debt_age"],
             "is_overdue": debt_info["is_overdue"],
             "is_over_limit": debt_info["is_over_limit"],
+            "credit_warning_flag": debt_info.get("credit_warning_flag", False),
+            "credit_flag_reason": debt_info.get("credit_flag_reason", None),
+            "last_credit_evaluated_at": debt_info.get("last_credit_evaluated_at", None),
         })
+
+    if response is not None:
+        response.headers["X-Total-Count"] = str(total_count)
+        if page is not None and page_size is not None:
+            response.headers["X-Page"] = str(page)
+            response.headers["X-Page-Size"] = str(page_size)
+            response.headers["X-Has-More"] = "true" if (page * page_size) < total_count else "false"
+
     return res
 
 @router.get("/dealers/{dealer_id}/credit-info", response_model=DealerCreditInfoResponse)
 def get_order_dealer_credit_info(
     dealer_id: int,
-    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "customer"]))
+    current_user: UserResponse = Depends(require_roles(["admin", "sales_manager", "sales", "accountant", "customer"]))
 ):
     """
     AC 4 & AC 1: API lấy thông tin công nợ chi tiết của Đại lý phục vụ kiểm soát khi lên đơn.
@@ -849,10 +1051,27 @@ def _format_order_response(
     if order.status in ("PENDING_APPROVAL", "PENDING"):
         req_appr = True
         if not appr_reason:
-            if disc_rate > 0:
+            c_user = USERS_DB.get((order.created_by or "").lower())
+            c_roles = [str(r).lower() for r in (c_user.get_roles() if c_user else []) if r]
+            is_c_cust = any(r in ["customer", "agent"] for r in c_roles) or (order.created_by or "").lower() not in ["admin", "sales_manager", "sales", "tran_ban_hang"]
+            if is_c_cust:
+                appr_reason = "Đơn hàng do Đại lý tự đặt từ Cổng Đại lý (Chờ nhân viên phụ trách xác nhận)"
+            elif disc_rate > 0:
                 appr_reason = f"Chiết khấu ({disc_rate}%) vượt hạn mức chính sách cần duyệt"
             else:
                 appr_reason = "Bán dưới giá sàn cần quản lý duyệt"
+    else:
+        # Đơn đã xác nhận/duyệt/hoàn tất không còn yêu cầu phê duyệt
+        req_appr = False
+
+    # Khi đơn hàng không còn ở trạng thái chờ duyệt (đã xác nhận / duyệt / hủy / v.v.), làm sạch thông báo đại lý tự đặt chờ xác nhận
+    if appr_reason and order.status not in ("PENDING_APPROVAL", "PENDING", "REVISION_REQUIRED"):
+        parts = [p.strip() for p in appr_reason.split("|") if p.strip()]
+        remaining = [
+            p for p in parts
+            if not any(k in p.lower() for k in ["chờ nhân viên phụ trách xác nhận", "đại lý tự đặt", "cổng đại lý", "chờ nhân viên"])
+        ]
+        appr_reason = " | ".join(remaining) if remaining else None
 
     clean_items = items or items_parsed
     if (is_sales or not can_view_cost) and clean_items:
@@ -897,14 +1116,24 @@ def _format_order_response(
     created_at_str = order.created_at.isoformat() if hasattr(order.created_at, "isoformat") else str(order.created_at or "")
     desired_del_date_str = desired_delivery_date.isoformat() if hasattr(desired_delivery_date, "isoformat") else (str(desired_delivery_date) if desired_delivery_date else None)
 
+    cur_assigned_sale_id = order.assigned_sale_id
+    cur_assigned_sale_name = order.assigned_sale_name
+    if not cur_assigned_sale_id and d_obj:
+        cur_assigned_sale_id = getattr(d_obj, "assigned_sale_id", None)
+        cur_assigned_sale_name = getattr(d_obj, "assigned_sale_name", None)
+    if not cur_assigned_sale_name and cur_assigned_sale_id:
+        u = USERS_DB.get(str(cur_assigned_sale_id)) or next((usr for usr in USERS_DB.values() if usr.id == cur_assigned_sale_id), None)
+        if u:
+            cur_assigned_sale_name = u.full_name or u.username
+
     return OrderResponse(
         id=order.id,
         order_code=order.order_code,
         dealer_id=order.dealer_id,
         dealer_name=order.dealer_name,
         created_by=order.created_by,
-        assigned_sale_id=order.assigned_sale_id,
-        assigned_sale_name=order.assigned_sale_name,
+        assigned_sale_id=cur_assigned_sale_id,
+        assigned_sale_name=cur_assigned_sale_name,
         total_amount=order.total_amount,
         subtotal_amount=sub_amt,
         discount_percent=disc_rate,
@@ -966,7 +1195,277 @@ def get_order_regions(
     for r in db.query(DealerEntity.region).filter(DealerEntity.region.isnot(None)).all():
         if r[0]:
             regions.add(r[0].strip())
-    return sorted(list(regions))
+def _require_warehouse_or_admin(current_user: UserResponse) -> None:
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (current_user.roles or [current_user.role])
+    user_roles_lower = {str(r).lower() for r in user_roles}
+    if not (user_roles_lower & {"admin", "warehouse", "warehouse_manager", "warehouse_staff"}):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kho và Quản trị viên."
+        )
+
+
+@router.get("/warehouse/dispatch-pending")
+def get_warehouse_dispatch_pending(
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Tab 1: Lấy danh sách các đơn hàng đủ điều kiện xuất kho lần đầu.
+    Bao gồm các đơn ở trạng thái CONFIRMED, APPROVED, PICKING mà chưa hoàn tất xuất kho.
+    """
+    _require_warehouse_or_admin(current_user)
+
+    db_orders = db.query(OrderEntity).filter(
+        OrderEntity.status.in_(["CONFIRMED", "APPROVED", "PICKING"])
+    ).order_by(OrderEntity.id.desc()).all()
+
+    order_map = {}
+    for ord_obj in db_orders:
+        order_map[ord_obj.order_code.upper()] = ord_obj
+
+    for o in ORDERS_DB.values():
+        c_code = o.get("order_code", "").upper()
+        if o.get("status") in ["CONFIRMED", "APPROVED", "PICKING"] and c_code not in order_map:
+            order_map[c_code] = o
+
+    results = []
+    for code, ord_item in order_map.items():
+        is_entity = isinstance(ord_item, OrderEntity)
+        ord_id = ord_item.id if is_entity else ord_item.get("id")
+        dealer_id = ord_item.dealer_id if is_entity else ord_item.get("dealer_id")
+        dealer_name = ord_item.dealer_name if is_entity else ord_item.get("dealer_name")
+        created_at = ord_item.created_at if is_entity else ord_item.get("created_at")
+        ord_status = ord_item.status if is_entity else ord_item.get("status")
+        total_amount = ord_item.total_amount if is_entity else ord_item.get("total_amount", 0.0)
+        note = ord_item.note if is_entity else ord_item.get("note")
+
+        # Xác định kho phục vụ
+        dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+        if not dealer:
+            load_dealers_db()
+            dealer = DEALERS_DB.get(dealer_id)
+        warehouse_id, warehouse_name = resolve_dealer_warehouse(dealer)
+
+        items = []
+        if is_entity and ord_item.items_json:
+            try:
+                stored = json.loads(ord_item.items_json)
+                items = stored if isinstance(stored, list) else stored.get("items", [])
+            except Exception:
+                pass
+        elif not is_entity and ord_item.get("items"):
+            items = ord_item.get("items", [])
+
+        dispatch_count = db.query(OrderDispatchEntity).filter(
+            func.upper(OrderDispatchEntity.order_code) == code
+        ).count()
+
+        enriched_items = []
+        for it in items:
+            pid = it.get("product_id")
+            qty = int(it.get("quantity", 0))
+            delivered = int(it.get("delivered_quantity") or 0)
+            remaining = max(0, qty - delivered)
+
+            stock_rec = get_or_create_warehouse_stock(db, warehouse_id, warehouse_name, pid)
+            avail_stock = stock_rec.actual_stock if stock_rec.actual_stock is not None else (stock_rec.quantity_on_hand or 0)
+
+            enriched_items.append({
+                "product_id": pid,
+                "sku_id": it.get("sku_id") or it.get("product_code") or f"SP{pid:03d}",
+                "product_name": it.get("product_name") or f"SP #{pid}",
+                "quantity": qty,
+                "delivered_quantity": delivered,
+                "remaining_quantity": remaining,
+                "unit": it.get("unit_name", it.get("unit", "Cái")),
+                "available_stock": avail_stock,
+            })
+
+        if any(it["remaining_quantity"] > 0 for it in enriched_items):
+            results.append({
+                "id": ord_id,
+                "order_code": code,
+                "dealer_id": dealer_id,
+                "dealer_name": dealer_name,
+                "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                "status": ord_status,
+                "total_amount": total_amount,
+                "total_items": len(enriched_items),
+                "note": note,
+                "warehouse_id": warehouse_id,
+                "warehouse_name": warehouse_name,
+                "dispatch_count": dispatch_count,
+                "items": enriched_items,
+            })
+
+    return results
+
+
+@router.get("/warehouse/supplementary-pending")
+def get_warehouse_supplementary_pending(
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Tab 2: Lấy danh sách các đơn hàng còn nợ hàng (PARTIALLY_DELIVERED hoặc có shortage_quantity > 0).
+    """
+    _require_warehouse_or_admin(current_user)
+
+    all_active_orders = db.query(OrderEntity).filter(
+        OrderEntity.status.in_(["PARTIALLY_DELIVERED", "CONFIRMED", "PICKING", "APPROVED", "DELIVERED"])
+    ).order_by(OrderEntity.id.desc()).all()
+
+    order_map = {}
+    for ord_obj in all_active_orders:
+        order_map[ord_obj.order_code.upper()] = ord_obj
+
+    for o in ORDERS_DB.values():
+        c_code = o.get("order_code", "").upper()
+        if o.get("status") == "PARTIALLY_DELIVERED" and c_code not in order_map:
+            order_map[c_code] = o
+
+    results = []
+    for code, ord_item in order_map.items():
+        is_entity = isinstance(ord_item, OrderEntity)
+        ord_id = ord_item.id if is_entity else ord_item.get("id")
+        dealer_id = ord_item.dealer_id if is_entity else ord_item.get("dealer_id")
+        dealer_name = ord_item.dealer_name if is_entity else ord_item.get("dealer_name")
+        created_at = ord_item.created_at if is_entity else ord_item.get("created_at")
+        ord_status = ord_item.status if is_entity else ord_item.get("status")
+        total_amount = ord_item.total_amount if is_entity else ord_item.get("total_amount", 0.0)
+        note = ord_item.note if is_entity else ord_item.get("note")
+
+        dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+        if not dealer:
+            load_dealers_db()
+            dealer = DEALERS_DB.get(dealer_id)
+        warehouse_id, warehouse_name = resolve_dealer_warehouse(dealer)
+
+        items = []
+        if is_entity and ord_item.items_json:
+            try:
+                stored = json.loads(ord_item.items_json)
+                items = stored if isinstance(stored, list) else stored.get("items", [])
+            except Exception:
+                pass
+        elif not is_entity and ord_item.get("items"):
+            items = ord_item.get("items", [])
+
+        dispatches = db.query(OrderDispatchEntity).filter(
+            func.upper(OrderDispatchEntity.order_code) == code
+        ).order_by(OrderDispatchEntity.created_at.desc()).all()
+
+        last_dispatch = dispatches[0] if dispatches else None
+        last_dispatch_date = last_dispatch.created_at.isoformat() if (last_dispatch and hasattr(last_dispatch.created_at, "isoformat")) else (str(last_dispatch.created_at) if last_dispatch else None)
+
+        shortage_items = []
+        total_shortage_qty = 0
+
+        for it in items:
+            pid = it.get("product_id")
+            qty = int(it.get("quantity", 0))
+            delivered = int(it.get("delivered_quantity") or 0)
+            shortage = max(0, qty - delivered)
+
+            if shortage > 0:
+                stock_rec = get_or_create_warehouse_stock(db, warehouse_id, warehouse_name, pid)
+                avail_stock = stock_rec.actual_stock if stock_rec.actual_stock is not None else (stock_rec.quantity_on_hand or 0)
+
+                shortage_items.append({
+                    "product_id": pid,
+                    "sku_id": it.get("sku_id") or it.get("product_code") or f"SP{pid:03d}",
+                    "product_name": it.get("product_name") or f"SP #{pid}",
+                    "quantity": qty,
+                    "delivered_quantity": delivered,
+                    "shortage_quantity": shortage,
+                    "unit": it.get("unit_name", it.get("unit", "Cái")),
+                    "available_stock": avail_stock,
+                })
+                total_shortage_qty += shortage
+
+        if shortage_items and (ord_status == "PARTIALLY_DELIVERED" or len(dispatches) > 0):
+            results.append({
+                "id": ord_id,
+                "order_code": code,
+                "dealer_id": dealer_id,
+                "dealer_name": dealer_name,
+                "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                "status": ord_status,
+                "total_amount": total_amount,
+                "shortage_items_count": len(shortage_items),
+                "total_shortage_quantity": total_shortage_qty,
+                "last_dispatch_date": last_dispatch_date,
+                "dispatch_count": len(dispatches),
+                "note": note,
+                "warehouse_id": warehouse_id,
+                "warehouse_name": warehouse_name,
+                "items": shortage_items,
+            })
+
+    return results
+
+
+@router.get("/warehouse/dispatches")
+def get_warehouse_all_dispatches(
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Tab 3: Lấy danh sách tất cả các phiếu xuất kho (OrderDispatchEntity) trong hệ thống.
+    Dù đơn hàng đã hoàn thành 100% hay đang giao một phần, tất cả phiếu xuất kho đều được lưu trữ vĩnh viễn và không bao giờ bị ẩn đi.
+    """
+    _require_warehouse_or_admin(current_user)
+    dispatches = db.query(OrderDispatchEntity).order_by(OrderDispatchEntity.id.desc()).all()
+
+    results = []
+    for d in dispatches:
+        parsed_items = []
+        if d.items_json:
+            try:
+                parsed_items = json.loads(d.items_json)
+            except Exception:
+                pass
+
+        order = db.query(OrderEntity).filter(OrderEntity.id == d.order_id).first()
+        if not order and d.order_code:
+            order = db.query(OrderEntity).filter(func.upper(OrderEntity.order_code) == d.order_code.upper()).first()
+
+        dealer_name = ""
+        order_status = ""
+        total_order_amount = 0.0
+        if order:
+            dealer_name = order.dealer_name or ""
+            order_status = order.status or ""
+            total_order_amount = order.total_amount or 0.0
+        elif d.order_code and d.order_code in ORDERS_DB:
+            mem_ord = ORDERS_DB[d.order_code]
+            dealer_name = mem_ord.get("dealer_name", "")
+            order_status = mem_ord.get("status", "")
+            total_order_amount = mem_ord.get("total_amount", 0.0)
+
+        total_dispatched_qty = sum(int(it.get("dispatched_this_round") or it.get("quantity") or 0) for it in parsed_items)
+
+        results.append({
+            "id": d.id,
+            "dispatch_code": d.dispatch_code,
+            "order_id": d.order_id,
+            "order_code": d.order_code,
+            "dealer_name": dealer_name,
+            "order_status": order_status,
+            "total_order_amount": total_order_amount,
+            "dispatch_type": d.dispatch_type,
+            "round_number": d.round_number,
+            "warehouse_id": d.warehouse_id,
+            "warehouse_name": d.warehouse_name,
+            "performed_by": d.performed_by,
+            "note": d.note,
+            "created_at": d.created_at.isoformat() if hasattr(d.created_at, "isoformat") else str(d.created_at),
+            "items_count": len(parsed_items),
+            "total_dispatched_qty": total_dispatched_qty,
+            "items": parsed_items,
+        })
+    return results
 
 
 @router.get("", response_model=Union[OrderListFilteredResponse, List[OrderResponse]], dependencies=[Depends(RoleChecker(['Admin', 'Sales', 'Customer']))])
@@ -1024,7 +1523,7 @@ def get_orders(
             detail="Chức năng chỉ dành cho Quản trị viên, Quản lý kinh doanh, Nhân viên kinh doanh và Đại lý."
         )
 
-    # 1. AC: Tự động chạy migration an toàn bổ sung cột SQLite (tránh lỗi 500)
+    # 1. AC: Đảm bảo tương thích schema các cột cần thiết
     try:
         _ensure_legacy_columns(db.get_bind())
     except Exception:
@@ -1070,6 +1569,8 @@ def get_orders(
                     delivery_point_id=mem_order.get("delivery_point_id"),
                     discount_rate=mem_order.get("discount_percent", 0.0),
                     discount_amount=mem_order.get("discount_amount", 0.0),
+                    requires_approval=mem_order.get("requires_approval", False),
+                    approval_reason=mem_order.get("approval_reason"),
                     items_json=json.dumps(mem_order.get("items", []), ensure_ascii=False),
                     created_at=c_at,
                 ))
@@ -1132,7 +1633,9 @@ def get_orders(
     if status and status.strip() and status.strip().upper() != "ALL":
         st = status.strip().upper()
         if st in ("PENDING_APPROVAL", "PENDING"):
-            query = query.filter(OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING"]))
+            query = query.filter(OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING", "REVISION_REQUIRED"]))
+        elif st == "REVISION_REQUIRED":
+            query = query.filter(func.upper(OrderEntity.status) == "REVISION_REQUIRED")
         elif st == "CONFIRMED":
             query = query.filter(func.upper(OrderEntity.status) == "CONFIRMED")
         elif st == "COMPLETED":
@@ -1207,7 +1710,7 @@ def get_orders(
     stats = query.with_entities(
         func.coalesce(func.sum(OrderEntity.total_amount), 0.0),
         func.count(OrderEntity.id),
-        func.coalesce(func.sum(case((OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING"]), 1), else_=0)), 0),
+        func.coalesce(func.sum(case((OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING", "REVISION_REQUIRED"]), 1), else_=0)), 0),
         func.coalesce(func.sum(case((OrderEntity.status == "CONFIRMED", 1), else_=0)), 0)
     ).first()
 
@@ -1216,8 +1719,8 @@ def get_orders(
     pending_count = int(stats[2] or 0) if stats else 0
     confirmed_count = int(stats[3] or 0) if stats else 0
 
-    # 9. Sắp xếp (Ưu tiên PENDING_APPROVAL lên đầu, sau đó theo ID giảm dần)
-    is_pending_expr = case((OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING"]), 1), else_=0)
+    # 9. Sắp xếp (Ưu tiên PENDING_APPROVAL và REVISION_REQUIRED lên đầu, sau đó theo ID giảm dần)
+    is_pending_expr = case((OrderEntity.status.in_(["PENDING_APPROVAL", "PENDING", "REVISION_REQUIRED"]), 1), else_=0)
     items_query = query.order_by(is_pending_expr.desc(), OrderEntity.id.desc())
 
     # 10. Phân trang
@@ -1251,9 +1754,11 @@ def create_order(
     load_dealers_db()
 
     # TIÊU CHÍ CHẤP NHẬN 3: BLOCK LOGIC ĐỘC LẬP CHO ROLE CUSTOMER
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    raw_user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (getattr(current_user, "roles", None) or ([current_user.role] if current_user.role else []))
+    user_roles = [str(r).lower() for r in raw_user_roles]
+    is_admin = ("admin" in user_roles) or (bool(current_user.role) and current_user.role.lower() == "admin")
     is_customer = current_user.role == "customer" or current_user.role == "Customer" or (
-        "customer" in [r.lower() for r in user_roles] and not any(r.lower() in ["admin", "sales_manager", "sales", "accountant"] for r in user_roles)
+        "customer" in user_roles and not any(r in ["admin", "sales_manager", "sales", "accountant"] for r in user_roles)
     )
 
     if current_user.role == 'Customer' or current_user.role == 'customer' or is_customer:
@@ -1333,7 +1838,7 @@ def create_order(
         )
 
     # 3. TIÊU CHÍ 3 (Hard Block): Kiểm tra nợ quá hạn trước khi kiểm tra tổng hạn mức công nợ (Tiêu chí 2)
-    debt_summary = validate_dealer_overdue_debt(dealer, ORDERS_DB)
+    debt_summary = validate_dealer_overdue_debt(dealer, ORDERS_DB, db=db, is_admin=is_admin, is_customer=is_customer, skip_policy_block=is_admin)
     current_debt = debt_summary["current_debt"]
     credit_limit = debt_summary["credit_limit"]
     overdue_days_allowed = debt_summary["overdue_days_allowed"]
@@ -1427,7 +1932,7 @@ def create_order(
     requires_approval = False
     approval_reasons = []
     now_dt = datetime.now(timezone.utc)
-    if db:
+    if not is_admin and db:
         # 1. Tìm và khóa các bảng giá đang hiệu lực của nhóm khách hàng
         active_pbs = db.query(PriceBookEntity).filter(
             PriceBookEntity.customer_group.in_(aliases),
@@ -1492,13 +1997,19 @@ def create_order(
     )
     best_pct = float(best_disc["discount_percent"])
 
+    is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
+    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
+
     req_discount = data.discount_rate if data.discount_rate is not None and data.discount_percent == 0 else data.discount_percent
 
-    if req_discount == 0:
+    if is_customer:
+        # Đại lý tự đặt đơn: Cố định áp dụng đúng chính sách chiết khấu bậc sản lượng, không được tự ý sửa chiết khấu
+        effective_pct = best_pct
+    elif req_discount == 0:
         effective_pct = best_pct
     else:
         effective_pct = req_discount
-        if effective_pct > best_pct:
+        if not is_admin and effective_pct > best_pct:
             requires_approval = True
             pol_code = best_disc.get('applied_policy_code')
             pol_desc = f"{pol_code} ({best_pct}%)" if (pol_code and best_pct > 0) else f"({best_pct}%)"
@@ -1506,9 +2017,6 @@ def create_order(
                 f"Chiết khấu ({effective_pct}%) vượt mức chính sách {pol_desc} cần quản lý duyệt"
             )
 
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
-    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
     if is_customer:
         requires_approval = True
         approval_reasons.append("Đơn hàng do Đại lý tự đặt từ Cổng Đại lý (Chờ nhân viên phụ trách xác nhận)")
@@ -1516,28 +2024,57 @@ def create_order(
     discount_amount = round(subtotal_amount * effective_pct / 100, 2)
     final_total_amount = subtotal_amount - discount_amount
 
-    # TIÊU CHÍ 2 (Vượt hạn mức): Tổng đơn cộng công nợ hiện tại vượt hạn mức thì đơn bị đánh dấu cần duyệt
-    is_admin = any(r.lower() == "admin" for r in user_roles) or (current_user.role and current_user.role.lower() == "admin")
-    if not is_admin and ((current_debt + final_total_amount) > credit_limit or over_limit):
-        requires_approval = True
-        approval_reasons.append(
-            f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
-        )
+    # TIÊU CHÍ 2 (Vượt hạn mức & Quá hạn - S7-04 / S4-02):
+    from app.services.credit_policy_service import get_credit_policy_config
+    policy_cfg = get_credit_policy_config(db)
+    is_dealer_over_limit = (current_debt + final_total_amount) > credit_limit or over_limit or (current_debt > credit_limit) or bool(getattr(dealer, 'is_over_credit_limit', False)) or (bool(getattr(dealer, 'credit_warning_flag', False)) and 'vượt hạn mức' in (getattr(dealer, 'credit_flag_reason', '') or '').lower())
+    if is_admin:
+        # Trang admin: Admin tạo đơn không bao giờ cần duyệt hay bị chặn, tạo là thành công luôn
+        requires_approval = False
+        approval_reasons = []
+        approval_reason = None
+        order_status = "CONFIRMED"
+    else:
+        if is_dealer_over_limit:
+            if policy_cfg.over_limit_action == "BLOCK":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Đại lý '{dealer.name}' vượt hạn mức công nợ cho phép (Tổng nợ sau đơn {current_debt + final_total_amount:,.0f} đ > hạn mức {credit_limit:,.0f} đ). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
+                )
+            else:
+                requires_approval = True
+                approval_reasons.append(
+                    f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
+                )
+        if is_overdue:
+            if policy_cfg.overdue_action == "BLOCK":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Đại lý '{dealer.name}' đang có khoản nợ quá hạn {max_debt_age} ngày (vượt quá {overdue_days_allowed} ngày cho phép). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
+                )
+            else:
+                requires_approval = True
+                approval_reasons.append(
+                    f"Đại lý có khoản nợ quá hạn ({max_debt_age} ngày > {overdue_days_allowed} ngày cho phép) - Chuyển sang phê duyệt theo chính sách công nợ"
+                )
 
     order_id = _allocate_order_id(db)
 
     order_code = f"ORD{order_id:05d}"
     now_str = datetime.now(timezone.utc).isoformat()
-    # Nếu là Customer (Đại lý tự đặt): Status BẮT BUỘC bị ép thành "PENDING_APPROVAL" (Chờ duyệt).
-    # Nếu là Admin: Luôn tự động CONFIRMED (Admin có thẩm quyền tối cao, không cần cấp dưới duyệt đơn).
-    # Nếu là Sales: Nếu vi phạm chính sách giá/hạn mức thì PENDING_APPROVAL, ngược lại CONFIRMED.
+    # Nếu là Customer (Đại lý tự đặt) hoặc vi phạm chính sách công nợ / chiết khấu: PENDING_APPROVAL.
+    # Đơn hàng do Admin tạo: CONFIRMED (thành công ngay).
     if is_admin:
         requires_approval = False
-        approval_reasons.clear()
+        approval_reasons = []
+        approval_reason = None
         order_status = "CONFIRMED"
+    elif requires_approval or is_customer:
+        order_status = "PENDING_APPROVAL"
+        approval_reason = " | ".join(approval_reasons) if approval_reasons else None
     else:
-        order_status = "PENDING_APPROVAL" if (is_customer or requires_approval) else "CONFIRMED"
-    approval_reason = " | ".join(approval_reasons) if approval_reasons else None
+        order_status = "CONFIRMED"
+        approval_reason = None
 
     delivery_point_str = data.delivery_point
     if selected_delivery_point_id and not delivery_point_str:
@@ -1651,6 +2188,12 @@ def create_order(
         request=request,
     )
 
+    try:
+        from app.services.credit_policy_service import evaluate_dealer_credit_flags
+        evaluate_dealer_credit_flags(dealer.id, db, current_user, reason_prefix="Tạo đơn hàng mới", request=request)
+    except Exception as eval_err:
+        print(f"Error evaluating credit flags after order create: {eval_err}")
+
     return OrderResponse(**order_record)
 
 @router.post("/sales-entry", response_model=SalesOrderResponse, status_code=status.HTTP_201_CREATED)
@@ -1692,7 +2235,9 @@ def create_sales_entry_order(
         )
 
     # Lỗi tạo đơn chéo / tài khoản đại lý bị khóa:
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    raw_user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (getattr(current_user, "roles", None) or ([current_user.role] if current_user.role else []))
+    user_roles = [str(r).lower() for r in raw_user_roles]
+    is_admin = ("admin" in user_roles) or (bool(current_user.role) and current_user.role.lower() == "admin")
     is_customer = "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "accountant"])
     if is_customer or current_user.role == "customer":
         customer_dealer = _get_customer_dealer(current_user)
@@ -1741,7 +2286,6 @@ def create_sales_entry_order(
         )
 
     # AC 4: Kiểm tra phân quyền truy cập tính năng tạo đơn bán hàng
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
     ALLOWED_ORDER_CREATORS = ["admin", "sales_manager", "sales", "customer", "agent"]
     if not any(r.lower() in ALLOWED_ORDER_CREATORS for r in user_roles):
         raise HTTPException(
@@ -1749,8 +2293,12 @@ def create_sales_entry_order(
             detail="Truy cập bị từ chối (403 Forbidden). Chức năng này chỉ dành cho Nhân viên kinh doanh, Quản trị hệ thống và Đại lý."
         )
 
+    is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
+    is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
+
     # AC 3: TIÊU CHÍ 3 (Hard Block) - Kiểm tra nợ quá hạn trước khi kiểm tra tổng hạn mức
-    debt_summary = validate_dealer_overdue_debt(dealer, ORDERS_DB)
+    # Ở trang admin tạo đơn: không bị chặn bởi cấu hình chính sách công nợ
+    debt_summary = validate_dealer_overdue_debt(dealer, ORDERS_DB, db=db, is_admin=is_admin, is_customer=is_customer, skip_policy_block=is_admin or not is_customer)
     current_debt = debt_summary["current_debt"]
     credit_limit = debt_summary["credit_limit"]
     overdue_days_allowed = debt_summary["overdue_days_allowed"]
@@ -1876,7 +2424,7 @@ def create_sales_entry_order(
         aliases = ["khach_le", "Khach_le", "RETAIL", "Khách lẻ"]
 
     now_dt = datetime.now(timezone.utc)
-    if db:
+    if not is_admin and db:
         active_pbs = db.query(PriceBookEntity).filter(
             PriceBookEntity.customer_group.in_(aliases),
             PriceBookEntity.status == "ACTIVE",
@@ -1934,7 +2482,7 @@ def create_sales_entry_order(
         effective_pct = best_pct
     else:
         effective_pct = req_discount
-        if effective_pct > best_pct:
+        if not is_admin and effective_pct > best_pct:
             requires_approval = True
             pol_code = best_disc.get('applied_policy_code')
             pol_desc = f"{pol_code} ({best_pct}%)" if (pol_code and best_pct > 0) else f"({best_pct}%)"
@@ -1942,8 +2490,6 @@ def create_sales_entry_order(
                 f"Chiết khấu ({effective_pct}%) vượt mức chính sách {pol_desc} cần quản lý duyệt"
             )
 
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    is_admin = any(r.lower() == "admin" for r in user_roles) or (current_user.role and current_user.role.lower() == "admin")
     is_sales_or_admin = any(r in ["admin", "sales_manager", "sales"] for r in user_roles)
     is_customer = ("customer" in user_roles or "agent" in user_roles or current_user.role in ["customer", "agent"]) and not is_sales_or_admin
     if is_customer:
@@ -1953,20 +2499,64 @@ def create_sales_entry_order(
     discount_amount = round(subtotal_amount * effective_pct / 100, 2)
     final_total_amount = subtotal_amount - discount_amount
 
-    # TIÊU CHÍ 2 (Vượt hạn mức): Tổng đơn cộng công nợ hiện tại vượt hạn mức thì đơn bị đánh dấu cần duyệt
-    if not is_admin and (current_debt + final_total_amount) > credit_limit:
-        requires_approval = True
-        approval_reasons.append(
-            f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
-        )
+    # TIÊU CHÍ 2 (Vượt hạn mức & Quá hạn - S7-04 / S4-02):
+    from app.services.credit_policy_service import get_credit_policy_config
+    policy_cfg = get_credit_policy_config(db)
+    is_dealer_over_limit = (current_debt + final_total_amount) > credit_limit or (current_debt > credit_limit) or bool(getattr(dealer, 'is_over_credit_limit', False)) or (bool(getattr(dealer, 'credit_warning_flag', False)) and 'vượt hạn mức' in (getattr(dealer, 'credit_flag_reason', '') or '').lower())
+    if is_admin:
+        # Trang admin: Admin tạo đơn không bao giờ cần duyệt hay bị chặn, tạo là thành công luôn
+        requires_approval = False
+        approval_reasons = []
+        approval_reason = None
+        order_status = "CONFIRMED"
+    elif is_customer:
+        # Trang đại lý: Áp dụng cấu hình chính sách công nợ
+        if is_dealer_over_limit:
+            if policy_cfg.over_limit_action == "BLOCK":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Đại lý '{dealer.name}' vượt hạn mức công nợ cho phép (Tổng nợ sau đơn {current_debt + final_total_amount:,.0f} đ > hạn mức {credit_limit:,.0f} đ). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
+                )
+            else:
+                requires_approval = True
+                approval_reasons.append(
+                    f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
+                )
+        if is_overdue:
+            if policy_cfg.overdue_action == "BLOCK":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Đại lý '{dealer.name}' đang có khoản nợ quá hạn {max_debt_age} ngày (vượt quá {overdue_days_allowed} ngày cho phép). Hệ thống đang cấu hình CHẶN tạo đơn mới theo chính sách công nợ.",
+                )
+            else:
+                requires_approval = True
+                approval_reasons.append(
+                    f"Đại lý có khoản nợ quá hạn ({max_debt_age} ngày > {overdue_days_allowed} ngày cho phép) - Chuyển sang phê duyệt theo chính sách công nợ"
+                )
+    else:
+        # Nhân viên nội bộ tạo trên trang admin: Không bị chặn bởi cấu hình, chỉ chuyển cần duyệt nếu vượt/quá hạn
+        if is_dealer_over_limit:
+            requires_approval = True
+            approval_reasons.append(
+                f"Vượt hạn mức công nợ: Tổng nợ sau đơn ({current_debt + final_total_amount:,.0f} đ) vượt hạn mức cho phép ({credit_limit:,.0f} đ)"
+            )
+        if is_overdue:
+            requires_approval = True
+            approval_reasons.append(
+                f"Đại lý có khoản nợ quá hạn ({max_debt_age} ngày > {overdue_days_allowed} ngày cho phép) - Chuyển sang phê duyệt theo chính sách công nợ"
+            )
 
     if is_admin:
         requires_approval = False
-        approval_reasons.clear()
+        approval_reasons = []
+        approval_reason = None
         order_status = "CONFIRMED"
+    elif requires_approval or is_customer:
+        order_status = "PENDING_APPROVAL"
+        approval_reason = " | ".join(approval_reasons) if approval_reasons else None
     else:
-        order_status = "PENDING_APPROVAL" if (is_customer or requires_approval) else "CONFIRMED"
-    approval_reason = " | ".join(approval_reasons) if approval_reasons else None
+        order_status = "CONFIRMED"
+        approval_reason = None
 
     created_at = datetime.now(timezone.utc)
     db_order = OrderEntity(
@@ -2073,6 +2663,12 @@ def create_sales_entry_order(
         reason=f"Tạo đơn bán hàng cho đại lý {dealer.name}",
         request=request,
     )
+
+    try:
+        from app.services.credit_policy_service import evaluate_dealer_credit_flags
+        evaluate_dealer_credit_flags(dealer.id, db, current_user, reason_prefix="Tạo đơn bán hàng", request=request)
+    except Exception as eval_err:
+        print(f"Error evaluating credit flags after sales order create: {eval_err}")
 
     return SalesOrderResponse(**order_record)
 
@@ -2267,7 +2863,25 @@ def get_order_detail(
             )
 
     ord_st = (order_record.get("status") or "").upper()
-    is_order_dispatched = ord_st in ("DELIVERED", "CLOSED", "COMPLETED", "EXPORTED", "SHIPPED")
+    is_order_dispatched = ord_st in ("DELIVERED", "CLOSED", "COMPLETED", "EXPORTED", "SHIPPED", "DISPATCHED", "DELIVERING", "IN_TRANSIT")
+
+    # Tự động gán mốc thời gian giao hàng nếu chưa có sẵn
+    if ord_st in ("DELIVERED", "CLOSED", "COMPLETED"):
+        if not order_record.get("delivered_at"):
+            order_record["delivered_at"] = order_record.get("desired_delivery_date") or order_record.get("created_at")
+    if ord_st in ("SHIPPED", "DISPATCHED", "DELIVERING", "IN_TRANSIT", "DELIVERED", "CLOSED", "COMPLETED"):
+        if not order_record.get("shipped_at"):
+            order_record["shipped_at"] = order_record.get("desired_delivery_date") or order_record.get("created_at")
+    if ord_st in ("EXPORTED", "SHIPPED", "DISPATCHED", "DELIVERING", "IN_TRANSIT", "DELIVERED", "CLOSED", "COMPLETED"):
+        if not order_record.get("exported_at"):
+            order_record["exported_at"] = order_record.get("created_at")
+    if ord_st in ("PICKING", "PREPARING", "PACKING", "EXPORTED", "SHIPPED", "DISPATCHED", "DELIVERING", "IN_TRANSIT", "DELIVERED", "CLOSED", "COMPLETED"):
+        if not order_record.get("picking_at"):
+            order_record["picking_at"] = order_record.get("approved_at") or order_record.get("created_at")
+    if ord_st in ("CONFIRMED", "APPROVED", "PICKING", "PREPARING", "PACKING", "EXPORTED", "SHIPPED", "DISPATCHED", "DELIVERING", "IN_TRANSIT", "DELIVERED", "CLOSED", "COMPLETED"):
+        if not order_record.get("approved_at"):
+            order_record["approved_at"] = order_record.get("created_at")
+
     for item in items:
         is_dict = isinstance(item, dict)
         qty = item.get("quantity", 0) if is_dict else getattr(item, "quantity", 0)
@@ -2277,8 +2891,8 @@ def get_order_detail(
                 del_qty = qty
             shortage = max(0, int(qty) - int(del_qty))
         else:
-            del_qty = None
-            shortage = 0
+            del_qty = del_qty if del_qty is not None else None
+            shortage = max(0, int(qty) - int(del_qty)) if del_qty is not None else 0
 
         if is_dict:
             item["delivered_quantity"] = del_qty
@@ -2302,6 +2916,10 @@ def get_order_detail(
         "dealer_code": getattr(d, "code", None) if d else None,
         "dealer_phone": getattr(d, "phone", None) if d else None,
         "dealer_address": getattr(d, "address", None) if d else None,
+        "picking_at": order_record.get("picking_at"),
+        "exported_at": order_record.get("exported_at"),
+        "shipped_at": order_record.get("shipped_at"),
+        "delivered_at": order_record.get("delivered_at"),
     })
     return SalesOrderResponse(**detail_response)
 
@@ -2853,17 +3471,24 @@ def approve_order(
             detail=f"Không tìm thấy đơn hàng có mã hoặc ID {order_code}."
         )
 
-    assigned_id = target.get("assigned_sale_id") if target else (db_order.assigned_sale_id if db_order else None)
-    created_by = target.get("created_by") if target else (db_order.created_by if db_order else "")
-    approval_reason = (target.get("approval_reason") if target else (db_order.approval_reason if db_order else "")) or ""
+    assigned_id = (target.get("assigned_sale_id") if target else None) or (db_order.assigned_sale_id if db_order else None)
+    dealer_id = (target.get("dealer_id") if target else None) or (db_order.dealer_id if db_order else None)
+    if not assigned_id and dealer_id:
+        d_ent = DEALERS_DB.get(dealer_id) or (db.get(DealerEntity, dealer_id) if db else None)
+        if d_ent:
+            assigned_id = getattr(d_ent, "assigned_sale_id", None)
+
+    created_by = (target.get("created_by") if target else None) or (db_order.created_by if db_order else "")
+    approval_reason = ((target.get("approval_reason") if target else None) or (db_order.approval_reason if db_order else "")) or ""
     is_floor_price_order = "giá sàn" in approval_reason.lower()
     is_discount_order = "chiết khấu" in approval_reason.lower()
 
     if is_sales and not is_admin_or_sm:
         # 1. Tuyệt đối không cho sales duyệt đơn do Admin hoặc Quản lý cấp trên tạo
-        creator_user = USERS_DB.get(created_by.lower()) if created_by else None
-        creator_roles = creator_user.get_roles() if creator_user else []
-        is_creator_admin_or_sm = any(r.lower() in ["admin", "sales_manager"] for r in creator_roles) or created_by.lower() in ["admin", "sales_manager"]
+        created_by_str = (created_by or "").lower()
+        creator_user = USERS_DB.get(created_by_str) if created_by_str else None
+        creator_roles = [str(r).lower() for r in (creator_user.get_roles() if creator_user else []) if r]
+        is_creator_admin_or_sm = any(r in ["admin", "sales_manager"] for r in creator_roles) or created_by_str in ["admin", "sales_manager"]
         if is_creator_admin_or_sm:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2871,21 +3496,30 @@ def approve_order(
             )
 
         # 2. Nhân viên bán hàng CHỈ ĐƯỢC DUYỆT đại lý do mình phụ trách
-        if not assigned_id or assigned_id != current_user.id:
+        is_dealer_assigned_to_user = (assigned_id is not None and assigned_id == current_user.id)
+        if not is_dealer_assigned_to_user and dealer_id:
+            d_ent = DEALERS_DB.get(dealer_id) or (db.get(DealerEntity, dealer_id) if db else None)
+            if d_ent and getattr(d_ent, "assigned_sale_id", None) == current_user.id:
+                is_dealer_assigned_to_user = True
+
+        if not is_dealer_assigned_to_user:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Bạn chỉ có quyền duyệt đơn hàng của đại lý do mình phụ trách."
             )
 
+        # Kiểm tra xem đơn có phải do đại lý / khách hàng tự đặt không
+        is_created_by_customer = any(r in ["customer", "agent"] for r in creator_roles) or (created_by_str not in ["admin", "sales_manager", "sales", "tran_ban_hang"] and not is_creator_admin_or_sm)
+
         # 3. Nếu là đơn do sales tự tạo cần duyệt (giá sàn, chiết khấu, ...) -> Không được tự duyệt
-        if (is_floor_price_order or is_discount_order or "chờ duyệt" in approval_reason.lower()) and (created_by.lower() == current_user.username.lower() or created_by.lower() in ["sales", "tran_ban_hang"]):
+        if not is_created_by_customer and (is_floor_price_order or is_discount_order or "chờ duyệt" in approval_reason.lower()) and (created_by_str == current_user.username.lower() or created_by_str in ["sales", "tran_ban_hang"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Nhân viên kinh doanh không được phép tự duyệt đơn hàng bán dưới giá sàn của chính mình."
             )
 
-        # 4. Nếu đơn vi phạm giá sàn hoặc chiết khấu vượt mức -> bắt buộc quản lý duyệt
-        if is_floor_price_order or is_discount_order:
+        # 4. Nếu đơn do sales tạo mà vi phạm giá sàn hoặc chiết khấu vượt mức -> bắt buộc quản lý duyệt
+        if not is_created_by_customer and (is_floor_price_order or is_discount_order):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Nhân viên kinh doanh không được phép duyệt đơn hàng bán dưới giá sàn hoặc chiết khấu cao. Chức năng này yêu cầu Quản lý kinh doanh duyệt."
@@ -2905,12 +3539,24 @@ def approve_order(
     now_iso = datetime.now(timezone.utc).isoformat()
     expires_iso = approved_order.reservation_expires_at.isoformat() if approved_order.reservation_expires_at else None
 
+    # Làm sạch thông báo chờ xác nhận khi đơn đã duyệt
+    clean_reason = None
+    raw_reason = target.get("approval_reason") if target else approved_order.approval_reason
+    if raw_reason:
+        parts = [p.strip() for p in raw_reason.split("|") if p.strip()]
+        remaining = [
+            p for p in parts
+            if not any(k in p.lower() for k in ["chờ nhân viên phụ trách xác nhận", "đại lý tự đặt", "cổng đại lý", "chờ nhân viên"])
+        ]
+        clean_reason = " | ".join(remaining) if remaining else None
+
     if target:
         target["status"] = "CONFIRMED"
         target["requires_approval"] = False
         target["approved_by"] = current_user.username
         target["approved_at"] = now_iso
         target["reservation_expires_at"] = expires_iso
+        target["approval_reason"] = clean_reason
     else:
         target = {
             "id": approved_order.id,
@@ -2926,6 +3572,7 @@ def approve_order(
             "approved_by": current_user.username,
             "approved_at": now_iso,
             "reservation_expires_at": expires_iso,
+            "approval_reason": clean_reason,
             "created_at": approved_order.created_at.isoformat() if approved_order.created_at else now_iso,
         }
         ORDERS_DB[approved_order.id] = target
@@ -2946,7 +3593,23 @@ def approve_order(
 
 
 class OrderRejectRequest(BaseModel):
-    reason: Optional[str] = "Từ chối duyệt đơn hàng"
+    reason: str = Field(..., min_length=5, description="Lý do từ chối (bắt buộc, tối thiểu 5 ký tự)")
+
+
+class OrderReturnRequest(BaseModel):
+    reason: str = Field(..., min_length=5, description="Ý kiến chỉ đạo sửa (bắt buộc, tối thiểu 5 ký tự)")
+
+
+class ApprovalHistoryItem(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    user_name: str
+    user_avatar: Optional[str] = None
+    action_type: str
+    action_label: str
+    reason: Optional[str] = None
+    created_at: str
+
 
 
 @router.post("/{order_code}/reject", response_model=OrderResponse)
@@ -2960,7 +3623,14 @@ def reject_order(
     """
     Từ chối đơn hàng: sales_manager, admin hoặc nhân viên sales phụ trách đại lý.
     Chuyển đơn từ PENDING_APPROVAL sang REJECTED.
+    Bắt buộc nhập lý do từ chối (tối thiểu 5 ký tự).
     """
+    if not payload or not payload.reason or len(payload.reason.strip()) < 5:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Lý do từ chối là bắt buộc (tối thiểu 5 ký tự)."
+        )
+
     user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
     is_admin_or_sm = any(r.lower() in ["admin", "sales_manager"] for r in user_roles)
     is_sales = any(r.lower() == "sales" for r in user_roles)
@@ -3015,35 +3685,46 @@ def reject_order(
         }
         ORDERS_DB[db_order.id] = target
 
-    assigned_id = target.get("assigned_sale_id")
-    created_by = target.get("created_by") or ""
+    assigned_id = target.get("assigned_sale_id") if target else (db_order.assigned_sale_id if db_order else None)
+    dealer_id = target.get("dealer_id") if target else (db_order.dealer_id if db_order else None)
+    if not assigned_id and dealer_id:
+        d_ent = DEALERS_DB.get(dealer_id) or (db.get(DealerEntity, dealer_id) if db else None)
+        if d_ent:
+            assigned_id = getattr(d_ent, "assigned_sale_id", None)
+
+    created_by = (target.get("created_by") if target else None) or (db_order.created_by if db_order else "")
 
     if is_sales and not is_admin_or_sm:
-        # 1. Tuyệt đối không cho sales thao tác trên đơn do Admin hoặc Quản lý tạo
-        creator_user = USERS_DB.get(created_by.lower()) if created_by else None
-        creator_roles = creator_user.get_roles() if creator_user else []
-        is_creator_admin_or_sm = any(r.lower() in ["admin", "sales_manager"] for r in creator_roles) or created_by.lower() in ["admin", "sales_manager"]
+        created_by_str = (created_by or "").lower()
+        creator_user = USERS_DB.get(created_by_str) if created_by_str else None
+        creator_roles = [str(r).lower() for r in (creator_user.get_roles() if creator_user else []) if r]
+        is_creator_admin_or_sm = any(r in ["admin", "sales_manager"] for r in creator_roles) or created_by_str in ["admin", "sales_manager"]
         if is_creator_admin_or_sm:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Nhân viên kinh doanh không được phép từ chối đơn hàng do Quản trị viên (Admin) hoặc Quản lý kinh doanh tạo."
             )
 
-        # 2. Chỉ được từ chối đơn của đại lý do mình phụ trách
-        if not assigned_id or assigned_id != current_user.id:
+        is_dealer_assigned_to_user = (assigned_id is not None and assigned_id == current_user.id)
+        if not is_dealer_assigned_to_user and dealer_id:
+            d_ent = DEALERS_DB.get(dealer_id) or (db.get(DealerEntity, dealer_id) if db else None)
+            if d_ent and getattr(d_ent, "assigned_sale_id", None) == current_user.id:
+                is_dealer_assigned_to_user = True
+
+        if not is_dealer_assigned_to_user:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Bạn chỉ có quyền từ chối đơn hàng của đại lý do mình phụ trách."
             )
 
     old_status = target.get("status")
-    reject_reason = (payload.reason if payload and payload.reason else "Từ chối duyệt đơn hàng bán dưới giá sàn")
+    reject_reason = payload.reason.strip()
     target["status"] = "REJECTED"
     target["requires_approval"] = False
     target["approval_reason"] = f"Bị từ chối bởi {current_user.username}: {reject_reason}"
 
     # Hoàn trả tồn kho nếu đơn đã trừ tồn kho lúc tạo
-    if old_status == "PENDING_APPROVAL":
+    if old_status in ("PENDING_APPROVAL", "CONFIRMED", "APPROVED"):
         from app.api.v1.endpoints.products import _find_product_in_raw
         from app.models.entities import ProductEntity
         for it in target.get("items", []):
@@ -3087,6 +3768,202 @@ def reject_order(
 
     return OrderResponse(**target)
 
+
+@router.post("/{order_code}/return-for-edit", response_model=OrderResponse)
+@router.post("/{order_code}/return", response_model=OrderResponse)
+def return_order_for_edit(
+    order_code: str,
+    request: Request,
+    payload: OrderReturnRequest,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Trả lại đơn hàng yêu cầu sửa: sales_manager, admin hoặc nhân viên sales phụ trách đại lý.
+    Chuyển đơn từ PENDING_APPROVAL sang REVISION_REQUIRED.
+    Bắt buộc nhập ý kiến chỉ đạo sửa (tối thiểu 5 ký tự).
+    Đảm bảo KHÔNG giữ chỗ tồn kho (nhả tồn kho nếu có).
+    Ghi vết bất biến vào audit_logs với action_type='ORDER_RETURN_FOR_EDIT'.
+    """
+    if not payload or not payload.reason or len(payload.reason.strip()) < 5:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ý kiến chỉ đạo sửa là bắt buộc (tối thiểu 5 ký tự)."
+        )
+
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
+    is_admin_or_sm = any(r.lower() in ["admin", "sales_manager"] for r in user_roles)
+    is_sales = any(r.lower() == "sales" for r in user_roles)
+
+    if not (is_admin_or_sm or is_sales):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Bạn không có quyền trả lại đơn hàng."
+        )
+
+    target = None
+    for o in ORDERS_DB.values():
+        if o["order_code"].upper() == order_code.upper() or str(o.get("id")) == str(order_code):
+            target = o
+            break
+
+    db_order = db.query(OrderEntity).filter(
+        (func.upper(OrderEntity.order_code) == order_code.upper()) | (OrderEntity.id == (target["id"] if target else -1)) | (str(OrderEntity.id) == str(order_code))
+    ).first()
+
+    if not target and not db_order:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đơn hàng có mã hoặc ID {order_code}."
+        )
+
+    if target is None:
+        assert db_order is not None
+        now_iso = datetime.now(timezone.utc).isoformat()
+        items = []
+        if db_order.items_json:
+            try:
+                items_data = json.loads(db_order.items_json)
+                items = items_data if isinstance(items_data, list) else (items_data.get("items", []) if isinstance(items_data, dict) else [])
+            except Exception:
+                items = []
+
+        target = {
+            "id": db_order.id,
+            "order_code": db_order.order_code,
+            "dealer_id": db_order.dealer_id,
+            "dealer_name": db_order.dealer_name,
+            "created_by": db_order.created_by,
+            "assigned_sale_id": db_order.assigned_sale_id,
+            "assigned_sale_name": db_order.assigned_sale_name,
+            "total_amount": db_order.total_amount,
+            "status": db_order.status or "PENDING_APPROVAL",
+            "requires_approval": getattr(db_order, "requires_approval", False),
+            "approval_reason": getattr(db_order, "approval_reason", None),
+            "items": items,
+            "created_at": db_order.created_at.isoformat() if db_order.created_at else now_iso,
+        }
+        ORDERS_DB[db_order.id] = target
+
+    assigned_id = (target.get("assigned_sale_id") if target else None) or (db_order.assigned_sale_id if db_order else None)
+    created_by = (target.get("created_by") if target else None) or (db_order.created_by if db_order else "")
+
+    if is_sales and not is_admin_or_sm:
+        creator_user = USERS_DB.get(created_by.lower()) if created_by else None
+        creator_roles = creator_user.get_roles() if creator_user else []
+        is_creator_admin_or_sm = any(r.lower() in ["admin", "sales_manager"] for r in creator_roles) or created_by.lower() in ["admin", "sales_manager"]
+        if is_creator_admin_or_sm:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Nhân viên kinh doanh không được phép trả lại đơn hàng do Quản trị viên (Admin) hoặc Quản lý kinh doanh tạo."
+            )
+
+        if not assigned_id or assigned_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bạn chỉ có quyền trả lại đơn hàng của đại lý do mình phụ trách."
+            )
+
+    old_status = target.get("status")
+    return_reason = payload.reason.strip()
+    target["status"] = "REVISION_REQUIRED"
+    target["requires_approval"] = True
+    target["approval_reason"] = f"Yêu cầu sửa bởi {current_user.username}: {return_reason}"
+
+    # Hoàn trả tồn kho nếu đơn đã trừ tồn kho lúc tạo
+    if old_status in ("PENDING_APPROVAL", "CONFIRMED", "APPROVED"):
+        from app.api.v1.endpoints.products import _find_product_in_raw
+        from app.models.entities import ProductEntity
+        for it in target.get("items", []):
+            p_id = it.get("product_id")
+            base_qty = it.get("base_quantity", it.get("quantity", 0))
+            raw_p = _find_product_in_raw(p_id)
+            if raw_p:
+                raw_p["stock"] = raw_p.get("stock", 0) + base_qty
+            if db:
+                pe = db.query(ProductEntity).filter(ProductEntity.id == p_id).first()
+                if pe:
+                    pe.stock = (pe.stock or 0) + base_qty
+        if db:
+            db_order = db.query(OrderEntity).filter(
+                (OrderEntity.order_code == target["order_code"]) | (OrderEntity.id == target.get("id"))
+            ).first()
+            if db_order:
+                db_order.status = "REVISION_REQUIRED"
+                try:
+                    p_dict = json.loads(db_order.items_json) if db_order.items_json else {}
+                    p_dict["requires_approval"] = True
+                    p_dict["approval_reason"] = target["approval_reason"]
+                    db_order.items_json = json.dumps(p_dict, ensure_ascii=False)
+                except Exception:
+                    pass
+                from app.services.inventory_availability_service import release_order_stock
+                release_order_stock(db, db_order)
+            db.commit()
+
+    log_audit_event(
+        db=db,
+        user=current_user,
+        action_type="ORDER_RETURN_FOR_EDIT",
+        entity_type="Order",
+        entity_id=target["order_code"],
+        old_val={"status": old_status},
+        new_val={"status": "REVISION_REQUIRED"},
+        reason=return_reason,
+        request=request,
+    )
+
+    return OrderResponse(**target)
+
+
+@router.get("/{order_code}/approval-history", response_model=List[ApprovalHistoryItem])
+def get_order_approval_history(
+    order_code: str,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_permission(Permission.ORDER_READ.value)),
+):
+    """
+    Xem lịch sử phê duyệt bất biến của đơn hàng từ bảng audit_logs.
+    Dữ liệu chỉ đọc (Read-only), không sửa và không xóa được.
+    """
+    from app.models.entities import AuditLogEntity
+    from app.api.v1.endpoints.audit_logs import _get_user_avatar, _format_datetime
+
+    ACTION_LABELS = {
+        "ORDER_APPROVE": "Duyệt đơn hàng",
+        "ORDER_REJECT": "Từ chối duyệt đơn",
+        "ORDER_RETURN_FOR_EDIT": "Trả lại yêu cầu sửa",
+        "ORDER_CREATE": "Tạo đơn hàng",
+        "ORDER_CANCEL": "Hủy đơn hàng",
+        "ORDER_EDIT": "Chỉnh sửa đơn hàng",
+    }
+
+    records = (
+        db.query(AuditLogEntity)
+        .filter(
+            AuditLogEntity.entity_type.in_(["Order", "order"]),
+            func.upper(AuditLogEntity.entity_id) == order_code.upper(),
+        )
+        .order_by(AuditLogEntity.id.desc(), AuditLogEntity.created_at.desc())
+        .all()
+    )
+
+    items = []
+    for r in records:
+        action_label = ACTION_LABELS.get(r.action_type, r.action_type)
+        items.append(
+            ApprovalHistoryItem(
+                id=r.id,
+                user_id=r.user_id,
+                user_name=r.user_name or "Hệ thống",
+                user_avatar=_get_user_avatar(r.user_id, r.user_name, db),
+                action_type=r.action_type,
+                action_label=action_label,
+                reason=r.reason,
+                created_at=_format_datetime(r.created_at),
+            )
+        )
+    return items
 
 ORDER_STATUS_RANKS = {
     "DRAFT": 1,
@@ -3349,6 +4226,7 @@ def cleanup_expired_reservations_endpoint(
     """
     from app.services.inventory_reservation_service import release_expired_reservations
     results = release_expired_reservations(db)
+    db.commit()
     return {
         "status": "success",
         "expired_orders_count": len(results),
@@ -3413,6 +4291,12 @@ def edit_or_cancel_invoice(
     new_status = data.status.upper() if data.status else target["status"]
     new_note = data.note if data.note is not None else target.get("note")
     if new_status != target["status"]:
+        user_roles_lower = [str(r).lower() for r in user_roles if r]
+        if not any(r in ["admin", "sales_manager"] for r in user_roles_lower):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Chỉ Quản trị viên hoặc Quản lý kinh doanh mới có quyền thay đổi trạng thái đơn hàng."
+            )
         new_val["status"] = new_status
     if new_note != target.get("note"):
         new_val["note"] = new_note
@@ -3568,28 +4452,41 @@ def unlock_dealer(
     return {"message": "Đã mở khóa giao dịch đại lý thành công.", "dealer": dealer}
 
 
+class ConfirmDispatchRequest(BaseModel):
+    delivered_quantities: dict[str, int]
+    note: Optional[str] = None
+
+
 class SupplementaryDeliveryRequest(BaseModel):
-    note: Optional[str] = "Giao bổ sung đợt 2 - hoàn tất đơn hàng"
+    note: Optional[str] = "Giao bổ sung - hoàn tất đơn hàng"
     delivered_quantities: Optional[dict[str, int]] = None
 
 
-@router.post("/{order_code}/supplementary-delivery")
-def execute_supplementary_delivery(
+def _execute_dispatch_transaction(
     order_code: str,
+    delivered_quantities: Optional[dict[str, int]],
+    note: Optional[str],
+    dispatch_type: str,
+    db: Session,
+    current_user: UserResponse,
     request: Request,
-    payload: Optional[SupplementaryDeliveryRequest] = None,
-    db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
 ):
     """
-    Xử lý giao bổ sung cho đơn hàng bị giao thiếu (Phương án 1).
-    Phân quyền: Nhân viên nội bộ (Admin, Sales Manager, Sales, Warehouse). Chặn vai trò customer.
+    Xử lý xuất kho thực tế (lần đầu hoặc giao bổ sung) có quản lý tồn kho và bảo toàn lịch sử phiếu xuất:
+    1. Kiểm tra quyền nhân viên kho (warehouse, warehouse_manager, admin). Chặn sales, customer, accountant.
+    2. Kiểm tra tính hợp lệ của số lượng xuất (không âm, không vượt quá SL còn thiếu, không vượt tồn kho khả dụng).
+    3. Trừ tồn giữ chỗ (reserved_stock) và trừ tồn thực tế (actual_stock / quantity_on_hand) trong DB Transaction.
+    4. Ghi nhận giao dịch xuất kho InventoryTransactionEntity (type='issue').
+    5. Tạo bản ghi Phiếu xuất kho OrderDispatchEntity (bất biến, không thể sửa sau khi đã xác nhận).
+    6. Cập nhật trạng thái đơn: PARTIALLY_DELIVERED nếu còn thiếu, DELIVERED nếu đã xuất đủ 100%.
     """
-    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else [current_user.role]
-    if "customer" in user_roles and not any(r in user_roles for r in ["admin", "sales_manager", "sales", "warehouse_manager", "warehouse_staff"]):
+    user_roles = current_user.get_roles() if hasattr(current_user, "get_roles") else (current_user.roles or [current_user.role])
+    user_roles_lower = {str(r).lower() for r in user_roles}
+    WAREHOUSE_ALLOWED = {"admin", "warehouse", "warehouse_manager", "warehouse_staff"}
+    if not (user_roles_lower & WAREHOUSE_ALLOWED):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Tài khoản đại lý không có quyền thực hiện giao hàng bổ sung."
+            detail="Truy cập bị từ chối (403 Forbidden). Chức năng xác nhận xuất kho chỉ dành cho Thủ kho và Quản trị viên."
         )
 
     target = None
@@ -3608,68 +4505,449 @@ def execute_supplementary_delivery(
             detail=f"Không tìm thấy đơn hàng có mã {order_code}."
         )
 
+    current_status = (db_order.status if db_order else target.get("status", "")).upper()
+    if current_status in ["CANCELLED", "REJECTED"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đơn hàng đang ở trạng thái '{current_status}', không thể thực hiện xuất kho."
+        )
+
+    # Đọc danh sách sản phẩm hiện tại
     items = []
-    if target and target.get("items"):
-        items = target["items"]
-    elif db_order and db_order.items_json:
+    if db_order and db_order.items_json:
         try:
             stored = json.loads(db_order.items_json)
             items = stored if isinstance(stored, list) else stored.get("items", [])
         except Exception:
             pass
+    if not items and target and target.get("items"):
+        items = target["items"]
 
-    req_map = (payload.delivered_quantities if payload and payload.delivered_quantities else {})
-    delivery_note = (payload.note if payload and payload.note else "Giao bổ sung đợt 2 - hoàn tất đơn hàng")
+    if not items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Đơn hàng không có sản phẩm nào để xuất kho."
+        )
+
+    # Xác định kho hàng của đại lý
+    dealer_id = db_order.dealer_id if db_order else target.get("dealer_id")
+    dealer = db.query(DealerEntity).filter(DealerEntity.id == dealer_id).first()
+    if not dealer:
+        load_dealers_db()
+        dealer = DEALERS_DB.get(dealer_id)
+    warehouse_id, warehouse_name = resolve_dealer_warehouse(dealer)
+
+    req_map = {str(k): int(v) for k, v in delivered_quantities.items()} if delivered_quantities else {}
+
+    # Kiểm tra số lượng âm
+    for pid_str, q in req_map.items():
+        if q < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Số lượng xuất không được âm (Mã sản phẩm: {pid_str})."
+            )
+
+    # Đếm số lần xuất trước đó để gán mã phiếu xuất
+    prev_dispatches_count = db.query(OrderDispatchEntity).filter(
+        func.upper(OrderDispatchEntity.order_code) == order_code.upper()
+    ).count()
+    round_number = prev_dispatches_count + 1
+    dispatch_code = f"PXK-{order_code.upper()}-{round_number:02d}"
+
+    total_dispatch_this_round = 0
+    validated_dispatch_items = []
 
     for it in items:
-        p_id = str(it.get("product_id"))
-        qty = int(it.get("quantity", 0))
-        cur_del = int(it.get("delivered_quantity", 0))
-        if p_id in req_map:
-            add_qty = int(req_map[p_id])
-            it["delivered_quantity"] = min(qty, cur_del + add_qty)
-        else:
-            it["delivered_quantity"] = qty
-        it["shortage_quantity"] = max(0, qty - int(it["delivered_quantity"]))
+        pid = it.get("product_id")
+        pid_str = str(pid)
+        ordered_qty = int(it.get("quantity", 0))
+        cur_delivered = int(it.get("delivered_quantity") or 0)
+        remaining_qty = max(0, ordered_qty - cur_delivered)
+        conv_rate = float(it.get("conversion_rate", 1.0) or 1.0)
+        p_name = it.get("product_name") or f"SP #{pid}"
 
+        # Nếu không truyền trong request thì mặc định là 0 ở lần này
+        qty_to_dispatch = req_map.get(pid_str, 0)
+
+        if qty_to_dispatch > remaining_qty:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Số lượng xuất ({qty_to_dispatch}) vượt quá số lượng còn phải giao ({remaining_qty}) của sản phẩm '{p_name}'."
+            )
+
+        if qty_to_dispatch > 0:
+            # Kiểm tra tồn kho thực tế khả dụng tại kho
+            stock_rec = get_or_create_warehouse_stock(db, warehouse_id, warehouse_name, pid, for_update=True)
+            on_hand = stock_rec.actual_stock if stock_rec.actual_stock is not None else (stock_rec.quantity_on_hand or 0)
+            base_qty_to_deduct = int(round(qty_to_dispatch * conv_rate))
+            if base_qty_to_deduct > on_hand:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Số lượng xuất ({qty_to_dispatch}) vượt quá tồn kho thực tế khả dụng ({on_hand}) của sản phẩm '{p_name}' tại {warehouse_name}."
+                )
+
+        total_dispatch_this_round += qty_to_dispatch
+        validated_dispatch_items.append({
+            "item_ref": it,
+            "pid": pid,
+            "product_name": p_name,
+            "ordered_qty": ordered_qty,
+            "cur_delivered": cur_delivered,
+            "qty_to_dispatch": qty_to_dispatch,
+            "conv_rate": conv_rate,
+        })
+
+    if total_dispatch_this_round <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tổng số lượng xuất lần này phải lớn hơn 0."
+        )
+
+    now_utc = datetime.now(timezone.utc)
+    dispatch_snapshot_items = []
+
+    # Bắt đầu cập nhật kho và dữ liệu trong Database Transaction
+    for item_info in validated_dispatch_items:
+        it = item_info["item_ref"]
+        pid = item_info["pid"]
+        qty_out = item_info["qty_to_dispatch"]
+        conv = item_info["conv_rate"]
+        new_delivered = item_info["cur_delivered"] + qty_out
+        new_shortage = max(0, item_info["ordered_qty"] - new_delivered)
+
+        it["delivered_quantity"] = new_delivered
+        it["shortage_quantity"] = new_shortage
+
+        if qty_out > 0:
+            base_qty_deduct = int(round(qty_out * conv))
+            stock_rec = get_or_create_warehouse_stock(db, warehouse_id, warehouse_name, pid, for_update=True)
+            prev_stock = stock_rec.actual_stock or 0
+
+            # 1. Trừ tồn thực tế & nhả tồn giữ chỗ
+            stock_rec.actual_stock = max(0, (stock_rec.actual_stock or 0) - base_qty_deduct)
+            stock_rec.quantity_on_hand = stock_rec.actual_stock
+            stock_rec.reserved_stock = max(0, (stock_rec.reserved_stock or 0) - base_qty_deduct)
+            stock_rec.reserved_quantity = stock_rec.reserved_stock
+            stock_rec.updated_at = now_utc
+
+            # 2. Đồng bộ tồn bảng products
+            prod = db.query(ProductEntity).filter(ProductEntity.id == pid).first()
+            if prod and prod.stock is not None:
+                prod.stock = max(0, prod.stock - base_qty_deduct)
+
+            # 3. Ghi nhận giao dịch xuất kho InventoryTransactionEntity
+            inv_tx = InventoryTransactionEntity(
+                product_id=pid,
+                product_name=item_info["product_name"],
+                type="issue",
+                quantity=base_qty_deduct,
+                previous_stock=prev_stock,
+                new_stock=stock_rec.actual_stock,
+                performed_by=current_user.full_name or current_user.username,
+                user_role=current_user.role,
+                reason=f"Xuất kho đơn hàng {order_code} (Phiếu {dispatch_code})",
+                unit_name=it.get("unit_name", it.get("unit", "Cái")),
+                conversion_rate=conv,
+                base_quantity=float(base_qty_deduct),
+            )
+            db.add(inv_tx)
+
+        dispatch_snapshot_items.append({
+            "product_id": pid,
+            "sku_id": it.get("sku_id") or it.get("product_code") or f"SP{pid:03d}",
+            "product_name": item_info["product_name"],
+            "ordered_quantity": item_info["ordered_qty"],
+            "dispatched_this_round": qty_out,
+            "total_delivered": new_delivered,
+            "remaining_shortage": new_shortage,
+            "unit": it.get("unit_name", it.get("unit", "Cái")),
+        })
+
+    # Đánh giá trạng thái đơn hàng: Còn thiếu bất kỳ mặt hàng nào => PARTIALLY_DELIVERED
+    has_remaining_shortage = any(int(it.get("shortage_quantity", 0)) > 0 for it in items)
+    new_status = "PARTIALLY_DELIVERED" if has_remaining_shortage else "DELIVERED"
+
+    dispatch_note = (note.strip() if note and note.strip() else ("Xuất kho lần đầu" if round_number == 1 else f"Giao bổ sung đợt {round_number}"))
+
+    # 4. Tạo bản ghi Phiếu xuất kho OrderDispatchEntity (Bất biến, không cho phép sửa sau khi đã xác nhận)
+    dispatch_record = OrderDispatchEntity(
+        dispatch_code=dispatch_code,
+        order_id=db_order.id if db_order else (target.get("id") or 0),
+        order_code=order_code.upper(),
+        dispatch_type="INITIAL" if round_number == 1 else "SUPPLEMENTARY",
+        round_number=round_number,
+        warehouse_id=warehouse_id,
+        warehouse_name=warehouse_name,
+        performed_by=current_user.full_name or current_user.username,
+        note=dispatch_note,
+        items_json=json.dumps(dispatch_snapshot_items, ensure_ascii=False),
+        created_at=now_utc,
+    )
+    db.add(dispatch_record)
+
+    # 5. Cập nhật OrderEntity
+    if db_order:
+        db_order.status = new_status
+        db_order.items_json = json.dumps(items, ensure_ascii=False)
+        if db_order.note:
+            db_order.note += f" | {dispatch_code}: {dispatch_note}"
+        else:
+            db_order.note = f"{dispatch_code}: {dispatch_note}"
+
+    # 6. Cập nhật ORDERS_DB trong bộ nhớ
     if target:
         target["items"] = items
-        target["status"] = "DELIVERED"
+        target["status"] = new_status
         if target.get("note"):
-            target["note"] += f" | {delivery_note}"
+            target["note"] += f" | {dispatch_code}: {dispatch_note}"
         else:
-            target["note"] = delivery_note
+            target["note"] = f"{dispatch_code}: {dispatch_note}"
 
-    if db_order:
-        db_order.status = "DELIVERED"
-        try:
-            stored = json.loads(db_order.items_json) if db_order.items_json else {}
-            if isinstance(stored, dict):
-                stored["items"] = items
-                db_order.items_json = json.dumps(stored, ensure_ascii=False)
-            elif isinstance(stored, list):
-                db_order.items_json = json.dumps(items, ensure_ascii=False)
-        except Exception:
-            pass
-        if db_order.note:
-            db_order.note += f" | {delivery_note}"
-        else:
-            db_order.note = delivery_note
-        db.commit()
+    db.commit()
 
+    # 7. Ghi Audit Log cho hệ thống
     log_audit_event(
         db=db,
         user=current_user,
-        action_type="ORDER_SUPPLEMENTARY_DELIVERY",
+        action_type="ORDER_DISPATCH_CONFIRM" if round_number == 1 else "ORDER_SUPPLEMENTARY_DELIVERY",
         entity_type="Order",
         entity_id=order_code,
-        old_val={"action": "shortage_delivery"},
-        new_val={"items": items, "status": "DELIVERED"},
-        reason=delivery_note,
+        old_val={"status": current_status},
+        new_val={
+            "status": new_status,
+            "dispatch_code": dispatch_code,
+            "round": round_number,
+            "items": dispatch_snapshot_items,
+        },
+        reason=dispatch_note,
         request=request,
     )
 
-    if target:
-        return target
-    return get_order_detail(order_code=order_code, db=db, current_user=current_user)
+    return {
+        "status": new_status,
+        "success": True,
+        "message": f"Xác nhận xuất kho thành công phiếu {dispatch_code}.",
+        "dispatch_code": dispatch_code,
+        "round_number": round_number,
+        "order_status": new_status,
+        "items": items,
+        "order": target if target else {
+            "order_code": order_code,
+            "status": new_status,
+            "items": items,
+        },
+    }
+
+
+@router.post("/{order_code}/confirm-dispatch")
+def confirm_order_dispatch(
+    order_code: str,
+    payload: ConfirmDispatchRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Thủ kho xác nhận xuất kho lần đầu cho đơn hàng:
+    - Nhập số lượng thực xuất từng sản phẩm
+    - Trừ tồn giữ chỗ & trừ tồn thực tế
+    - Ghi nhận nợ hàng nếu xuất thiếu
+    - Sinh Phiếu xuất kho PXK bất biến
+    """
+    return _execute_dispatch_transaction(
+        order_code=order_code,
+        delivered_quantities=payload.delivered_quantities,
+        note=payload.note,
+        dispatch_type="INITIAL",
+        db=db,
+        current_user=current_user,
+        request=request,
+    )
+
+
+@router.post("/{order_code}/supplementary-delivery")
+def execute_supplementary_delivery(
+    order_code: str,
+    request: Request,
+    payload: Optional[SupplementaryDeliveryRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Xử lý giao bổ sung cho đơn hàng còn nợ hàng:
+    - Chỉ giao bổ sung các mặt hàng còn thiếu
+    - Cập nhật số lượng đã giao lũy kế
+    - Nếu còn thiếu tiếp tục giữ trạng thái PARTIALLY_DELIVERED, nếu đủ chuyển DELIVERED
+    - Sinh phiếu xuất kho PXK đợt bổ sung
+    """
+    deliv_map = payload.delivered_quantities if payload else None
+    deliv_note = payload.note if payload else None
+
+    # Nếu người dùng không gửi map chi tiết, đọc số lượng còn thiếu của đơn hàng để giao đủ số còn thiếu
+    if not deliv_map:
+        target = None
+        for o in ORDERS_DB.values():
+            if o["order_code"].upper() == order_code.upper():
+                target = o
+                break
+        db_order = db.query(OrderEntity).filter(func.upper(OrderEntity.order_code) == order_code.upper()).first()
+        items = []
+        if db_order and db_order.items_json:
+            try:
+                stored = json.loads(db_order.items_json)
+                items = stored if isinstance(stored, list) else stored.get("items", [])
+            except Exception:
+                pass
+        elif target and target.get("items"):
+            items = target["items"]
+
+        deliv_map = {}
+        for it in items:
+            q = int(it.get("quantity", 0))
+            d = int(it.get("delivered_quantity") or 0)
+            rem = max(0, q - d)
+            if rem > 0:
+                deliv_map[str(it.get("product_id"))] = rem
+
+    return _execute_dispatch_transaction(
+        order_code=order_code,
+        delivered_quantities=deliv_map,
+        note=deliv_note,
+        dispatch_type="SUPPLEMENTARY",
+        db=db,
+        current_user=current_user,
+        request=request,
+    )
+
+
+@router.get("/{order_code}/dispatch-history")
+def get_order_dispatch_history(
+    order_code: str,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Lấy lịch sử tất cả các phiếu xuất kho của đơn hàng (Phiếu xuất đợt 1, đợt 2...).
+    Phiếu xuất là bất biến (Read-Only) để đảm bảo tính minh bạch và truy vết.
+    """
+    dispatches = db.query(OrderDispatchEntity).filter(
+        func.upper(OrderDispatchEntity.order_code) == order_code.upper()
+    ).order_by(OrderDispatchEntity.round_number.asc()).all()
+
+    history = []
+    for d in dispatches:
+        parsed_items = []
+        if d.items_json:
+            try:
+                parsed_items = json.loads(d.items_json)
+            except Exception:
+                pass
+
+        history.append({
+            "id": d.id,
+            "dispatch_code": d.dispatch_code,
+            "order_code": d.order_code,
+            "dispatch_type": d.dispatch_type,
+            "round_number": d.round_number,
+            "warehouse_id": d.warehouse_id,
+            "warehouse_name": d.warehouse_name,
+            "performed_by": d.performed_by,
+            "note": d.note,
+            "created_at": d.created_at.isoformat() if hasattr(d.created_at, "isoformat") else str(d.created_at),
+            "items": parsed_items,
+        })
+
+    return history
+
+
+
+# ============================================================================
+# S7-04 (EP-07): APIs Chính sách Cảnh báo & Khoá bán tự động và Thu tiền công nợ
+# ============================================================================
+from app.schemas.credit_policy import (
+    CreditPolicyConfigResponse,
+    CreditPolicyConfigUpdate,
+    DealerPaymentCreate,
+    DealerPaymentResponse,
+)
+from app.services.credit_policy_service import (
+    get_credit_policy_config,
+    update_credit_policy_config,
+    evaluate_dealer_credit_flags,
+    evaluate_all_dealers_credit_flags,
+    record_dealer_payment,
+)
+
+@router.get("/credit-policy/config", response_model=CreditPolicyConfigResponse)
+def api_get_credit_policy_config(
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["accountant", "admin", "sales_manager"]))
+):
+    """Lấy cấu hình chính sách cảnh báo và khóa bán tín dụng đại lý (S7-04)."""
+    return get_credit_policy_config(db)
+
+
+@router.put("/credit-policy/config", response_model=CreditPolicyConfigResponse)
+def api_update_credit_policy_config(
+    payload: CreditPolicyConfigUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["accountant", "sales_manager", "admin"]))
+):
+    """Cập nhật cấu hình chính sách khóa bán/chuyển duyệt khi đại lý vi phạm công nợ (S7-04)."""
+    return update_credit_policy_config(db=db, data=payload, user=current_user, request=request)
+
+
+@router.post("/credit-policy/evaluate")
+def api_evaluate_all_dealers(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["accountant", "sales_manager", "admin"]))
+):
+    """Kích hoạt đánh giá lại công nợ và gắn cờ cho toàn bộ đại lý (S7-04 AC1, AC3)."""
+    results = evaluate_all_dealers_credit_flags(db=db, user=current_user, request=request)
+    return {
+        "status": "success",
+        "message": f"Đã hoàn tất đánh giá công nợ cho {len(results)} đại lý.",
+        "dealers_evaluated": results,
+    }
+
+
+@router.post("/dealers/{dealer_id}/credit-policy/evaluate")
+def api_evaluate_single_dealer(
+    dealer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["accountant", "sales_manager", "admin"]))
+):
+    """Đánh giá lại công nợ và trạng thái cờ của một đại lý cụ thể."""
+    res = evaluate_dealer_credit_flags(dealer_id=dealer_id, db=db, user=current_user, reason_prefix="Đánh giá theo yêu cầu", request=request)
+    return {
+        "status": "success",
+        "message": f"Đã đánh giá công nợ cho đại lý {res.get('dealer_name')}.",
+        "result": res,
+    }
+
+
+@router.post("/dealers/{dealer_id}/payments", response_model=DealerPaymentResponse)
+def api_record_dealer_payment(
+    dealer_id: int,
+    payload: DealerPaymentCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(["accountant", "admin"]))
+):
+    """
+    AC3 & S7-02: Ghi nhận thanh toán / thu tiền công nợ đại lý.
+    Tự động đối trừ đơn hàng và NGAY LẬP TỨC kích hoạt đánh giá lại công nợ:
+    Nếu hết nợ quá hạn và nợ dưới hạn mức -> tự động gỡ cờ cảnh báo ngay lập tức!
+    """
+    res = record_dealer_payment(
+        dealer_id=dealer_id,
+        data=payload,
+        db=db,
+        user=current_user,
+        request=request
+    )
+    return res
 

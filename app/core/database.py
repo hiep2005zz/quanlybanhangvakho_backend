@@ -5,19 +5,27 @@ from app.core.config import settings
 
 from sqlalchemy.pool import NullPool
 
-# Engine kết nối cơ sở dữ liệu
-is_sqlite = "sqlite" in settings.DATABASE_URL
-is_mssql = "mssql" in settings.DATABASE_URL
+# Toàn bộ hệ thống bắt buộc sử dụng Microsoft SQL Server (MSSQL)
+if not settings.DATABASE_URL.startswith("mssql"):
+    raise RuntimeError(
+        f"LỖI CƠ SỞ DỮ LIỆU: Hệ thống được cấu hình chỉ chạy Microsoft SQL Server (mssql+pyodbc). "
+        f"URL hiện tại: {settings.DATABASE_URL}"
+    )
 
-engine_kwargs = {
-    "echo": False,
-    "connect_args": {"check_same_thread": False} if is_sqlite else {},
-    "poolclass": NullPool if is_sqlite else None,
-}
-if is_mssql:
-    engine_kwargs["fast_executemany"] = True
+is_mssql = True
+is_sqlite = False
 
-engine = create_engine(settings.DATABASE_URL, **engine_kwargs)
+engine = create_engine(
+    settings.DATABASE_URL,
+    echo=False,
+    fast_executemany=True,
+    pool_size=20,
+    max_overflow=30,
+    pool_timeout=30,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    connect_args={"timeout": 30},
+)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

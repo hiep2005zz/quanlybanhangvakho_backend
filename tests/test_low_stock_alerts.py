@@ -12,7 +12,8 @@ def get_token(username: str = "admin", password: str = "123") -> str:
 
 
 def test_get_warehouses_list():
-    resp = client.get("/api/v1/inventory/warehouses")
+    token = get_token("admin")
+    resp = client.get("/api/v1/inventory/warehouses", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     warehouses = resp.json()
     assert len(warehouses) >= 3
@@ -118,4 +119,20 @@ def test_warehouse_staff_forbidden_and_warehouse_manager_allowed():
     )
     assert res_wm.status_code == 200, f"Quản lý kho phải được phép nhưng nhận {res_wm.status_code}"
     assert res_wm.json()["min_stock"] == 25
+
+
+def test_low_stock_alerts_pagination():
+    token = get_token("admin")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Gọi với phân trang page=1, page_size=20
+    resp = client.get("/api/v1/inventory/low-stock-alerts?page=1&page_size=20", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["page"] == 1
+    assert data["page_size"] == 20
+    assert "total_pages" in data
+    assert "items" in data
+    assert len(data["items"]) <= 20
+
 

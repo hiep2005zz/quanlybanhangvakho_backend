@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timedelta
 from fastapi.testclient import TestClient
 from app.main import app
 from app.models.user import USERS_DB, UserInDB, DEFAULT_HASH, save_users_db
@@ -8,6 +9,7 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def setup_customer_account():
+    from app.models.dealer import DEALERS_DB, save_dealers_db
     USERS_DB["test_portal_cust"] = UserInDB(
         id=101,
         username="test_portal_cust",
@@ -20,9 +22,57 @@ def setup_customer_account():
         branch="Đại lý phân phối",
     )
     save_users_db()
+
+    orig_dealer_1 = None
+    from app.core.database import SessionLocal
+    from app.models.entities import DealerEntity
+    db = SessionLocal()
+    orig_db_overdue = None
+    orig_db_max_debt = None
+    try:
+        d_entity = db.query(DealerEntity).filter(DealerEntity.id == 1).first()
+        if d_entity:
+            orig_db_overdue = d_entity.overdue_days_allowed
+            orig_db_max_debt = d_entity.max_debt_days
+            d_entity.overdue_days_allowed = 9999
+            d_entity.max_debt_days = 9999
+            d_entity.credit_limit = 10_000_000_000.0
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+    if 1 in DEALERS_DB:
+        orig_dealer_1 = DEALERS_DB[1].model_copy() if hasattr(DEALERS_DB[1], "model_copy") else (DEALERS_DB[1].copy() if hasattr(DEALERS_DB[1], "copy") else DEALERS_DB[1])
+        DEALERS_DB[1].max_debt_days = 9999
+        DEALERS_DB[1].overdue_days_allowed = 9999
+        DEALERS_DB[1].credit_limit = 10_000_000_000.0
+        DEALERS_DB[1].is_overdue = False
+        DEALERS_DB[1].is_over_credit_limit = False
+        DEALERS_DB[1].credit_warning_flag = False
+        DEALERS_DB[1].credit_flag_reason = None
+        save_dealers_db()
+
     yield
     USERS_DB.pop("test_portal_cust", None)
     save_users_db()
+    if orig_dealer_1 and 1 in DEALERS_DB:
+        DEALERS_DB[1] = orig_dealer_1
+        save_dealers_db()
+    db = SessionLocal()
+    try:
+        d_entity = db.query(DealerEntity).filter(DealerEntity.id == 1).first()
+        if d_entity:
+            if orig_db_overdue is not None:
+                d_entity.overdue_days_allowed = orig_db_overdue
+            if orig_db_max_debt is not None:
+                d_entity.max_debt_days = orig_db_max_debt
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
 
 def test_full_customer_ordering_workflow():
     # 1. Login tài khoản test_portal_cust (role: customer, liên kết Dealer 1)
@@ -117,7 +167,7 @@ def test_customer_sales_entry_and_assigned_sales_approval():
     payload = {
         "dealer_id": 1,
         "delivery_point": "Chi nhánh giao hàng số 1",
-        "desired_delivery_date": "2026-10-20",
+        "desired_delivery_date": (datetime.now().date() + timedelta(days=2)).isoformat(),
         "note": "Đơn test duyệt bởi sales phụ trách",
         "items": [
             {
@@ -219,5 +269,37 @@ def test_admin_created_order_never_needs_approval_and_sales_cannot_approve():
     # Dọn dẹp
     ORDERS_DB.pop(test_id, None)
     print("\n>>> TEST ADMIN ORDER CONFIRMATION & SALES PERMISSION RESTRICTIONS PASSED <<<")
+
+
+def test_create_customer_endpoint_no_500():
+    login_resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "123"})
+    assert login_resp.status_code == 200
+    token = login_resp.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    test_payload = {
+        "full_name": "Nguyễn Văn Test Tạo Tài Khoản",
+        "email": "test_create_account_no_500@congty.vn",
+        "phone": "0987654311",
+        "roles": ["sales_manager"],
+        "branch": "Toàn quốc",
+    }
+    USERS_DB.pop("test_create_account_no_500", None)
+
+    create_resp = client.post("/api/v1/users/customers", json=test_payload, headers=headers)
+    assert create_resp.status_code == 201, f"Create customer failed: {create_resp.status_code} - {create_resp.text}"
+    created_data = create_resp.json()
+    assert "user" in created_data
+    assert "temporary_password" in created_data
+    created_username = created_data["user"]["username"]
+
+    resend_resp = client.post(f"/api/v1/users/{created_username}/resend-credentials", headers=headers)
+    assert resend_resp.status_code == 200, f"Resend credentials failed: {resend_resp.status_code} - {resend_resp.text}"
+    resend_data = resend_resp.json()
+    assert "temporary_password" in resend_data
+
+    USERS_DB.pop(created_username, None)
+    save_users_db()
+
 
 

@@ -94,10 +94,18 @@ def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> UserRespo
     email_val = getattr(user, "email", None)
     user_id = getattr(user, "id", None)
     
+    full_name_val = user.full_name
+    if user.username.lower() == "admin":
+        full_name_val = "Đào Ngọc Hiệp"
+        if not email_val or email_val == "admin@congty.vn":
+            email_val = "daongochiep645@gmail.com"
+        if not phone_val or phone_val == "0523456789":
+            phone_val = "0998887766"
+
     return UserResponse(
         id=user_id,
         username=user.username,
-        full_name=user.full_name,
+        full_name=full_name_val,
         email=email_val,
         phone=phone_val,
         phone_number=phone_val,
@@ -307,17 +315,31 @@ def require_sales_or_admin_role(current_user: UserResponse = Depends(get_current
 
 def require_warehouse_manager(current_user: UserResponse = Depends(get_current_user)) -> UserResponse:
     """
-    AC 6 / Chức năng 6:
     Chỉ Quản lý kho (Role: warehouse_manager) và Quản trị hệ thống (Role: admin)
-    được thực hiện nghiệp vụ kiểm kê kho (Tạo phiếu, Nhập kết quả, Xác nhận, Hủy).
-    Các vai trò khác (Thủ kho 'warehouse', Kinh doanh 'sales', Kế toán 'accountant', ...) bị CHẶN 403 Forbidden.
+    mới có quyền duyệt / xác nhận (hoàn tất điều chỉnh kho) hoặc hủy phiếu kiểm kê kho.
+    Thủ kho ('warehouse') và các vai trò khác bị CHẶN 403 Forbidden.
     """
     user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
     ALLOWED = {"warehouse_manager", "admin"}
     if not any(r in ALLOWED for r in user_roles):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Truy cập bị từ chối (403 Forbidden). Chỉ Quản lý kho (Warehouse Manager) hoặc Quản trị hệ thống (Admin) mới có quyền thực hiện nghiệp vụ kiểm kê kho."
+            detail="Truy cập bị từ chối (403 Forbidden). Chỉ Quản lý kho (Warehouse Manager) hoặc Quản trị hệ thống (Admin) mới có quyền duyệt / xác nhận hoặc hủy phiếu kiểm kê kho."
+        )
+    return current_user
+
+
+def require_warehouse_audit_manage(current_user: UserResponse = Depends(get_current_user)) -> UserResponse:
+    """
+    Cho phép Quản lý kho (warehouse_manager), Quản trị hệ thống (admin) và Thủ kho (warehouse)
+    tạo phiếu kiểm kê và cập nhật / nhập số lượng kiểm đếm thực tế.
+    """
+    user_roles = current_user.roles or ([current_user.role] if current_user.role else [])
+    ALLOWED = {"warehouse_manager", "admin", "warehouse"}
+    if not any(r in ALLOWED for r in user_roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Truy cập bị từ chối (403 Forbidden). Bạn không có quyền tạo hoặc chỉnh sửa phiếu kiểm kê kho."
         )
     return current_user
 

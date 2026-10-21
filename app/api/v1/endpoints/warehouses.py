@@ -1,10 +1,11 @@
 # backend/app/api/v1/endpoints/warehouses.py
 from __future__ import annotations
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
+import math
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_, and_
 
 from app.core.database import get_db
 from app.api.deps import require_roles, require_permission
@@ -12,11 +13,15 @@ from app.core.rbac import Permission
 from app.schemas.auth import UserResponse
 from app.models.goods_receipt import WarehouseEntity
 from app.models.warehouse import WarehouseLocationEntity, LocationStockEntity, WarehouseZoneEntity, WarehouseRackEntity
-from app.models.entities import ProductEntity, DealerEntity, OrderEntity
+from app.models.entities import ProductEntity, DealerEntity, OrderEntity, WarehouseStockEntity
+from app.models.user import USERS_DB
+from app.core.rbac import ROLE_DETAILS
+from app.models.dealer import load_dealers_db
 from app.schemas.warehouse import (
     WarehouseCreate,
     WarehouseUpdate,
     WarehouseResponse,
+    WarehouseKeeperItem,
     WarehouseLocationCreate,
     WarehouseLocationUpdate,
     WarehouseLocationResponse,
@@ -33,7 +38,18 @@ from app.schemas.warehouse import (
     WarehouseRackResponse,
     WarehouseMasterDataResponse,
     MasterDataOptionItem,
+    OrderBreakdownItem,
+    BatchPickingRouteItem,
+    BatchPickingPreviewResponse,
+    EligiblePickingOrder,
+    EligiblePickingOrderPagination,
+    EligiblePickingOrderListResponse,
+    BatchPickingPreviewRequest,
+    PickingItemExecution,
+    BatchPickingCompleteRequest,
+    BatchPickingCompleteResponse,
 )
+
 
 router = APIRouter()
 
@@ -41,6 +57,15 @@ router = APIRouter()
 WAREHOUSE_MANAGE_ROLES = ["admin", "warehouse", "warehouse_manager"]
 # Quyền xem kho & tra cứu soạn đơn: Toàn bộ nhân sự nghiệp vụ
 WAREHOUSE_VIEW_ROLES = ["admin", "warehouse", "warehouse_manager", "sales", "sales_manager", "accountant"]
+
+WAREHOUSE_CODE_ALIASES: Dict[str, List[str]] = {
+    "KHO_HN": ["WH01", "KHO_HN"],
+    "WH01": ["WH01", "KHO_HN"],
+    "KHO_HCM": ["WH02", "KHO_HCM"],
+    "WH02": ["WH02", "KHO_HCM"],
+    "KHO_DN": ["WH03", "KHO_DN"],
+    "WH03": ["WH03", "KHO_DN"],
+}
 
 
 # ==========================================================
@@ -166,6 +191,70 @@ def create_warehouse(
         total_products_count=0,
         total_stock_quantity=0,
     )
+
+
+@router.get("/keepers", response_model=List[WarehouseKeeperItem])
+def get_warehouse_keepers(
+    search: Optional[str] = Query(None, description="Tìm kiếm thủ kho theo họ tên, username, SĐT, kho"),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_VIEW_ROLES)),
+):
+    """
+    Lấy danh sách các nhân sự thủ kho trong phân quyền hệ thống (RBAC):
+    - Thủ kho (warehouse)
+    Chỉ lấy người dùng có vai trò Thủ kho.
+    """
+    try:
+        load_dealers_db()
+    except Exception:
+        pass
+
+    warehouse_roles = {"warehouse"}
+    results: List[WarehouseKeeperItem] = []
+
+    for u in USERS_DB.values():
+        if not u.is_active or getattr(u, "status", "ACTIVE") != "ACTIVE":
+            continue
+        roles = set(u.get_roles())
+        if not (roles & warehouse_roles):
+            continue
+        primary_role = "warehouse"
+        role_info = ROLE_DETAILS.get(primary_role, {})
+        role_title = role_info.get("title", "Thủ kho")
+        phone = getattr(u, "phone", None)
+        email = getattr(u, "email", None)
+        branch = getattr(u, "branch", None) or "Chưa phân công"
+
+        if search and search.strip():
+            term = search.strip().lower()
+            match = (
+                term in u.username.lower()
+                or term in (u.full_name or "").lower()
+                or term in (phone or "").lower()
+                or term in (email or "").lower()
+                or term in branch.lower()
+                or term in role_title.lower()
+            )
+            if not match:
+                continue
+
+        results.append(
+            WarehouseKeeperItem(
+                id=u.id,
+                username=u.username,
+                full_name=u.full_name or u.username,
+                role=primary_role,
+                roles=u.get_roles(),
+                role_title=role_title,
+                phone=phone,
+                email=email,
+                branch=branch,
+                badge_color=role_info.get("badge_color", "#059669"),
+                is_active=True,
+            )
+        )
+
+    results.sort(key=lambda item: item.full_name.lower())
+    return results
 
 
 @router.get("/{warehouse_id}", response_model=WarehouseResponse)
@@ -638,6 +727,23 @@ def get_warehouse_location_products(
     products_map = {p.id: p for p in db.query(ProductEntity).filter(ProductEntity.id.in_(pids)).all()} if pids else {}
     locs_map = {l.id: l for l in db.query(WarehouseLocationEntity).filter(WarehouseLocationEntity.warehouse_id == warehouse_id).all()}
 
+    # Xác định các alias của kho trong WarehouseStockEntity
+    wh_aliases = [str(warehouse_id)]
+    if wh:
+        if wh.code:
+            wh_aliases.append(wh.code)
+            wh_aliases.extend(WAREHOUSE_CODE_ALIASES.get(wh.code, []))
+        wh_aliases.append(f"WH{wh.id:02d}")
+
+    ws_map: Dict[int, int] = {}
+    if pids:
+        ws_records = db.query(WarehouseStockEntity).filter(
+            WarehouseStockEntity.warehouse_id.in_(wh_aliases),
+            WarehouseStockEntity.product_id.in_(pids)
+        ).all()
+        for r in ws_records:
+            ws_map[r.product_id] = r.actual_stock or 0
+
     results: List[LocationProductStockItem] = []
     for s in stocks:
         prod = products_map.get(s.product_id)
@@ -645,11 +751,15 @@ def get_warehouse_location_products(
         if not prod or not loc:
             continue
 
-        # Tìm tổng tồn của sản phẩm tại kho này
-        wh_total = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
-            LocationStockEntity.warehouse_id == warehouse_id,
-            LocationStockEntity.product_id == s.product_id
-        ).scalar() or 0
+        # Tìm tổng tồn thực tế của sản phẩm tại kho này (WarehouseStockEntity)
+        if s.product_id in ws_map:
+            wh_total = ws_map[s.product_id]
+        else:
+            # Fallback nếu kho chưa tạo bản ghi WarehouseStockEntity: dùng tổng trên các kệ
+            wh_total = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
+                LocationStockEntity.warehouse_id == warehouse_id,
+                LocationStockEntity.product_id == s.product_id
+            ).scalar() or 0
 
         # Nếu có từ khóa tìm kiếm
         if search and search.strip():
@@ -686,6 +796,105 @@ def get_warehouse_location_products(
     return results
 
 
+@router.get("/{warehouse_id}/products/{product_id}/allocation-status", response_model=Dict[str, Any])
+def get_product_location_allocation_status(
+    warehouse_id: int,
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_VIEW_ROLES)),
+):
+    """
+    Tra cứu trạng thái phân bổ vị trí kệ của một sản phẩm trong kho:
+    - Tổng tồn tại kho (tồn thực tế)
+    - Đã phân bổ lên các kệ
+    - Số lượng chưa phân bổ (còn có thể xếp lên kệ)
+    - Chi tiết các kệ đang chứa sản phẩm
+    """
+    wh = db.query(WarehouseEntity).filter(WarehouseEntity.id == warehouse_id).first()
+    if not wh:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kho không tồn tại.")
+
+    prod = db.query(ProductEntity).filter(ProductEntity.id == product_id).first()
+    if not prod:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sản phẩm không tồn tại.")
+
+    wh_aliases = [str(warehouse_id)]
+    if wh.code:
+        wh_aliases.append(wh.code)
+        wh_aliases.extend(WAREHOUSE_CODE_ALIASES.get(wh.code, []))
+    wh_aliases.append(f"WH{wh.id:02d}")
+
+    ws = db.query(WarehouseStockEntity).filter(
+        WarehouseStockEntity.warehouse_id.in_(wh_aliases),
+        WarehouseStockEntity.product_id == prod.id
+    ).first()
+
+    wh_total = ws.actual_stock if ws is not None else (prod.stock or 0)
+
+    # Lấy các kệ đang chứa sản phẩm này trong kho
+    records = db.query(LocationStockEntity, WarehouseLocationEntity).join(
+        WarehouseLocationEntity, LocationStockEntity.location_id == WarehouseLocationEntity.id
+    ).filter(
+        LocationStockEntity.warehouse_id == warehouse_id,
+        LocationStockEntity.product_id == product_id,
+        LocationStockEntity.quantity > 0
+    ).all()
+
+    shelves = []
+    total_allocated = 0
+    for st, loc in records:
+        total_allocated += st.quantity
+        shelves.append({
+            "location_id": loc.id,
+            "location_code": loc.location_code,
+            "location_name": loc.location_name,
+            "zone": loc.zone,
+            "quantity": st.quantity
+        })
+
+    unallocated = max(0, int(wh_total - total_allocated))
+
+    return {
+        "product_id": prod.id,
+        "product_code": prod.code,
+        "product_name": prod.name,
+        "base_unit": prod.base_unit or "Cái",
+        "warehouse_id": warehouse_id,
+        "warehouse_name": wh.name,
+        "warehouse_total_stock": int(wh_total),
+        "total_allocated": int(total_allocated),
+        "unallocated_stock": int(unallocated),
+        "shelves": shelves,
+    }
+
+
+@router.get("/{warehouse_id}/warehouse-stocks", response_model=Dict[int, int])
+def get_warehouse_stocks_map(
+    warehouse_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_VIEW_ROLES)),
+):
+    """
+    Tra cứu tổng tồn thực tế của tất cả sản phẩm trong kho cụ thể:
+    Trả về dict dạng { product_id: actual_stock }
+    """
+    wh = db.query(WarehouseEntity).filter(WarehouseEntity.id == warehouse_id).first()
+    if not wh:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kho không tồn tại.")
+
+    wh_aliases = [str(warehouse_id)]
+    if wh.code:
+        wh_aliases.append(wh.code)
+        wh_aliases.extend(WAREHOUSE_CODE_ALIASES.get(wh.code, []))
+    wh_aliases.append(f"WH{wh.id:02d}")
+
+    ws_records = db.query(WarehouseStockEntity.product_id, WarehouseStockEntity.actual_stock).filter(
+        WarehouseStockEntity.warehouse_id.in_(wh_aliases)
+    ).all()
+
+    return {r[0]: (r[1] or 0) for r in ws_records}
+
+
 @router.post("/locations/assign-product", response_model=Dict[str, Any])
 def assign_product_to_location(
     payload: AssignProductToLocationRequest,
@@ -695,6 +904,9 @@ def assign_product_to_location(
     """
     Gán hoặc điều chỉnh số lượng sản phẩm vào một vị trí lưu kho.
     Nếu quantity == 0: Xóa sản phẩm khỏi vị trí đó.
+    Tuân thủ nghiêm ngặt:
+    - Không gán vượt quá tồn chưa phân bổ của sản phẩm trong kho.
+    - Không tự ý tăng/giảm tổng tồn ProductEntity.stock khi gán kệ.
     """
     loc = db.query(WarehouseLocationEntity).filter(WarehouseLocationEntity.id == payload.location_id).first()
     if not loc:
@@ -715,18 +927,7 @@ def assign_product_to_location(
 
     if payload.quantity <= 0:
         if stock_record:
-            old_qty = stock_record.quantity
             db.delete(stock_record)
-            if old_qty > 0:
-                prod.stock = max(0, (prod.stock or 0) - old_qty)
-                try:
-                    from app.api.v1.endpoints.products import RAW_PRODUCTS
-                    for raw_p in RAW_PRODUCTS:
-                        if raw_p.get("id") == prod.id:
-                            raw_p["stock"] = prod.stock
-                            break
-                except Exception:
-                    pass
             db.commit()
         return {
             "message": f"Đã giải phóng sản phẩm '{prod.name}' khỏi vị trí '{loc.location_code}'.",
@@ -736,8 +937,52 @@ def assign_product_to_location(
     old_qty = stock_record.quantity if stock_record else 0
     net_increase = payload.quantity - old_qty
 
+    # 1. KIỂM TRA TỒN CHƯA PHÂN BỔ (Không gán vượt quá số tồn kho chưa xếp lên kệ)
+    wh_aliases = [str(wh.id)]
+    if wh.code:
+        wh_aliases.append(wh.code)
+        wh_aliases.extend(WAREHOUSE_CODE_ALIASES.get(wh.code, []))
+    wh_aliases.append(f"WH{wh.id:02d}")
+
+    ws = db.query(WarehouseStockEntity).filter(
+        WarehouseStockEntity.warehouse_id.in_(wh_aliases),
+        WarehouseStockEntity.product_id == prod.id
+    ).first()
+
+    wh_actual_stock = ws.actual_stock if ws is not None else (prod.stock or 0)
+
+    # Tổng số lượng sản phẩm này đã được xếp lên các vị trí kệ KHÁC trong cùng kho
+    other_shelves_qty = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
+        LocationStockEntity.warehouse_id == loc.warehouse_id,
+        LocationStockEntity.product_id == prod.id,
+        LocationStockEntity.location_id != payload.location_id
+    ).scalar() or 0
+
+    max_assignable = max(0, int(wh_actual_stock - other_shelves_qty))
+
+    if payload.quantity > max_assignable:
+        if max_assignable == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Toàn bộ tồn kho của '{prod.name}' trong kho '{wh.name}' ({wh_actual_stock} {prod.base_unit or 'Cái'}) "
+                    f"đã được xếp hết lên các kệ khác! Không còn tồn chưa phân bổ để gán tiếp. "
+                    f"Vui lòng sử dụng tính năng 'Chuyển kệ' nếu muốn sắp xếp lại vị trí lưu trữ."
+                )
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Vượt quá số lượng tồn chưa phân bổ của sản phẩm '{prod.name}' trong kho '{wh.name}'! "
+                    f"Tổng tồn tại kho: {wh_actual_stock} {prod.base_unit or 'Cái'}, "
+                    f"đã xếp lên các kệ khác: {other_shelves_qty} {prod.base_unit or 'Cái'}. "
+                    f"Vị trí này chỉ được gán tối đa: {max_assignable} {prod.base_unit or 'Cái'}."
+                )
+            )
+
     if net_increase > 0:
-        # 1. Kiểm tra sức chứa & tải trọng tối đa của vị trí kệ (Location Capacity & Payload)
+        # 2. Kiểm tra sức chứa & tải trọng tối đa của vị trí kệ (Location Capacity & Payload)
         current_loc_stock = db.query(func.coalesce(func.sum(LocationStockEntity.quantity), 0)).filter(
             LocationStockEntity.location_id == loc.id
         ).scalar() or 0
@@ -750,7 +995,7 @@ def assign_product_to_location(
                 detail=f"Vượt quá sức chứa và tải trọng của kệ! Vị trí {loc.location_code} chỉ có sức chứa tối đa là {int(loc_max_cap)} SP (hiện đang chứa {int(current_loc_stock)} SP, chỉ còn chỗ cho {avail} SP). Không thể nhập thêm {net_increase} SP."
             )
 
-        # 2. Kiểm tra ràng buộc sức chứa của toàn bộ Khu vực (Zone Capacity)
+        # 3. Kiểm tra ràng buộc sức chứa của toàn bộ Khu vực (Zone Capacity)
         if loc.zone:
             zone_locs = db.query(WarehouseLocationEntity).filter(
                 WarehouseLocationEntity.warehouse_id == loc.warehouse_id,
@@ -781,18 +1026,8 @@ def assign_product_to_location(
         )
         db.add(stock_record)
 
-    # Đồng bộ tổng tồn kho của sản phẩm (dữ liệu giả lập & DB) khi cập nhật tồn kệ
-    if net_increase != 0:
-        prod.stock = max(0, (prod.stock or 0) + net_increase)
-        try:
-            from app.api.v1.endpoints.products import RAW_PRODUCTS
-            for raw_p in RAW_PRODUCTS:
-                if raw_p.get("id") == prod.id:
-                    raw_p["stock"] = prod.stock
-                    break
-        except Exception:
-            pass
-
+    # KHÓA CHẶT TỔNG TỒN: Gán kệ chỉ là phân bổ vị trí vật lý trong kho,
+    # TUYỆT ĐỐI KHÔNG tự động tăng/giảm prod.stock hay làm sai lệch tổng tồn!
     db.commit()
 
     return {
@@ -1052,7 +1287,7 @@ def get_order_picking_locations(
                 picking_locs.append(ProductPickingLocation(
                     location_id=any_loc.id,
                     location_code=any_loc.location_code,
-                    location_name=f"{any_loc.location_name} (Đang chờ phân bổ)",
+                    location_name=f"{any_loc.location_name} (Đề xuất)",
                     zone=any_loc.zone,
                     aisle=any_loc.aisle,
                     rack=any_loc.rack,
@@ -1064,15 +1299,499 @@ def get_order_picking_locations(
             product_id=pid,
             product_code=pcode,
             product_name=pname,
-            ordered_quantity=qty,
-            unit_name=unit,
-            warehouse_id=wh_id,
-            warehouse_code=wh_code,
-            warehouse_name=wh_name,
-            locations=picking_locs,
+            quantity=qty,
+            unit=unit,
+            picking_locations=picking_locs,
         ))
 
     return results
+
+
+@router.get("/picking/eligible-orders", response_model=Union[EligiblePickingOrderListResponse, List[EligiblePickingOrder]])
+def get_eligible_picking_orders(
+    status_filter: Optional[str] = None,
+    search: Optional[str] = None,
+    page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
+    page_size: Optional[int] = Query(10, ge=1, le=100, description="Số lượng đơn hàng mỗi trang (mặc định 10)"),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_MANAGE_ROLES)),
+):
+    """
+    Lấy danh sách các đơn hàng đã được phê duyệt sẵn sàng để tạo phiếu soạn hàng.
+    Chỉ cho phép vai trò Kho (Warehouse, Warehouse Manager) và Admin.
+    Phân trang: Mặc định tải 10 đơn hàng/trang (page=1, page_size=10), chuyển trang tải tiếp 10 đơn.
+    """
+    from app.models.entities import OrderEntity
+    from app.models.dealer import DEALERS_DB, load_dealers_db
+    import json
+    load_dealers_db()
+
+    valid_explicit_statuses = ["CONFIRMED", "PICKING"]
+    if status_filter and status_filter.upper() in valid_explicit_statuses:
+        orders_db = db.query(OrderEntity).filter(
+            OrderEntity.status == status_filter.upper()
+        ).order_by(OrderEntity.created_at.desc()).all()
+    else:
+        # Mặc định: Chỉ lấy các đơn hàng ĐÃ DUYỆT (status == 'APPROVED' hoặc approval_status == 'APPROVED')
+        # và chưa xuất kho / đang soạn / đã hủy
+        orders_db = db.query(OrderEntity).filter(
+            (OrderEntity.status == "APPROVED") | (OrderEntity.approval_status == "APPROVED")
+        ).filter(
+            OrderEntity.status.notin_(["PICKING", "PACKED", "SHIPPED", "DELIVERED", "COMPLETED", "CANCELLED"])
+        ).order_by(OrderEntity.created_at.desc()).all()
+    
+    results: List[EligiblePickingOrder] = []
+    
+    from app.api.v1.endpoints.orders import ORDERS_DB
+    seen_codes = set()
+
+    for ord_obj in orders_db:
+        seen_codes.add(ord_obj.order_code)
+        dealer_obj = DEALERS_DB.get(ord_obj.dealer_id) if ord_obj.dealer_id else None
+        dealer_name = getattr(dealer_obj, "name", None) if dealer_obj else None
+        
+        items_data = []
+        if ord_obj.items_json:
+            try:
+                parsed = json.loads(ord_obj.items_json)
+                items_data = parsed if isinstance(parsed, list) else parsed.get("items", [])
+            except Exception:
+                pass
+        
+        total_items = len(items_data)
+        total_qty = sum(int(it.get("quantity") or 0) for it in items_data)
+        items_summary = [f"{it.get('product_name') or it.get('name') or 'SP'} - SL: {it.get('quantity') or 1}" for it in items_data[:3]]
+        if len(items_data) > 3:
+            items_summary.append(f"+{len(items_data) - 3} sản phẩm khác")
+
+        if search:
+            s_low = search.lower().strip()
+            code_match = s_low in ord_obj.order_code.lower()
+            dealer_match = dealer_name and s_low in dealer_name.lower()
+            if not (code_match or dealer_match):
+                continue
+
+        is_approved = (ord_obj.status == "APPROVED") or (getattr(ord_obj, "approval_status", None) == "APPROVED")
+        display_status = "APPROVED" if is_approved else ord_obj.status
+
+        results.append(EligiblePickingOrder(
+            order_code=ord_obj.order_code,
+            dealer_id=ord_obj.dealer_id,
+            dealer_name=dealer_name or (f"Đại lý #{ord_obj.dealer_id}" if ord_obj.dealer_id else "Khách lẻ"),
+            status=display_status,
+            created_at=str(ord_obj.created_at) if ord_obj.created_at else None,
+            desired_delivery_date=str(ord_obj.desired_delivery_date) if hasattr(ord_obj, "desired_delivery_date") and ord_obj.desired_delivery_date else None,
+            delivery_point=ord_obj.delivery_point if hasattr(ord_obj, "delivery_point") else None,
+            total_items=total_items,
+            total_quantity=total_qty,
+            items_summary=items_summary,
+        ))
+
+    for k, v in ORDERS_DB.items():
+        code = v.get("order_code") or str(k)
+        if code in seen_codes:
+            continue
+        st = (v.get("status") or "").upper()
+        appr_st = (v.get("approval_status") or "").upper()
+        is_approved = (st == "APPROVED") or (appr_st == "APPROVED")
+
+        if status_filter and status_filter.upper() in valid_explicit_statuses:
+            if st != status_filter.upper():
+                continue
+        else:
+            if not is_approved:
+                continue
+            if st in ["PICKING", "PACKED", "SHIPPED", "DELIVERED", "COMPLETED", "CANCELLED"]:
+                continue
+        
+        dealer_id = v.get("dealer_id")
+        dealer_obj = DEALERS_DB.get(dealer_id) if dealer_id else None
+        dealer_name = getattr(dealer_obj, "name", None) if dealer_obj else (v.get("dealer_name") or (f"Đại lý #{dealer_id}" if dealer_id else "Khách lẻ"))
+        items_data = v.get("items") or []
+        total_items = len(items_data)
+        total_qty = sum(int(it.get("quantity") or 0) for it in items_data)
+        items_summary = [f"{it.get('product_name') or it.get('name') or 'SP'} - SL: {it.get('quantity') or 1}" for it in items_data[:3]]
+        if len(items_data) > 3:
+            items_summary.append(f"+{len(items_data) - 3} sản phẩm khác")
+
+        if search:
+            s_low = search.lower().strip()
+            code_match = s_low in code.lower()
+            dealer_match = dealer_name and s_low in dealer_name.lower()
+            if not (code_match or dealer_match):
+                continue
+
+        display_status = "APPROVED" if is_approved else st
+
+        results.append(EligiblePickingOrder(
+            order_code=code,
+            dealer_id=dealer_id,
+            dealer_name=dealer_name,
+            status=display_status,
+            created_at=v.get("created_at"),
+            desired_delivery_date=v.get("desired_delivery_date"),
+            delivery_point=v.get("delivery_point"),
+            total_items=total_items,
+            total_quantity=total_qty,
+            items_summary=items_summary,
+        ))
+
+    total_records = len(results)
+    if page is not None:
+        effective_page_size = page_size if (page_size and page_size > 0) else 10
+        total_pages = max(1, math.ceil(total_records / effective_page_size))
+        start_idx = (page - 1) * effective_page_size
+        paged_results = results[start_idx : start_idx + effective_page_size]
+
+        return EligiblePickingOrderListResponse(
+            status="success",
+            data=paged_results,
+            items=paged_results,
+            total=total_records,
+            pagination=EligiblePickingOrderPagination(
+                page=page,
+                page_size=effective_page_size,
+                total_records=total_records,
+                total_pages=total_pages,
+            ),
+        )
+
+    return results
+
+
+@router.post("/picking/batch-preview", response_model=BatchPickingPreviewResponse)
+def preview_batch_picking(
+    payload: BatchPickingPreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_MANAGE_ROLES)),
+):
+    """
+    Tạo bản xem trước phiếu soạn hàng gộp nhiều đơn (Multi-order Wave Picking):
+    - Gộp các dòng sản phẩm trùng nhau từ các đơn được chọn
+    - Tra cứu vị trí lưu trữ thực tế (zone, aisle, rack, bin, location_code)
+    - SẮP XẾP THEO ĐƯỜNG ĐI TRONG KHO (Pick Path Routing):
+      Đi tuần tự từ Khu vực -> Dãy -> Kệ -> Tầng/Ô -> Mã vị trí.
+      Sản phẩm chưa có vị trí xếp sau cùng.
+    - Đánh số thứ tự chặng nhặt (Step 1, Step 2...) để thủ kho đi 1 lượt tối ưu.
+    """
+    import json
+    from uuid import uuid4
+    from datetime import datetime, timezone
+    from app.models.entities import OrderEntity
+    from app.models.dealer import DEALERS_DB, load_dealers_db
+    from app.api.v1.endpoints.orders import ORDERS_DB
+    load_dealers_db()
+
+    clean_codes = [c.strip() for c in payload.order_codes if c.strip()]
+    if not clean_codes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Vui lòng chọn ít nhất một mã đơn hàng để tạo phiếu soạn hàng."
+        )
+
+    # 1. Thu thập dữ liệu tất cả các đơn hàng
+    orders_map = {}
+    for code in clean_codes:
+        ord_db = db.query(OrderEntity).filter(OrderEntity.order_code == code).first()
+        if ord_db:
+            items_data = []
+            if ord_db.items_json:
+                try:
+                    parsed = json.loads(ord_db.items_json)
+                    items_data = parsed if isinstance(parsed, list) else parsed.get("items", [])
+                except Exception:
+                    pass
+            dealer_obj = DEALERS_DB.get(ord_db.dealer_id) if ord_db.dealer_id else None
+            dealer_name = getattr(dealer_obj, "name", None) if dealer_obj else None
+            orders_map[code] = {
+                "order_code": code,
+                "dealer_id": ord_db.dealer_id,
+                "dealer_name": dealer_name or (f"Đại lý #{ord_db.dealer_id}" if ord_db.dealer_id else "Khách lẻ"),
+                "status": ord_db.status,
+                "desired_delivery_date": str(getattr(ord_db, "desired_delivery_date", "")) or None,
+                "items": items_data,
+            }
+        elif code in ORDERS_DB or any(o.get("order_code") == code for o in ORDERS_DB.values()):
+            found = ORDERS_DB.get(code) or next((o for o in ORDERS_DB.values() if o.get("order_code") == code), None)
+            if found:
+                dealer_id = found.get("dealer_id")
+                dealer_obj = DEALERS_DB.get(dealer_id) if dealer_id else None
+                dealer_name = getattr(dealer_obj, "name", None) if dealer_obj else found.get("dealer_name")
+                orders_map[code] = {
+                    "order_code": code,
+                    "dealer_id": dealer_id,
+                    "dealer_name": dealer_name or (f"Đại lý #{dealer_id}" if dealer_id else "Khách lẻ"),
+                    "status": found.get("status"),
+                    "desired_delivery_date": found.get("desired_delivery_date"),
+                    "items": found.get("items") or [],
+                }
+
+    if not orders_map:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy đơn hàng nào hợp lệ trong danh sách: {', '.join(clean_codes)}"
+        )
+
+    # 2. Gộp sản phẩm từ các đơn hàng
+    grouped_items = {}
+    for code, ord_info in orders_map.items():
+        for it in ord_info["items"]:
+            pid = it.get("product_id") or it.get("id")
+            if not pid:
+                continue
+            qty = int(it.get("quantity") or 1)
+            pname = it.get("product_name") or it.get("name") or f"Sản phẩm #{pid}"
+            pcode = it.get("product_code") or f"SP{pid:03d}"
+            unit = it.get("unit") or it.get("unit_name") or "Cái"
+
+            if pid not in grouped_items:
+                grouped_items[pid] = {
+                    "product_id": pid,
+                    "product_code": pcode,
+                    "product_name": pname,
+                    "unit_name": unit,
+                    "total_ordered_quantity": 0,
+                    "order_breakdown": [],
+                }
+
+            grouped_items[pid]["total_ordered_quantity"] += qty
+            grouped_items[pid]["order_breakdown"].append(OrderBreakdownItem(
+                order_code=code,
+                quantity=qty,
+                dealer_name=ord_info["dealer_name"],
+                desired_delivery_date=ord_info["desired_delivery_date"],
+            ))
+
+    # 3. Tra cứu vị trí lưu kho & tồn khả dụng của từng sản phẩm
+    route_raw_items = []
+    default_wh = db.query(WarehouseEntity).filter(WarehouseEntity.id == 1).first()
+    wh_id = default_wh.id if default_wh else 1
+    wh_name = default_wh.name if default_wh else "Kho Tổng"
+
+    for pid, gdata in grouped_items.items():
+        loc_stocks = db.query(LocationStockEntity, WarehouseLocationEntity).join(
+            WarehouseLocationEntity,
+            LocationStockEntity.location_id == WarehouseLocationEntity.id
+        ).filter(
+            LocationStockEntity.product_id == pid,
+            LocationStockEntity.quantity > 0
+        ).order_by(LocationStockEntity.quantity.desc()).all()
+
+        if loc_stocks:
+            stock, loc = loc_stocks[0]
+            loc_id = loc.id
+            loc_code = loc.location_code
+            loc_name = loc.location_name or loc.location_code
+            zone = loc.zone or "Khu chung"
+            aisle = loc.aisle or "Dãy 01"
+            rack = loc.rack or "Kệ 01"
+            bin_val = loc.bin or "Ô 01"
+            avail = stock.quantity
+        else:
+            any_loc = db.query(WarehouseLocationEntity).filter(
+                WarehouseLocationEntity.is_active == True
+            ).first()
+            loc_id = any_loc.id if any_loc else None
+            loc_code = any_loc.location_code if any_loc else "CHƯA PHÂN BỔ"
+            loc_name = f"{any_loc.location_name} - Đang chờ phân bổ" if any_loc else "Chờ phân bổ vị trí kệ"
+            zone = any_loc.zone if any_loc and any_loc.zone else "Chưa phân bổ"
+            aisle = any_loc.aisle if any_loc and any_loc.aisle else "Chưa phân bổ"
+            rack = any_loc.rack if any_loc and any_loc.rack else "Chưa phân bổ"
+            bin_val = any_loc.bin if any_loc and any_loc.bin else "Chưa phân bổ"
+            avail = 0
+
+        path_code = f"{zone} > {aisle} > {rack} > {bin_val} > {loc_code}"
+
+        route_raw_items.append({
+            "product_id": pid,
+            "product_code": gdata["product_code"],
+            "product_name": gdata["product_name"],
+            "unit_name": gdata["unit_name"],
+            "total_ordered_quantity": gdata["total_ordered_quantity"],
+            "available_stock": avail,
+            "location_id": loc_id,
+            "location_code": loc_code,
+            "location_name": loc_name,
+            "zone": zone,
+            "aisle": aisle,
+            "rack": rack,
+            "bin": bin_val,
+            "pick_path_code": path_code,
+            "order_breakdown": gdata["order_breakdown"],
+        })
+
+    # 4. SẮP XẾP THEO ĐƯỜNG ĐI TRONG KHO (PICK PATH ROUTING)
+    def pick_path_sort_key(item):
+        is_unassigned = ("chưa phân bổ" in (item["zone"] or "").lower()) or (item["location_code"] == "CHƯA PHÂN BỔ")
+        prio = 1 if is_unassigned else 0
+        z = (item["zone"] or "").strip().upper()
+        a = (item["aisle"] or "").strip().upper()
+        r = (item["rack"] or "").strip().upper()
+        b = (item["bin"] or "").strip().upper()
+        c = (item["location_code"] or "").strip().upper()
+        sku = item["product_code"].strip().upper()
+        return (prio, z, a, r, b, c, sku)
+
+    route_raw_items.sort(key=pick_path_sort_key)
+
+    # 5. Gán số thứ tự chặng (step_number = 1, 2, 3...)
+    final_route_items = []
+    for idx, item in enumerate(route_raw_items, start=1):
+        final_route_items.append(BatchPickingRouteItem(
+            step_number=idx,
+            product_id=item["product_id"],
+            product_code=item["product_code"],
+            product_name=item["product_name"],
+            unit_name=item["unit_name"],
+            total_ordered_quantity=item["total_ordered_quantity"],
+            available_stock=item["available_stock"],
+            location_id=item["location_id"],
+            location_code=item["location_code"],
+            location_name=item["location_name"],
+            zone=item["zone"],
+            aisle=item["aisle"],
+            rack=item["rack"],
+            bin=item["bin"],
+            pick_path_code=item["pick_path_code"],
+            order_breakdown=item["order_breakdown"],
+        ))
+
+    now_str = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    batch_code = f"PICK-{now_str}-{uuid4().hex[:4].upper()}"
+
+    total_pick_units = sum(it.total_ordered_quantity for it in final_route_items)
+
+    return BatchPickingPreviewResponse(
+        batch_code=batch_code,
+        warehouse_id=wh_id,
+        warehouse_name=wh_name,
+        selected_order_codes=list(orders_map.keys()),
+        total_orders=len(orders_map),
+        total_unique_items=len(final_route_items),
+        total_pick_units=total_pick_units,
+        route_items=final_route_items,
+    )
+
+
+@router.post("/picking/batch-complete", response_model=BatchPickingCompleteResponse)
+def complete_batch_picking(
+    payload: BatchPickingCompleteRequest,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(require_roles(WAREHOUSE_MANAGE_ROLES)),
+):
+    """
+    Xác nhận hoàn tất phiếu soạn hàng:
+    - TIÊU CHÍ BẮT BUỘC: Soạn thiếu bắt buộc nhập lý do!
+      Nếu picked_quantity < ordered_quantity, kiểm tra shortage_reason tối thiểu 3 ký tự.
+    - Cập nhật trạng thái các đơn hàng sang PICKING ('Đang soạn hàng')
+    - Ghi nhận thời điểm soạn hàng (picking_at)
+    - Ghi nhật ký Audit Log đầy đủ vết thao tác
+    """
+    from datetime import datetime, timezone
+    from app.models.entities import OrderEntity
+    from app.services.audit_service import log_audit_event
+    from app.api.v1.endpoints.orders import ORDERS_DB
+
+    # 1. Ràng buộc kiểm tra nghiêm ngặt: Soạn thiếu BẮT BUỘC nhập lý do
+    shortage_items = []
+    total_picked_units = 0
+
+    for item in payload.items:
+        if item.picked_quantity < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Số lượng thực soạn của sản phẩm '{item.product_code}' không thể là số âm ({item.picked_quantity})."
+            )
+        if item.picked_quantity > item.ordered_quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Số lượng thực soạn của sản phẩm '{item.product_code}' ({item.picked_quantity}) "
+                    f"không được vượt quá số lượng yêu cầu của đơn ({item.ordered_quantity})."
+                )
+            )
+        total_picked_units += item.picked_quantity
+
+        if item.picked_quantity < item.ordered_quantity:
+            reason = (item.shortage_reason or "").strip()
+            if len(reason) < 3:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Dòng sản phẩm '{item.product_code}' soạn thiếu "
+                        f"({item.picked_quantity}/{item.ordered_quantity})! "
+                        f"Bắt buộc phải nhập lý do thiếu hàng (tối thiểu 3 ký tự)."
+                    )
+                )
+            shortage_items.append({
+                "product_code": item.product_code,
+                "ordered": item.ordered_quantity,
+                "picked": item.picked_quantity,
+                "shortage": item.ordered_quantity - item.picked_quantity,
+                "reason": reason,
+            })
+
+    # 2. Cập nhật các đơn hàng được gộp
+    updated_orders_count = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    picker = payload.picker_name or current_user.full_name or current_user.username
+    batch_code = payload.batch_code or f"PICK-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}"
+
+    for code in payload.order_codes:
+        clean_code = code.strip()
+        ord_db = db.query(OrderEntity).filter(OrderEntity.order_code == clean_code).first()
+        if ord_db:
+            if ord_db.status in ("CONFIRMED", "APPROVED", "PENDING"):
+                ord_db.status = "PICKING"
+            if hasattr(ord_db, "picking_at"):
+                ord_db.picking_at = now_iso
+            old_note = getattr(ord_db, "note", "") or ""
+            picking_note = f"[Đã soạn hàng theo đợt {batch_code} bởi {picker}]"
+            if picking_note not in old_note:
+                ord_db.note = f"{old_note} {picking_note}".strip()
+            updated_orders_count += 1
+
+        if clean_code in ORDERS_DB:
+            mem_ord = ORDERS_DB[clean_code]
+            if mem_ord.get("status") in ("CONFIRMED", "APPROVED", "PENDING"):
+                mem_ord["status"] = "PICKING"
+            mem_ord["picking_at"] = now_iso
+            mem_ord["picker_name"] = picker
+            mem_ord["batch_picking_code"] = batch_code
+            if shortage_items:
+                mem_ord["shortage_details"] = shortage_items
+
+    db.commit()
+
+    # 3. Ghi Audit Log vết thao tác
+    try:
+        log_audit_event(
+            db=db,
+            user=current_user,
+            action_type="STOCK_ISSUE",
+            entity_type="Order",
+            entity_id=batch_code,
+            new_val={
+                "batch_code": batch_code,
+                "orders": payload.order_codes,
+                "total_picked_units": total_picked_units,
+                "shortage_items": shortage_items,
+            },
+            reason=f"Thủ kho {picker} hoàn tất phiếu soạn hàng {batch_code} cho {len(payload.order_codes)} đơn",
+        )
+    except Exception:
+        pass
+
+
+    return BatchPickingCompleteResponse(
+        success=True,
+        batch_code=batch_code,
+        message=f"Đã hoàn tất soạn hàng đợt {batch_code} cho {len(payload.order_codes)} đơn hàng thành công!",
+        total_orders_updated=updated_orders_count,
+        total_items_picked=total_picked_units,
+        shortage_items_count=len(shortage_items),
+        updated_at=now_iso,
+    )
 
 
 # ==========================================================

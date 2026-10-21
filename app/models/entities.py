@@ -115,7 +115,7 @@ class CategoryEntity(Base):
     __tablename__ = "categories"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    code = Column(String(50), unique=True, index=True, nullable=True)
+    code = Column(String(50), index=True, nullable=True)
     name = Column(Unicode(100), nullable=False)
     parent_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
     description = Column(Unicode(255), nullable=True)
@@ -131,7 +131,7 @@ class ProductEntity(Base):
     code = Column(String(50), unique=True, index=True, nullable=False)
     name = Column(Unicode(255), nullable=False)
     category = Column(Unicode(100), default="Thời trang")
-    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True, index=True)
     stock = Column(Integer, default=0)
     cost_price = Column(Float, default=0.0)
     sell_price = Column(Float, default=0.0)
@@ -141,9 +141,9 @@ class ProductEntity(Base):
     packaging_specification = Column(Unicode(255), nullable=True)
     images_json = Column(UnicodeText, nullable=True)
     is_batch_managed = Column(Boolean, default=False)
-    status = Column(String(50), default="active")
+    status = Column(String(50), default="active", index=True)
     min_stock = Column(Integer, default=10, nullable=True)
-    created_at = Column(DateTime, default=get_utc_now)
+    created_at = Column(DateTime, default=get_utc_now, index=True)
 
     category_rel = relationship("CategoryEntity", backref="products")
 
@@ -199,6 +199,12 @@ class DealerEntity(Base):
     lock_reason = Column(Unicode(500), nullable=True)
     locked_at = Column(DateTime, nullable=True)
     locked_by = Column(String(50), nullable=True)
+    # Cờ cảnh báo tín dụng tự động (S7-04)
+    is_over_credit_limit = Column(Boolean, default=False, nullable=False)
+    is_overdue = Column(Boolean, default=False, nullable=False)
+    credit_warning_flag = Column(Boolean, default=False, nullable=False)
+    credit_flag_reason = Column(UnicodeText, nullable=True)
+    last_credit_evaluated_at = Column(DateTime, nullable=True)
     warehouse_id = Column(String(50), nullable=True)
     warehouse_name = Column(Unicode(255), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
@@ -220,6 +226,11 @@ class InventoryTransactionEntity(Base):
     unit_name = Column(Unicode(50), default="Cái")
     conversion_rate = Column(Float, default=1.0)
     base_quantity = Column(Float, default=0.0)
+    # SCRUM-81: Lưu vết lô gợi ý, lô đã chọn và lý do đổi lô (FEFO)
+    batch_number = Column(String(100), nullable=True)
+    selected_batch_id = Column(Integer, nullable=True)
+    suggested_batch_id = Column(Integer, nullable=True)
+    batch_change_reason = Column(Unicode(500), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
 
@@ -230,6 +241,7 @@ class OrderStatus(str, Enum):
     CONFIRMED = "CONFIRMED"                # Đã xác nhận
     PICKING = "PICKING"                    # Đang soạn hàng
     EXPORTED = "EXPORTED"                  # Đã xuất
+    PARTIALLY_DELIVERED = "PARTIALLY_DELIVERED"  # Giao một phần (Còn nợ hàng)
     DELIVERED = "DELIVERED"                # Đã giao
     CLOSED = "CLOSED"                      # Đóng
     CANCELLED = "CANCELLED"                # Huỷ
@@ -247,10 +259,10 @@ class OrderEntity(Base):
     assigned_sale_id = Column(Integer, nullable=True)
     assigned_sale_name = Column(Unicode(255), nullable=True)
     total_amount = Column(Float, default=0.0)
-    status = Column(String(50), default="PENDING")
+    status = Column(String(50), default="PENDING", index=True)
     note = Column(UnicodeText, nullable=True)
     items_json = Column(UnicodeText, nullable=True)  # JSON order items
-    created_at = Column(DateTime, default=get_utc_now)
+    created_at = Column(DateTime, default=get_utc_now, index=True)
     delivery_point_id = Column(Integer, ForeignKey("dealer_delivery_points.id"), nullable=True)
     discount_rate = Column(Float, default=0.0)
     discount_amount = Column(Float, default=0.0)
@@ -281,10 +293,16 @@ class OrderItemEntity(Base):
     unit_name = Column(Unicode(50), nullable=True)
     conversion_rate = Column(Float, default=1.0)
     is_reserved = Column(Boolean, default=False, nullable=False)
+    # SCRUM-81: Gợi ý và chọn lô xuất kho (FEFO)
+    suggested_batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True, index=True)
+    selected_batch_id = Column(Integer, ForeignKey("product_batches.id"), nullable=True, index=True)
+    batch_change_reason = Column(Unicode(500), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
 
     order_rel = relationship("OrderEntity", backref="items_rel")
     product_rel = relationship("ProductEntity", backref="order_items")
+    suggested_batch_rel = relationship("ProductBatchEntity", foreign_keys=[suggested_batch_id])
+    selected_batch_rel = relationship("ProductBatchEntity", foreign_keys=[selected_batch_id])
 
 
 # Alias for OrderEntity
@@ -426,6 +444,207 @@ class StockTransferEntity(Base):
     received_at = Column(DateTime, nullable=True)
     cancelled_by = Column(Unicode(100), nullable=True)
     cancelled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+
+class OrderDispatchEntity(Base):
+    __tablename__ = "order_dispatches"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    dispatch_code = Column(String(50), unique=True, index=True, nullable=False)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False, index=True)
+    order_code = Column(String(50), nullable=False, index=True)
+    dispatch_type = Column(String(50), default="INITIAL", nullable=False)  # INITIAL | SUPPLEMENTARY
+    round_number = Column(Integer, default=1, nullable=False)
+    warehouse_id = Column(String(50), nullable=True)
+    warehouse_name = Column(Unicode(255), nullable=True)
+    performed_by = Column(Unicode(100), nullable=False)
+    note = Column(UnicodeText, nullable=True)
+    items_json = Column(UnicodeText, nullable=True)  # List of dispatched items
+    created_at = Column(DateTime, default=get_utc_now)
+
+    order_rel = relationship("OrderEntity", backref="dispatches_rel")
+
+
+class DriverEntity(Base):
+    __tablename__ = "drivers"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    name = Column(Unicode(100), nullable=False)
+    phone = Column(String(20), nullable=False)
+    license_number = Column(String(50), nullable=True)
+    status = Column(String(20), default="ACTIVE", nullable=False)  # ACTIVE | INACTIVE
+    created_at = Column(DateTime, default=get_utc_now)
+
+
+class VehicleEntity(Base):
+    __tablename__ = "vehicles"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    plate_number = Column(String(20), unique=True, index=True, nullable=False)
+    vehicle_type = Column(Unicode(50), default="Xe tải 1.5 tấn", nullable=False)
+    capacity_kg = Column(Float, default=1500.0)
+    status = Column(String(20), default="ACTIVE", nullable=False)  # ACTIVE | MAINTENANCE | INACTIVE
+    created_at = Column(DateTime, default=get_utc_now)
+
+
+class CreditPolicyConfigEntity(Base):
+    """
+    Cấu hình chính sách cảnh báo và khóa bán tự động khi đại lý vượt hạn mức hoặc quá hạn (S7-04).
+    over_limit_action: 'BLOCK' (Chặn tạo đơn) | 'REQUIRE_APPROVAL' (Chuyển sang Cần duyệt)
+    overdue_action: 'BLOCK' (Chặn tạo đơn) | 'REQUIRE_APPROVAL' (Chuyển sang Cần duyệt)
+    """
+    __tablename__ = "credit_policy_configs"
+
+    id = Column(Integer, primary_key=True, default=1)
+    over_limit_action = Column(String(50), default="REQUIRE_APPROVAL", nullable=False)
+    overdue_action = Column(String(50), default="BLOCK", nullable=False)
+    auto_eval_enabled = Column(Boolean, default=True, nullable=False)
+    last_run_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+    updated_by = Column(Unicode(100), nullable=True)
+
+
+class DealerPaymentEntity(Base):
+    """
+    Ghi nhận thanh toán & đối trừ công nợ đại lý (S7-02, hỗ trợ S7-04 kích hoạt đánh giá lại).
+    """
+    __tablename__ = "dealer_payments"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    payment_code = Column(String(50), unique=True, index=True, nullable=False)
+    dealer_id = Column(Integer, ForeignKey("dealers.id"), nullable=False, index=True)
+    dealer_name = Column(Unicode(255), nullable=False)
+    amount = Column(Float, nullable=False)
+    payment_method = Column(Unicode(50), default="Chuyển khoản")  # Chuyển khoản | Tiền mặt
+    reference_code = Column(String(100), nullable=True)           # Mã giao dịch / UNC
+    note = Column(UnicodeText, nullable=True)
+    recorded_by = Column(Unicode(100), nullable=False)
+    recorded_at = Column(DateTime, default=get_utc_now)
+
+
+class DeliveryTripEntity(Base):
+    __tablename__ = "delivery_trips"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    trip_code = Column(String(50), unique=True, index=True, nullable=False)
+    delivery_date = Column(String(20), nullable=True, index=True)  # YYYY-MM-DD
+    driver_id = Column(Integer, ForeignKey("drivers.id"), nullable=True, index=True)
+    driver_name = Column(Unicode(150), nullable=True)
+    driver_phone = Column(String(50), nullable=True)
+    vehicle_id = Column(Integer, ForeignKey("vehicles.id"), nullable=True, index=True)
+    vehicle_plate = Column(Unicode(50), nullable=True)
+    vehicle_type = Column(Unicode(50), nullable=True)
+    route_name = Column(Unicode(255), nullable=True)
+    warehouse_id = Column(String(50), nullable=True)
+    warehouse_name = Column(Unicode(255), nullable=True)
+    status = Column(String(30), default="DRAFT", nullable=False, index=True)  # DRAFT | ASSIGNED | IN_PROGRESS | IN_TRANSIT | DELIVERING | COMPLETED | PARTIALLY_FAILED | CANCELLED
+    dispatched_at = Column(DateTime, nullable=True)
+    estimated_delivery_time = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    note = Column(UnicodeText, nullable=True)
+    total_stops = Column(Integer, default=0)
+    total_dispatches = Column(Integer, default=0)
+    created_by = Column(Unicode(100), nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+    stops = relationship("DeliveryStopEntity", backref="trip", cascade="all, delete-orphan", order_by="DeliveryStopEntity.stop_order")
+    stops_rel = relationship("DeliveryTripStopEntity", backref="trip_rel", cascade="all, delete-orphan", order_by="DeliveryTripStopEntity.stop_order")
+    dispatches_rel = relationship("DeliveryTripDispatchEntity", backref="trip_rel", cascade="all, delete-orphan")
+
+
+class DeliveryTripStopEntity(Base):
+    __tablename__ = "delivery_trip_stops"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    trip_id = Column(Integer, ForeignKey("delivery_trips.id"), nullable=False, index=True)
+    stop_order = Column(Integer, default=1, nullable=False)  # 1, 2, 3...
+    dealer_id = Column(Integer, ForeignKey("dealers.id"), nullable=True)
+    dealer_name = Column(Unicode(255), nullable=False)
+    delivery_point_id = Column(Integer, nullable=True)
+    address = Column(Unicode(500), nullable=False)
+    receiver_name = Column(Unicode(150), nullable=False)
+    receiver_phone = Column(String(50), nullable=False)
+    route_note = Column(Unicode(500), nullable=True)
+    status = Column(String(30), default="PENDING", nullable=False)  # PENDING | DELIVERED | FAILED
+    delivered_at = Column(DateTime, nullable=True)
+    failure_reason = Column(UnicodeText, nullable=True)
+    note = Column(UnicodeText, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+
+    dispatches_rel = relationship("DeliveryTripDispatchEntity", backref="stop_rel", cascade="all, delete-orphan")
+
+
+class DeliveryTripDispatchEntity(Base):
+    __tablename__ = "delivery_trip_dispatches"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    trip_id = Column(Integer, ForeignKey("delivery_trips.id"), nullable=False, index=True)
+    stop_id = Column(Integer, ForeignKey("delivery_trip_stops.id"), nullable=False, index=True)
+    dispatch_id = Column(Integer, ForeignKey("order_dispatches.id"), nullable=False, index=True)
+    dispatch_code = Column(String(50), nullable=False, index=True)
+    order_code = Column(String(50), nullable=False, index=True)
+    items_summary = Column(UnicodeText, nullable=True)
+    status = Column(String(30), default="PENDING", nullable=False)  # PENDING | DELIVERED | FAILED
+    created_at = Column(DateTime, default=get_utc_now)
+
+
+class DeliveryStopEntity(Base):
+    __tablename__ = "delivery_stops"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    trip_id = Column(Integer, ForeignKey("delivery_trips.id"), nullable=False, index=True)
+    stop_order = Column(Integer, default=1, nullable=False)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=True, index=True)
+    order_code = Column(String(50), nullable=False, index=True)
+    dealer_id = Column(Integer, ForeignKey("dealers.id"), nullable=True, index=True)
+    dealer_name = Column(Unicode(255), nullable=False)
+    delivery_point = Column(Unicode(500), nullable=False)
+    receiver_name = Column(Unicode(150), nullable=True)
+    receiver_phone = Column(String(50), nullable=True)
+    amount = Column(Float, default=0.0, nullable=False)
+    status = Column(String(30), default="PENDING", nullable=False, index=True)  # PENDING | IN_TRANSIT | DELIVERED | FAILED
+    estimated_arrival = Column(DateTime, nullable=True)
+    delivered_at = Column(DateTime, nullable=True)
+    actual_delivery_time = Column(DateTime, nullable=True)
+    failed_reason = Column(Unicode(255), nullable=True)
+    failure_reason = Column(Unicode(500), nullable=True)
+    pod_image_url = Column(Unicode(500), nullable=True)
+    delivery_status = Column(String(30), nullable=True)
+    return_status = Column(Unicode(50), nullable=True)
+    items_detail = Column(UnicodeText, nullable=True)
+    note = Column(UnicodeText, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
+
+
+class StockAdjustmentEntity(Base):
+    __tablename__ = "stock_adjustments"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    warehouse_id = Column(String(50), nullable=False, index=True)
+    warehouse_name = Column(Unicode(255), nullable=False)
+    reason_type = Column(String(50), nullable=False)  # damaged, lost, expired, other
+    reason_note = Column(UnicodeText, nullable=False)
+    total_loss_value = Column(Float, default=0.0, nullable=False)
+    total_items = Column(Integer, default=0)
+    total_quantity = Column(Integer, default=0)
+    status = Column(String(20), default="PENDING", nullable=False)  # PENDING | APPROVED | REJECTED
+    items_json = Column(UnicodeText, nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by = Column(Unicode(100), nullable=False)
+    created_by_role = Column(String(50), nullable=True)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_by = Column(Unicode(100), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    rejected_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    rejected_by = Column(Unicode(100), nullable=True)
+    rejected_at = Column(DateTime, nullable=True)
+    rejection_reason = Column(UnicodeText, nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 

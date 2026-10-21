@@ -37,22 +37,31 @@ def _to_json_str(val: Any) -> Optional[str]:
 # 3. Hạn mức công nợ: DEBT_LIMIT_CHANGE
 # 4. Hoá đơn / Đơn hàng: INVOICE_CREATE, INVOICE_EDIT, INVOICE_CANCEL, ORDER_CREATE, ORDER_APPROVE, ORDER_REJECT
 SYSTEM_AUDIT_ACTION_TYPES = {
-    # 1. Tồn kho
+    # 1. Tồn kho & Lô hàng
     "INVENTORY_ADJUST",
     "STOCK_RECEIPT",
     "STOCK_ISSUE",
     "GOODS_RECEIPT_CONFIRM",
-    # 2. Giá bán
+    "OVERRIDE_EXPIRED_BATCH_ISSUE",
+    "STOCK_ADJUSTMENT_CREATED",
+    "STOCK_ADJUSTMENT_APPROVED",
+    "STOCK_ADJUSTMENT_REJECTED",
+    # 2. Giá bán & Sản phẩm
     "PRICE_CHANGE",
+    "PRODUCT_UPDATE",
     # 3. Hạn mức công nợ
     "DEBT_LIMIT_CHANGE",
-    # 4. Hoá đơn / Đơn hàng
+    # 4. Hoá đơn / Đơn hàng / Công nợ
     "INVOICE_CREATE",
     "INVOICE_EDIT",
     "INVOICE_CANCEL",
+    "INVOICE_PRINT",
+    "INVOICE_DOWNLOAD",
     "ORDER_CREATE",
     "ORDER_APPROVE",
     "ORDER_REJECT",
+    "ORDER_RETURN_FOR_EDIT",
+    "DEBT_ADJUSTMENT_CREATED",
 }
 
 # Danh sách tất cả các hành động nghiệp vụ hợp lệ được phép ghi log kiểm toán:
@@ -61,20 +70,28 @@ ALLOWED_ACTION_TYPES = SYSTEM_AUDIT_ACTION_TYPES | {
     "DEALER_ASSIGNMENT",
     "DEALER_STATUS_CHANGE",
     "GOODS_RECEIPT_CONFIRM",
+    "CREDIT_FLAG_CHANGE",
+    "CREDIT_POLICY_CONFIG_CHANGE",
+    "PAYMENT_RECORD",
+    "ORDER_SUPPLEMENTARY_DELIVERY",
 }
 
 ALLOWED_ENTITY_TYPES = {
     # 1. Tồn kho
     "Inventory",
     "GoodsReceiptNote",
+    "StockAdjustment",
     # 2. Tồn kho & Giá bán
     "Product",
     "ProductPrice",
     "PriceBook",
-    # 3. Hạn mức công nợ & Đại lý (SCRUM-48)
+    # 3. Hạn mức công nợ & Đại lý (SCRUM-48) & Chính sách tín dụng (S7-04)
     "CustomerDebt",
     "DealerDebtLimit",
     "Dealer",
+    "CreditPolicy",
+    "Payment",
+    "DebtAdjustment",
     # 4. Hoá đơn / Đơn hàng
     "Invoice",
     "Order",

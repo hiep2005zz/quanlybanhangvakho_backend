@@ -1,6 +1,9 @@
 # backend/app/services/product_import_service.py
 import io
 import re
+import uuid
+import time
+import math
 from typing import List, Dict, Any, Tuple, Optional
 import openpyxl
 from openpyxl import Workbook
@@ -17,6 +20,9 @@ from app.schemas.product_import import (
 )
 
 VALID_UNITS = {"Cái", "Chiếc", "Bộ", "Đôi", "Hộp", "Thùng", "Gói", "Kg", "Gram", "Mét", "Lít", "Chai", "Cuộn"}
+
+# In-memory cache lưu kết quả phân tích file Excel phục vụ phân trang server-side
+BULK_PREVIEW_CACHE: Dict[str, Dict[str, Any]] = {}
 
 class ProductBulkImportService:
     @staticmethod
@@ -138,16 +144,24 @@ class ProductBulkImportService:
         return output.getvalue()
 
     @staticmethod
-    def parse_and_validate(file_content: bytes, db: Session) -> ProductBulkPreviewResponse:
+    def parse_and_validate(
+        file_content: bytes,
+        db: Session,
+        page: int = 1,
+        page_size: Optional[int] = None,
+        status_filter: str = "ALL",
+        file_id: Optional[str] = None,
+        search: Optional[str] = None
+    ) -> ProductBulkPreviewResponse:
         """
         Parse file Excel, validate từng dòng và so khớp SKU trong database.
         Hỗ trợ tối ưu hiệu năng cho tệp lên đến 5.000 dòng.
         """
         try:
-            wb = openpyxl.load_workbook(io.BytesIO(file_content), data_only=True)
+            wb = openpyxl.load_workbook(io.BytesIO(file_content), read_only=True, data_only=True)
             sheet = wb.active
         except Exception as e:
-            raise ValueError(f"Không thể đọc file Excel: {str(e)}")
+            raise ValueError(f"Không thể đọc file Excel (.xlsx): {str(e)}. Nếu là file .xls cũ, vui lòng lưu lại dưới định dạng .xlsx.")
 
         # 1. Truy vấn toàn bộ SKU hiện có trong DB để so khớp O(1)
         # Sử dụng tuple/set truy vấn nhanh
@@ -171,10 +185,15 @@ class ProductBulkImportService:
         update_count = 0
         error_count = 0
 
-        # Đọc từng dòng từ dòng 2
+        # Đọc từng dòng từ dòng 2 (có ngắt sớm nếu gặp 25 dòng trống liên tiếp chống treo vô tận)
+        consecutive_empty = 0
         for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
-            if all(v is None for v in row):
-                continue  # Bỏ qua dòng trống hoàn toàn
+            if not row or all(v is None or str(v).strip() == "" for v in row):
+                consecutive_empty += 1
+                if consecutive_empty >= 25:
+                    break
+                continue
+            consecutive_empty = 0
 
             raw_sku = str(row[0]).strip() if len(row) > 0 and row[0] is not None else ""
             raw_name = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
@@ -304,16 +323,127 @@ class ProductBulkImportService:
                 data=row_data
             ))
 
+        try:
+            wb.close()
+        except Exception:
+            pass
+
         total_rows = len(rows_result)
         can_import = (total_rows > 0 and (error_count == 0 or (new_count + update_count > 0)))
 
+        gen_file_id = file_id or str(uuid.uuid4())
+        BULK_PREVIEW_CACHE[gen_file_id] = {
+            "rows": rows_result,
+            "total_rows": total_rows,
+            "new_count": new_count,
+            "update_count": update_count,
+            "error_count": error_count,
+            "can_import": can_import,
+            "created_at": time.time(),
+        }
+
+        # Nếu không truyền page_size: trả về toàn bộ rows (tương thích 100% test cũ)
+        if not page_size or page_size <= 0:
+            return ProductBulkPreviewResponse(
+                file_id=gen_file_id,
+                rows=rows_result,
+                total_rows=total_rows,
+                new_count=new_count,
+                update_count=update_count,
+                error_count=error_count,
+                can_import=can_import,
+                page=1,
+                page_size=total_rows,
+                total_pages=1,
+                filtered_total=total_rows,
+            )
+
+        # Nếu có page_size (ví dụ 20): cắt lát theo status_filter và search
+        filtered_rows = rows_result
+        if status_filter and status_filter.upper() != "ALL":
+            filtered_rows = [r for r in rows_result if r.status == status_filter.upper()]
+
+        if search and search.strip():
+            q = search.strip().lower()
+            filtered_rows = [
+                r for r in filtered_rows
+                if (r.sku and q in r.sku.lower())
+                or (r.name and q in r.name.lower())
+                or (r.category and q in r.category.lower())
+            ]
+
+        filtered_total = len(filtered_rows)
+        total_pages = max(1, math.ceil(filtered_total / page_size))
+        safe_page = min(max(1, page), total_pages)
+        start_idx = (safe_page - 1) * page_size
+        end_idx = start_idx + page_size
+        sliced_rows = filtered_rows[start_idx:end_idx]
+
         return ProductBulkPreviewResponse(
-            rows=rows_result,
+            file_id=gen_file_id,
+            rows=sliced_rows,
             total_rows=total_rows,
             new_count=new_count,
             update_count=update_count,
             error_count=error_count,
-            can_import=can_import
+            can_import=can_import,
+            page=safe_page,
+            page_size=page_size,
+            total_pages=total_pages,
+            filtered_total=filtered_total,
+        )
+
+    @staticmethod
+    def get_preview_page(
+        file_id: str,
+        page: int = 1,
+        page_size: int = 20,
+        status_filter: str = "ALL",
+        search: Optional[str] = None
+    ) -> ProductBulkPreviewResponse:
+        cached = BULK_PREVIEW_CACHE.get(file_id)
+        if not cached:
+            raise ValueError("Phiên xem trước file đã hết hạn hoặc không tồn tại. Vui lòng tải lại file Excel.")
+
+        rows_result = cached["rows"]
+        total_rows = cached["total_rows"]
+        new_count = cached["new_count"]
+        update_count = cached["update_count"]
+        error_count = cached["error_count"]
+        can_import = cached["can_import"]
+
+        filtered_rows = rows_result
+        if status_filter and status_filter.upper() != "ALL":
+            filtered_rows = [r for r in rows_result if r.status == status_filter.upper()]
+
+        if search and search.strip():
+            q = search.strip().lower()
+            filtered_rows = [
+                r for r in filtered_rows
+                if (r.sku and q in r.sku.lower())
+                or (r.name and q in r.name.lower())
+                or (r.category and q in r.category.lower())
+            ]
+
+        filtered_total = len(filtered_rows)
+        total_pages = max(1, math.ceil(filtered_total / page_size))
+        safe_page = min(max(1, page), total_pages)
+        start_idx = (safe_page - 1) * page_size
+        end_idx = start_idx + page_size
+        sliced_rows = filtered_rows[start_idx:end_idx]
+
+        return ProductBulkPreviewResponse(
+            file_id=file_id,
+            rows=sliced_rows,
+            total_rows=total_rows,
+            new_count=new_count,
+            update_count=update_count,
+            error_count=error_count,
+            can_import=can_import,
+            page=safe_page,
+            page_size=page_size,
+            total_pages=total_pages,
+            filtered_total=filtered_total,
         )
 
     @staticmethod
@@ -330,8 +460,13 @@ class ProductBulkImportService:
         failed_count = 0
 
         # Lọc danh sách dòng cần import
+        source_rows = request.rows
+        # Nếu client chỉ gửi file_id (vì dùng phân trang server-side nên client không gửi toàn bộ rows), lấy từ cache!
+        if request.file_id and request.file_id in BULK_PREVIEW_CACHE and (not source_rows or len(source_rows) < BULK_PREVIEW_CACHE[request.file_id]["total_rows"]):
+            source_rows = BULK_PREVIEW_CACHE[request.file_id]["rows"]
+
         target_rows = []
-        for r in request.rows:
+        for r in source_rows:
             if r.status == "ERROR":
                 if request.skip_errors:
                     failed_count += 1
@@ -408,19 +543,44 @@ class ProductBulkImportService:
 
             db.commit()
 
-            # Đồng bộ WarehouseStockEntity cho các sản phẩm
+            # Lấy bản đồ SKU -> ID thực tế từ database sau khi commit (tránh hoàn toàn ObjectDeletedError)
+            sku_to_id = {}
+            for i in range(0, len(skus_to_check), CHUNK_SIZE):
+                chunk = skus_to_check[i:i + CHUNK_SIZE]
+                chunk_records = db.query(ProductEntity.id, ProductEntity.code).filter(ProductEntity.code.in_(chunk)).all()
+                for pid, code in chunk_records:
+                    if code:
+                        sku_to_id[code.strip().upper()] = pid
+
+            # Đồng bộ WarehouseStockEntity cho các sản phẩm tối ưu theo batch chunk
             try:
                 from app.models.entities import WarehouseStockEntity
+                all_pids = list(sku_to_id.values())
+                existing_ws_wh01 = {}
+                for i in range(0, len(all_pids), CHUNK_SIZE):
+                    chunk_pids = all_pids[i:i + CHUNK_SIZE]
+                    found = db.query(WarehouseStockEntity).filter(
+                        WarehouseStockEntity.warehouse_id == "WH01",
+                        WarehouseStockEntity.product_id.in_(chunk_pids)
+                    ).all()
+                    for item in found:
+                        existing_ws_wh01[item.product_id] = item
+
                 for row in target_rows:
                     sku_key = row.sku.strip().upper()
-                    prod_obj = existing_by_sku.get(sku_key)
-                    if not prod_obj:
+                    prod_id = sku_to_id.get(sku_key)
+                    if not prod_id:
                         continue
-                    target_stock = row.stock if (row.stock is not None and row.stock >= 0) else (prod_obj.stock or 0)
-                    ws_wh01 = db.query(WarehouseStockEntity).filter(
-                        WarehouseStockEntity.warehouse_id == "WH01",
-                        WarehouseStockEntity.product_id == prod_obj.id
-                    ).first()
+                    target_stock = row.stock if (row.stock is not None and row.stock >= 0) else 0
+
+                    # Dọn dẹp bản ghi tồn kho mồ côi ở các kho khác nếu là sản phẩm mới tạo
+                    if row.status == "NEW" or sku_key not in existing_by_sku:
+                        db.query(WarehouseStockEntity).filter(
+                            WarehouseStockEntity.product_id == prod_id,
+                            WarehouseStockEntity.warehouse_id != "WH01"
+                        ).delete(synchronize_session=False)
+
+                    ws_wh01 = existing_ws_wh01.get(prod_id)
                     if ws_wh01:
                         ws_wh01.actual_stock = target_stock
                         ws_wh01.quantity_on_hand = target_stock
@@ -428,7 +588,7 @@ class ProductBulkImportService:
                         ws_wh01 = WarehouseStockEntity(
                             warehouse_id="WH01",
                             warehouse_name="Kho Tổng Hà Nội",
-                            product_id=prod_obj.id,
+                            product_id=prod_id,
                             actual_stock=target_stock,
                             quantity_on_hand=target_stock,
                             reserved_stock=0,
@@ -436,18 +596,11 @@ class ProductBulkImportService:
                             min_stock=10,
                         )
                         db.add(ws_wh01)
+                        existing_ws_wh01[prod_id] = ws_wh01
 
-                    # Đảm bảo các kho phụ không làm đội tổng tồn kho vượt quá số lượng import
-                    other_ws = db.query(WarehouseStockEntity).filter(
-                        WarehouseStockEntity.warehouse_id != "WH01",
-                        WarehouseStockEntity.product_id == prod_obj.id
-                    ).all()
-                    for ows in other_ws:
-                        ows.actual_stock = 0
-                        ows.quantity_on_hand = 0
                 db.commit()
-            except Exception:
-                pass
+            except Exception as ws_err:
+                print("Warning: sync warehouse stock:", ws_err)
 
             # 3. Đồng bộ lại vào in-memory RAW_PRODUCTS
             # Lấy danh sách ID lớn nhất hiện tại trong RAW_PRODUCTS
@@ -471,8 +624,7 @@ class ProductBulkImportService:
                     if row.stock is not None and row.stock >= 0:
                         raw_item["stock"] = row.stock
                 else:
-                    db_prod_entity = existing_by_sku.get(sku_key)
-                    actual_pid = db_prod_entity.id if (db_prod_entity and db_prod_entity.id) else (max_id + 1)
+                    actual_pid = sku_to_id.get(sku_key, max_id + 1)
                     new_raw_item = {
                         "id": actual_pid,
                         "code": row.sku,

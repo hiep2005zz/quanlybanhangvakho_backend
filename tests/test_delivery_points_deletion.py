@@ -84,22 +84,53 @@ def test_delete_master_delivery_point_does_not_resurrect(client):
     m_ids = [p["id"] for p in all_res.json()]
     assert created_master_id not in m_ids, "Điểm giao chung đã xóa nhưng vẫn bị tái sinh khi GET all-delivery-points!"
 
-def test_delete_existing_point_4_cleanup(client):
-    db = SessionLocal()
-    pt4 = db.get(DealerDeliveryPointEntity, 4)
-    print("PT4 BEFORE:", pt4.id if pt4 else None, "dealer_id:", pt4.dealer_id if pt4 else None)
-    db.close()
-    if pt4 and pt4.is_active:
-        del_res = client.delete(f"/api/v1/dealers/{pt4.dealer_id}/delivery-points/4")
-        print("DEL_RES:", del_res.status_code, del_res.text)
-        assert del_res.status_code in [204, 404]
-        list_res = client.get(f"/api/v1/dealers/{pt4.dealer_id}/delivery-points")
-        ids = [p["id"] for p in list_res.json()]
-        print("IDS AFTER:", ids)
-        db2 = SessionLocal()
-        pt4_after = db2.get(DealerDeliveryPointEntity, 4)
-        print("PT4 AFTER IN DB:", pt4_after.is_active if pt4_after else "NONE")
-        assert pt4_after is None or not pt4_after.is_active
-        db2.close()
+def test_cannot_delete_default_delivery_point(client):
+    # 1. Điểm giao mặc định của đại lý không thể xóa -> trả về 400
+    res_list = client.get("/api/v1/dealers/1/delivery-points")
+    assert res_list.status_code == 200
+    pts = res_list.json()
+    default_pt = next((p for p in pts if p.get("is_default")), None)
+    
+    # Nếu chưa có điểm mặc định, tạo 1 điểm làm mặc định
+    if not default_pt:
+        c_res = client.post(
+            "/api/v1/dealers/1/delivery-points",
+            json={
+                "label": "Kho mặc định test",
+                "address": "999 Đường Mặc Định, Hà Nội",
+                "receiver_name": "Người nhận 1",
+                "receiver_phone": "0912345678",
+                "is_default": True
+            }
+        )
+        assert c_res.status_code == 201
+        default_pt = c_res.json()
+
+    # Thử xóa điểm mặc định -> phải trả về 400
+    del_res = client.delete(f"/api/v1/dealers/1/delivery-points/{default_pt['id']}")
+    assert del_res.status_code == 400
+    assert "mặc định" in del_res.json()["detail"].lower()
+
+    # Tạo điểm thứ 2 và gán làm mặc định mới
+    c2_res = client.post(
+        "/api/v1/dealers/1/delivery-points",
+        json={
+            "label": "Kho thay thế mặc định",
+            "address": "888 Đường Mới, Hà Nội",
+            "receiver_name": "Người nhận 2",
+            "receiver_phone": "0987654321",
+            "is_default": False
+        }
+    )
+    assert c2_res.status_code == 201
+    pt2_id = c2_res.json()["id"]
+
+    set_def_res = client.post(f"/api/v1/dealers/1/delivery-points/{pt2_id}/set-default")
+    assert set_def_res.status_code == 200
+
+    # Lúc này điểm cũ không còn là mặc định -> có thể xóa thành công
+    del_old_res = client.delete(f"/api/v1/dealers/1/delivery-points/{default_pt['id']}")
+    assert del_old_res.status_code == 204
+
 
 

@@ -22,6 +22,67 @@ DEFAULT_WAREHOUSES = {
 }
 
 
+_LAST_SYNC_TIME = 0.0
+
+def sync_missing_warehouse_stocks(db: Session, force: bool = False) -> bool:
+    """
+    Đảm bảo tất cả sản phẩm đều được đồng bộ đầy đủ bản ghi trong bảng warehouse_stocks cho tất cả các kho.
+    Nếu sản phẩm mới thêm chưa có kho, tự động khởi tạo bản ghi với actual_stock = 0.
+    Có TTL cache 60s để tránh query 40.000 bản ghi trên mỗi HTTP request.
+    """
+    global _LAST_SYNC_TIME
+    import time
+    now = time.time()
+    if not force and (now - _LAST_SYNC_TIME) < 60:
+        return False
+    if not db:
+        return False
+    _LAST_SYNC_TIME = now
+    try:
+        from app.models.entities import WarehouseStockEntity, ProductEntity
+        from app.models.goods_receipt import WarehouseEntity
+
+        # 1. Chỉ đồng bộ cho các kho mặc định hệ thống (DEFAULT_WAREHOUSES: WH01, WH02, WH03)
+        # Các kho mới do người dùng tạo sẽ chỉ có sản phẩm khi thực tế có giao dịch nhập kho / chuyển kho / điều chỉnh.
+        warehouse_map = dict(DEFAULT_WAREHOUSES)
+        wh_keys = list(warehouse_map.keys())
+
+        # Fast O(1) count check: nếu số lượng bản ghi warehouse_stocks đã đủ cho tất cả sản phẩm * kho mặc định thì kết thúc ngay (<0.02s)
+        from sqlalchemy import func
+        total_p_cnt = db.query(func.count(ProductEntity.id)).scalar() or 0
+        total_ws_cnt = db.query(func.count(WarehouseStockEntity.id)).filter(WarehouseStockEntity.warehouse_id.in_(wh_keys)).scalar() or 0
+        if total_ws_cnt >= (total_p_cnt * len(wh_keys)):
+            return False
+
+        existing_pairs = set(db.query(WarehouseStockEntity.product_id, WarehouseStockEntity.warehouse_id).all())
+        prods = db.query(ProductEntity.id, ProductEntity.min_stock).all()
+        created = False
+        new_items = []
+        for p_id, p_min in prods:
+            for wid, wname in warehouse_map.items():
+                if (p_id, wid) not in existing_pairs:
+                    new_items.append(WarehouseStockEntity(
+                        warehouse_id=wid,
+                        warehouse_name=wname,
+                        product_id=p_id,
+                        actual_stock=0,
+                        reserved_stock=0,
+                        quantity_on_hand=0,
+                        reserved_quantity=0,
+                        min_stock=p_min or 10,
+                    ))
+                    existing_pairs.add((p_id, wid))
+                    created = True
+        if created and new_items:
+            db.bulk_save_objects(new_items)
+            db.commit()
+        return created
+    except Exception as err:
+        db.rollback()
+        print(f"Warning syncing missing warehouse stocks: {err}")
+        return False
+
+
 def resolve_dealer_warehouse(dealer: Any) -> Tuple[str, str]:
     """
     Xác định kho phục vụ riêng cho đại lý.
@@ -34,10 +95,22 @@ def resolve_dealer_warehouse(dealer: Any) -> Tuple[str, str]:
     # Kiểm tra cấu hình trực tiếp
     w_id = getattr(dealer, "warehouse_id", None)
     w_name = getattr(dealer, "warehouse_name", None)
-    if w_id and w_name:
-        return (w_id, w_name)
-    if w_id and w_id in DEFAULT_WAREHOUSES:
-        return (w_id, DEFAULT_WAREHOUSES[w_id])
+    if w_id:
+        if str(w_id).isdigit():
+            try:
+                from app.core.database import SessionLocal
+                from app.models.goods_receipt import WarehouseEntity
+                with SessionLocal() as db_session:
+                    wh = db_session.query(WarehouseEntity).filter(WarehouseEntity.id == int(w_id)).first()
+                    if wh:
+                        w_id = wh.code or str(wh.id)
+                        w_name = wh.name
+            except Exception:
+                pass
+        if not w_name and str(w_id) in DEFAULT_WAREHOUSES:
+            w_name = DEFAULT_WAREHOUSES[str(w_id)]
+        if w_name:
+            return (str(w_id), w_name)
 
     # Tra cứu theo địa bàn / khu vực
     region_str = str(getattr(dealer, "region", "") or "").lower()
@@ -256,15 +329,19 @@ def get_dealer_stock_summary(db: Session, dealer_id: int) -> Dict[str, Any]:
                     "stock": rp.get("stock", 0),
                 }
 
+    # Lấy nhanh toàn bộ tồn kho của warehouse_id trong 1 câu query duy nhất (tránh N+1 query lặp qua 8.700+ sản phẩm)
+    existing_stocks = db.query(WarehouseStockEntity).filter(WarehouseStockEntity.warehouse_id == warehouse_id).all()
+    stocks_map = {st.product_id: st for st in existing_stocks}
+
     items_summary = []
     for pid, pdata in product_map.items():
-        try:
-            stock_record = get_or_create_warehouse_stock(db, warehouse_id, warehouse_name, pid, for_update=False)
-            actual = stock_record.actual_stock or 0
-            reserved = stock_record.reserved_stock or 0
+        st = stocks_map.get(pid)
+        if st:
+            actual = st.actual_stock or 0
+            reserved = st.reserved_stock or 0
             available = max(0, actual - reserved)
-        except Exception:
-            actual = pdata.get("stock", 0)
+        else:
+            actual = pdata.get("stock", 0) if not db_products else 0
             reserved = 0
             available = actual
 
@@ -312,13 +389,7 @@ def validate_and_reserve_order_stock(
 
     warehouse_id, warehouse_name = resolve_dealer_warehouse(dealer)
 
-    # Đảm bảo Database Transaction Lock (Đối với SQLite: BEGIN IMMEDIATE; đối với Postgres/SQL Server: with_for_update)
-    from sqlalchemy import text
-    if db.bind and db.bind.dialect.name == "sqlite":
-        try:
-            db.connection().execute(text("BEGIN IMMEDIATE"))
-        except Exception:
-            pass
+    # Khóa hàng cấp dòng (Row-Level Locking với with_for_update) trên SQL Server
 
     # Sắp xếp theo product_id để tránh deadlock khi khóa nhiều hàng
     sorted_items = sorted(items, key=lambda x: x["product_id"])

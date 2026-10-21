@@ -102,12 +102,8 @@ def atomic_db_transaction(db: Session):
 
 
 def _lock_database_for_concurrency(db: Session):
-    """Khóa cấp DB cho SQLite nếu chạy SQLite (BEGIN IMMEDIATE)."""
-    if db.bind and db.bind.dialect.name == "sqlite":
-        try:
-            db.connection().execute(text("BEGIN IMMEDIATE"))
-        except Exception:
-            pass
+    """SQL Server sử dụng row-level locking (UPDLOCK) trên từng bản ghi."""
+    pass
 
 
 # ==========================================
@@ -206,7 +202,10 @@ def approve_order_and_reserve_stock(
 
     # Kiểm tra trạng thái hợp lệ
     cur_status = (order.status or "").upper()
-    if cur_status not in ("PENDING_APPROVAL", "PENDING", "DRAFT"):
+    if cur_status not in ("PENDING_APPROVAL", "PENDING", "DRAFT", "REVISION_REQUIRED"):
+        # Xử lý idempotent: Nếu đơn hàng đã được duyệt thành công trước đó (CONFIRMED hoặc APPROVED), trả về trực tiếp đơn hàng
+        if cur_status in ("CONFIRMED", "APPROVED") and (order.approval_status == "APPROVED" or getattr(order, "requires_approval", False) is False):
+            return order
         raise OrderNotEligibleForApprovalException(cur_status)
 
     # Xác định đại lý & kho phụ trách
@@ -332,6 +331,10 @@ def approve_order_and_reserve_stock(
                         for el in js_items:
                             el["is_reserved"] = True
                         js_data["items"] = js_items
+                        js_data["requires_approval"] = False
+                        js_data["approval_status"] = "APPROVED"
+                        js_data["approved_by"] = approved_by
+                        js_data["approved_at"] = now_utc.isoformat()
                         order.items_json = json.dumps(js_data, ensure_ascii=False)
                 except Exception as ex:
                     logger.warning(f"Could not update items_json is_reserved: {ex}")
@@ -343,6 +346,15 @@ def approve_order_and_reserve_stock(
             order.approved_by = approved_by
             order.approved_at = now_utc
             order.reservation_expires_at = expires_at
+
+            # Làm sạch thông báo chờ xác nhận khi đơn đã duyệt thành công
+            if order.approval_reason:
+                parts = [p.strip() for p in order.approval_reason.split("|") if p.strip()]
+                remaining = [
+                    p for p in parts
+                    if not any(k in p.lower() for k in ["chờ nhân viên phụ trách xác nhận", "đại lý tự đặt", "cổng đại lý", "chờ nhân viên"])
+                ]
+                order.approval_reason = " | ".join(remaining) if remaining else None
 
     except InsufficientStockException as ise:
         # Ném lại ngoại lệ nghiệp vụ (Transaction tự động rollback bởi context manager)
@@ -577,8 +589,12 @@ def release_expired_reservations(db: Session) -> List[Dict[str, Any]]:
                 "message": "Đã tự động giải phóng tồn kho do quá hạn giữ chỗ."
             })
             logger.info(f"Successfully released expired reservation for order {ord_code}")
-
         except Exception as exc:
             logger.error(f"Failed to release expired reservation for order {ord_code}: {exc}", exc_info=True)
+
+    try:
+        db.commit()
+    except Exception:
+        pass
 
     return released_results

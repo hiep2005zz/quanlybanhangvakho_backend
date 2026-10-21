@@ -4,9 +4,109 @@ from __future__ import annotations
 Data model and in-memory store for Dealers/Customers.
 Stores assigned_sale_id pointing to users.id.
 """
-from typing import Optional, List, Union
-from datetime import datetime
-from pydantic import BaseModel
+from typing import Optional, List, Union, Dict, Any, Tuple
+from datetime import datetime, timezone
+from pydantic import BaseModel, field_validator
+
+def normalize_dealer_status(raw_status: Optional[str]) -> str:
+    s = str(raw_status or "").strip()
+    if not s:
+        return "Đang hoạt động"
+    s_lower = s.lower()
+    if "ho?t" in s or "Ðang" in s or s.upper() == "ACTIVE" or "hoạt" in s:
+        return "Đang hoạt động"
+    if "khóa" in s_lower or "khoá" in s_lower or "đ?" in s_lower or "lock" in s_lower:
+        return "Đã khóa"
+    if "tạm" in s_lower or "ngừng" in s_lower or "ngung" in s_lower or "inactive" in s_lower:
+        return "Tạm ngừng"
+    return s
+
+def parse_tx_date(val: Any) -> datetime:
+    if isinstance(val, datetime):
+        return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+    if isinstance(val, str):
+        val_clean = val.replace("Z", "+00:00")
+        try:
+            dt_obj = datetime.fromisoformat(val_clean)
+            return dt_obj if dt_obj.tzinfo else dt_obj.replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt_obj = datetime.strptime(val[:19], fmt)
+                return dt_obj.replace(tzinfo=timezone.utc)
+            except Exception:
+                pass
+    return datetime.now(timezone.utc)
+
+
+def compute_dealer_unified_debt(
+    dealer_id: int,
+    dealer_orders: List[Dict[str, Any]],
+    payments_by_order: Dict[str, float],
+    unallocated_payments: float,
+    adjustments_by_order: Dict[str, float],
+    now: Optional[datetime] = None,
+) -> Tuple[float, int]:
+    """
+    Tính toán số dư công nợ thực tế và tuổi nợ tối đa của đại lý.
+    Khớp chính xác với Sổ chi tiết công nợ (S31-DN), Sổ phân tích tuổi nợ và CSDL SQL Server:
+    - Công nợ từng đơn = Tổng tiền - Đã thanh toán (phiếu thu + thu theo tuyến) - Giảm trừ do trả hàng
+    - Đơn có trạng thái PAID mà chưa có phiếu thu thì coi như đã tất toán
+    - Các khoản phiếu thu không gắn mã đơn được trừ lũy kế (FIFO) vào các đơn nợ cũ nhất
+    - Tuổi nợ chỉ tính trên các đơn hàng THỰC SỰ CÒN NỢ (> 0)
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    sorted_orders = sorted(
+        dealer_orders,
+        key=lambda x: x.get("dt_obj") or parse_tx_date(x.get("created_at"))
+    )
+    open_orders = []
+
+    for o in sorted_orders:
+        if o.get("status") in ("CANCELLED", "REJECTED", "DRAFT"):
+            continue
+        ord_code = o.get("order_code", "")
+        amt = float(o.get("total_amount", 0.0) or 0.0)
+        adj_offset = adjustments_by_order.get(ord_code, 0.0)
+        paid_offset = payments_by_order.get(ord_code, 0.0)
+
+        if o.get("status") == "PAID":
+            paid_offset = max(paid_offset, max(0.0, amt - adj_offset))
+
+        eff_rem = max(0.0, amt - paid_offset - adj_offset)
+        if eff_rem > 0:
+            dt_obj = o.get("dt_obj") or parse_tx_date(o.get("created_at"))
+            open_orders.append({
+                "order_code": ord_code,
+                "amount": eff_rem,
+                "dt_obj": dt_obj,
+            })
+
+    # Giảm trừ các khoản thanh toán chung (không gắn order_code cụ thể) theo FIFO
+    rem_unallocated = float(unallocated_payments or 0.0)
+    total_remaining = 0.0
+    max_age = 0
+
+    for item in open_orders:
+        if rem_unallocated > 0:
+            deduct = min(item["amount"], rem_unallocated)
+            item["amount"] -= deduct
+            rem_unallocated -= deduct
+
+        if item["amount"] > 0:
+            total_remaining += item["amount"]
+            order_dt = item["dt_obj"]
+            if order_dt.tzinfo is None:
+                order_dt = order_dt.replace(tzinfo=timezone.utc)
+            days_old = max(0, (now - order_dt).days)
+            if days_old > max_age:
+                max_age = days_old
+
+    return round(total_remaining, 2), max_age
+
 
 class Dealer(BaseModel):
     id: int
@@ -27,8 +127,19 @@ class Dealer(BaseModel):
     locked_at: Optional[Union[str, datetime]] = None
     locked_by: Optional[str] = None
     transaction_count: Optional[int] = 0
+    # Cờ cảnh báo tín dụng tự động (S7-04)
+    is_over_credit_limit: bool = False
+    is_overdue: bool = False
+    credit_warning_flag: bool = False
+    credit_flag_reason: Optional[str] = None
+    last_credit_evaluated_at: Optional[Union[str, datetime]] = None
     warehouse_id: Optional[str] = None
     warehouse_name: Optional[str] = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def validate_status(cls, val: Any) -> str:
+        return normalize_dealer_status(val)
 # Initial seed data for dealers
 # Sales user: id=3 (username: 'sales', full_name: 'Trần Bán Hàng')
 DEALERS_DB: dict[int, Dealer] = {
@@ -140,7 +251,9 @@ def save_dealers_db():
                 db_dealer.email = d.email
                 db_dealer.address = d.address
                 db_dealer.region = d.region
-                db_dealer.assigned_sale_id = d.assigned_sale_id
+                from app.models.entities import UserEntity
+                valid_user_ids = {u[0] for u in db.query(UserEntity.id).all()}
+                db_dealer.assigned_sale_id = d.assigned_sale_id if d.assigned_sale_id in valid_user_ids else None
                 db_dealer.credit_limit = getattr(d, "credit_limit", getattr(db_dealer, "credit_limit", 0))
                 db_dealer.max_debt_days = getattr(d, "max_debt_days", getattr(db_dealer, "max_debt_days", 30))
                 if hasattr(db_dealer, "overdue_days_allowed"):
@@ -163,14 +276,31 @@ def save_dealers_db():
                     else:
                         db_dealer.locked_at = None
                     db_dealer.locked_by = getattr(d, "locked_by", None)
+                if hasattr(db_dealer, "is_over_credit_limit"):
+                    db_dealer.is_over_credit_limit = bool(getattr(d, "is_over_credit_limit", False))
+                if hasattr(db_dealer, "is_overdue"):
+                    db_dealer.is_overdue = bool(getattr(d, "is_overdue", False))
+                if hasattr(db_dealer, "credit_warning_flag"):
+                    db_dealer.credit_warning_flag = bool(getattr(d, "credit_warning_flag", False))
+                if hasattr(db_dealer, "credit_flag_reason"):
+                    db_dealer.credit_flag_reason = getattr(d, "credit_flag_reason", None)
+                if hasattr(db_dealer, "last_credit_evaluated_at"):
+                    eval_val = getattr(d, "last_credit_evaluated_at", None)
+                    if eval_val:
+                        if isinstance(eval_val, str):
+                            try:
+                                db_dealer.last_credit_evaluated_at = datetime.fromisoformat(eval_val.replace("Z", "+00:00"))
+                            except Exception:
+                                db_dealer.last_credit_evaluated_at = None
+                        elif isinstance(eval_val, datetime):
+                            db_dealer.last_credit_evaluated_at = eval_val
+                    else:
+                        db_dealer.last_credit_evaluated_at = None
                 if hasattr(db_dealer, "warehouse_id"):
                     db_dealer.warehouse_id = getattr(d, "warehouse_id", None)
                 if hasattr(db_dealer, "warehouse_name"):
                     db_dealer.warehouse_name = getattr(d, "warehouse_name", None)
 
-            if DEALERS_DB:
-                existing_ids = list(DEALERS_DB.keys())
-                db.query(DealerEntity).filter(DealerEntity.id.not_in(existing_ids)).delete(synchronize_session=False)
             db.commit()
         except Exception as sql_err:
             db.rollback()
@@ -212,11 +342,16 @@ def load_dealers_db():
                         max_debt_days=int(entity.max_debt_days) if getattr(entity, "max_debt_days", None) is not None else 30,
                         overdue_days_allowed=int(getattr(entity, "overdue_days_allowed", None) or getattr(entity, "max_debt_days", None) or 30),
                         customer_group=getattr(entity, "customer_group", None) or "Đại lý cấp 1",
-                        status="Đang hoạt động" if ("ho?t" in str(getattr(entity, "status", "")) or "Ðang" in str(getattr(entity, "status", ""))) else (getattr(entity, "status", "Đang hoạt động") or "Đang hoạt động"),
+                        status=normalize_dealer_status(getattr(entity, "status", None)),
                         lock_reason=getattr(entity, "lock_reason", None),
                         locked_at=entity.locked_at.isoformat() if hasattr(getattr(entity, "locked_at", None), "isoformat") else getattr(entity, "locked_at", None),
                         locked_by=getattr(entity, "locked_by", None),
                         transaction_count=int(getattr(entity, "transaction_count", 0) or 0),
+                        is_over_credit_limit=bool(getattr(entity, "is_over_credit_limit", False)),
+                        is_overdue=bool(getattr(entity, "is_overdue", False)),
+                        credit_warning_flag=bool(getattr(entity, "credit_warning_flag", False)),
+                        credit_flag_reason=getattr(entity, "credit_flag_reason", None),
+                        last_credit_evaluated_at=entity.last_credit_evaluated_at.isoformat() if hasattr(getattr(entity, "last_credit_evaluated_at", None), "isoformat") else getattr(entity, "last_credit_evaluated_at", None),
                         warehouse_id=getattr(entity, "warehouse_id", None),
                         warehouse_name=getattr(entity, "warehouse_name", None),
                     )
@@ -234,6 +369,8 @@ def load_dealers_db():
             with open(DEALERS_JSON_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 for k, v in data.items():
+                    if isinstance(v, dict) and "status" in v:
+                        v["status"] = normalize_dealer_status(v.get("status"))
                     DEALERS_DB[int(k)] = Dealer(**v)
         except Exception as e:
             print(f"Error loading dealers db from json: {e}")
@@ -265,3 +402,32 @@ def sync_dealer_for_user(user_id: int, full_name: str, email: Optional[str], pho
     else:
         # Nếu không còn là customer nữa thì không cần thiết xóa, nhưng có thể khóa lại nếu muốn
         pass
+
+
+RECEIPT_VOUCHERS_JSON_PATH = os.path.join(
+    os.path.dirname(__file__), "receipt_vouchers_data.json"
+)
+RECEIPT_VOUCHERS_DB: Dict[str, Dict[str, Any]] = {}
+
+
+def save_receipt_vouchers_db():
+    try:
+        with open(RECEIPT_VOUCHERS_JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(RECEIPT_VOUCHERS_DB, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Error saving receipt vouchers db: {e}")
+
+
+def load_receipt_vouchers_db():
+    if os.path.exists(RECEIPT_VOUCHERS_JSON_PATH):
+        try:
+            with open(RECEIPT_VOUCHERS_JSON_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                RECEIPT_VOUCHERS_DB.clear()
+                RECEIPT_VOUCHERS_DB.update(data)
+        except Exception as e:
+            print(f"Error loading receipt vouchers db: {e}")
+
+
+load_receipt_vouchers_db()
+

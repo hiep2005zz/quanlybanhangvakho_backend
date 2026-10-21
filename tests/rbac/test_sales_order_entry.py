@@ -6,7 +6,7 @@ from app.main import app
 from app.core.database import SessionLocal
 from app.api.v1.endpoints import orders as orders_endpoint
 from app.models.dealer import DEALERS_DB
-from app.models.entities import OrderEntity
+from app.models.entities import OrderEntity, OrderItemEntity
 
 client = TestClient(app)
 created_order_codes: set[str] = set()
@@ -23,10 +23,22 @@ def cleanup_created_orders():
         if created_order_codes:
             session = SessionLocal()
             try:
-                session.query(OrderEntity).filter(
-                    OrderEntity.order_code.in_(created_order_codes)
-                ).delete(synchronize_session=False)
-                session.commit()
+                order_ids = [
+                    o.id
+                    for o in session.query(OrderEntity.id)
+                    .filter(OrderEntity.order_code.in_(created_order_codes))
+                    .all()
+                ]
+                if order_ids:
+                    session.query(OrderItemEntity).filter(
+                        OrderItemEntity.order_id.in_(order_ids)
+                    ).delete(synchronize_session=False)
+                    session.query(OrderEntity).filter(
+                        OrderEntity.id.in_(order_ids)
+                    ).delete(synchronize_session=False)
+                    session.commit()
+            except Exception:
+                session.rollback()
             finally:
                 session.close()
             for order_id, order in list(orders_endpoint.ORDERS_DB.items()):
@@ -49,12 +61,8 @@ def get_token(username: str) -> str:
 
 
 def test_sales_order_dealer_list_only_returns_assigned_dealers():
-    DEALERS_DB[1].assigned_sale_id = 3
-    DEALERS_DB[2].assigned_sale_id = 3
-    DEALERS_DB[3].assigned_sale_id = 3
-    DEALERS_DB[4].assigned_sale_id = 8
-    if 5 in DEALERS_DB:
-        DEALERS_DB[5].assigned_sale_id = 8
+    for d in DEALERS_DB.values():
+        d.assigned_sale_id = 3 if d.id in (1, 2, 3) else 8
     headers = {"Authorization": f"Bearer {get_token('sales')}"}
 
     response = client.get("/api/v1/orders/dealers", headers=headers)
@@ -228,7 +236,7 @@ def test_existing_order_payload_still_works_without_new_fields():
             },
         )
 
-        assert response.status_code == 201
+        assert response.status_code == 201, f"Failed: {response.text}"
         order_code = response.json()["order_code"]
         created_order_codes.add(order_code)
         assert response.json()["total_amount"] == 398000

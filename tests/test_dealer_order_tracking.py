@@ -27,7 +27,7 @@ def test_dealer_order_tracking_isolated_and_shortage():
     cust1_username = "track_cust_01"
     cust2_username = "track_cust_02"
     USERS_DB[cust1_username] = UserInDB(
-        id=8801,
+        id=9801,
         username=cust1_username,
         full_name="Đại Lý An Phú Track 1",
         email="track1@daily.vn",
@@ -38,7 +38,7 @@ def test_dealer_order_tracking_isolated_and_shortage():
         branch="Hà Nội",
     )
     USERS_DB[cust2_username] = UserInDB(
-        id=8802,
+        id=9802,
         username=cust2_username,
         full_name="Đại Lý Bình Minh Track 2",
         email="track2@daily.vn",
@@ -52,7 +52,7 @@ def test_dealer_order_tracking_isolated_and_shortage():
 
     # 2. Tạo 2 đại lý tương ứng
     dealer1 = Dealer(
-        id=8801,
+        id=9801,
         code="DL_TRACK_01",
         name="Đại Lý An Phú Track 1",
         phone="0911000111",
@@ -65,7 +65,7 @@ def test_dealer_order_tracking_isolated_and_shortage():
         assigned_sale_id=3,
     )
     dealer2 = Dealer(
-        id=8802,
+        id=9802,
         code="DL_TRACK_02",
         name="Đại Lý Bình Minh Track 2",
         phone="0911000222",
@@ -202,4 +202,17 @@ def test_dealer_order_tracking_isolated_and_shortage():
     assert supp_data["items"][0]["delivered_quantity"] == 10
     assert supp_data["items"][0]["shortage_quantity"] == 0
     assert supp_data["status"] == "DELIVERED"
+
+    # Dọn dẹp dữ liệu test để tránh ô nhiễm state cho các test suite khác
+    for uid in [cust1_username, cust2_username]:
+        if uid in USERS_DB:
+            del USERS_DB[uid]
+    save_users_db()
+    for did in [dealer1.id, dealer2.id]:
+        if did in DEALERS_DB:
+            del DEALERS_DB[did]
+    save_dealers_db()
+    for oid in [9001, 9002]:
+        if oid in ORDERS_DB:
+            del ORDERS_DB[oid]
 

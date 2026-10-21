@@ -22,7 +22,11 @@ from app.services.customer_account import generate_temporary_password, send_cust
 router = APIRouter()
 
 from datetime import datetime, timezone
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+from app.models.entities import UserEntity
 from app.models.dealer import count_dealers_by_sale_id, get_dealers_by_sale_id, DEALERS_DB, save_dealers_db, load_dealers_db
+from app.models.user import load_users_db
 
 
 # Ràng buộc TC-01: Chỉ sales hoặc sales_manager mới được tiếp nhận bàn giao đại lý
@@ -69,12 +73,18 @@ def _build_user_item(u: UserInDB) -> UserItemResponse:
     can_write_inventory = any(ROLE_DETAILS.get(r, {}).get("can_write_inventory", False) for r in roles)
 
     display_branch = getattr(u, "branch", None) or ("Chưa phân công" if u.role == Role.CUSTOMER.value else "Kho Tổng Hà Nội")
+    
+    full_name = u.full_name
+    email = u.email
+    phone = getattr(u, "phone", None)
+
+
     return UserItemResponse(
         id=u.id,
         username=u.username,
-        full_name=u.full_name,
-        email=u.email,
-        phone=getattr(u, "phone", None),
+        full_name=full_name,
+        email=email,
+        phone=phone,
         role=primary_role,
         roles=roles,
         role_title=role_info.get("title", primary_role),
@@ -93,13 +103,48 @@ def _build_user_item(u: UserInDB) -> UserItemResponse:
 
 @router.get("", response_model=UserListResponse)
 def list_users(
+    db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.USER_MANAGE.value))
 ):
     """
-    Lấy danh sách người dùng trong hệ thống (Chỉ dành cho Quản trị viên - Zero-Trust).
+    Lấy danh sách người dùng trong hệ thống (100% SQL Server - Zero-Trust).
     """
     load_dealers_db()
-    users = [_build_user_item(u) for u in sorted(USERS_DB.values(), key=lambda x: x.id)]
+    load_users_db()
+
+    sql_users = []
+    if db:
+        try:
+            # Dọn dẹp triệt để tài khoản quản trị ảo / trùng lặp trên SQL Server
+            dup_admins = db.query(UserEntity).filter(
+                (UserEntity.username.in_(["quanlybanhang", "admin_virtual", "admin_mock"])) |
+                ((UserEntity.role == "admin") & (UserEntity.username != "admin"))
+            ).all()
+            if dup_admins:
+                for dup in dup_admins:
+                    db.delete(dup)
+                db.commit()
+
+
+
+            sql_users = db.query(UserEntity).order_by(UserEntity.id).all()
+        except Exception:
+            pass
+
+    if sql_users:
+        users = [
+            _build_user_item(u)
+            for u in sql_users
+            if u.username.lower() not in ("quanlybanhang", "admin_virtual", "admin_mock")
+            and not (u.username.lower() != "admin" and (u.role == "admin" or "admin" in (u.roles or [])))
+        ]
+    else:
+        users = [
+            _build_user_item(u)
+            for u in sorted(USERS_DB.values(), key=lambda x: x.id)
+            if u.username.lower() not in ("quanlybanhang", "admin_virtual", "admin_mock")
+            and not (u.username.lower() != "admin" and (u.role == "admin" or "admin" in (u.roles or [])))
+        ]
     return UserListResponse(users=users, total=len(users))
 
 @router.post("", response_model=UserItemResponse, status_code=status.HTTP_201_CREATED)
@@ -321,23 +366,148 @@ def create_customer(
         is_customer=is_customer
     )
 
+    # Đồng bộ sang SQL Server Database nếu có
+    try:
+        from app.core.database import SessionLocal
+        from app.models.entities import UserEntity
+        import json as _json
+        if SessionLocal:
+            db_session = SessionLocal()
+            try:
+                db_u = db_session.query(UserEntity).filter(UserEntity.username == clean_username).first()
+                if not db_u:
+                    db_u = UserEntity(
+                        id=new_user.id,
+                        username=clean_username,
+                        full_name=new_user.full_name,
+                        email=new_user.email,
+                        phone=new_user.phone,
+                        role=primary_role,
+                        roles_json=_json.dumps(chosen_roles),
+                        hashed_password=new_user.hashed_password,
+                        branch=assigned_branch,
+                        is_active=True,
+                        status="ACTIVE",
+                        token_version=1,
+                    )
+                    db_session.add(db_u)
+                    db_session.commit()
+            finally:
+                db_session.close()
+    except Exception as e:
+        print(f"Warning: could not sync customer user to DB: {e}")
+
+    role_titles = [ROLE_DETAILS.get(r, {}).get("title", r) for r in chosen_roles if r in ROLE_DETAILS]
+    role_display = ", ".join(role_titles) if role_titles else ROLE_DETAILS.get(primary_role, {}).get("title", primary_role)
+
     email_sent = send_customer_credentials(
         email=clean_email,
         full_name=new_user.full_name,
         username=clean_username,
         password=temp_password,
-        phone=clean_phone,
+        phone=clean_phone or "",
+        role_title=role_display,
     )
 
-    msg = "Tạo tài khoản kinh doanh thành công!"
-    if not email_sent:
-        msg += " (Lưu ý: Không thể gửi email tự động, vui lòng bàn giao trực tiếp)."
+    msg = f"Tạo tài khoản thành công cho {new_user.full_name}!"
+    if email_sent:
+        msg += f" Đã gửi mã đăng nhập & thông tin tài khoản tới {clean_email}."
+    else:
+        msg += " Không thể gửi email tự động (vui lòng sao chép mã đăng nhập để bàn giao trực tiếp)."
 
     return CustomerCreateResponse(
         user=_build_user_item(new_user),
         email_sent=email_sent,
+        temporary_password=temp_password,
+        activation_code=temp_password,
         message=msg
     )
+
+
+class ResendCredentialsResponse(BaseModel):
+    status: str
+    message: str
+    username: str
+    email: Optional[str] = None
+    email_sent: bool
+    temporary_password: str
+    activation_code: str
+
+
+@router.post("/{username}/resend-credentials", response_model=ResendCredentialsResponse)
+def resend_user_credentials(
+    username: str,
+    current_user: UserResponse = Depends(require_permission(Permission.USER_MANAGE.value))
+):
+    """
+    Cấp lại mã đăng nhập / gửi lại email thông tin tài khoản cho người dùng.
+    Hữu ích khi người dùng chưa nhận được email, bị thất lạc trong thư mục Spam hoặc quên mật khẩu ban đầu.
+    """
+    target_username = username.strip().lower()
+    user = USERS_DB.get(target_username)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Không tìm thấy người dùng '{username}'."
+        )
+
+    if not user.email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Người dùng '{username}' chưa được cấu hình email."
+        )
+
+    new_temp_password = generate_temporary_password()
+    user.hashed_password = get_password_hash(new_temp_password)
+    user.token_version = getattr(user, "token_version", 1) + 1
+    save_users_db()
+
+    # Đồng bộ mật khẩu mới sang SQL Server
+    try:
+        from app.core.database import SessionLocal
+        from app.models.entities import UserEntity
+        if SessionLocal:
+            db_session = SessionLocal()
+            try:
+                db_u = db_session.query(UserEntity).filter(UserEntity.username == target_username).first()
+                if db_u:
+                    db_u.hashed_password = user.hashed_password
+                    db_u.token_version = user.token_version
+                    db_session.commit()
+            finally:
+                db_session.close()
+    except Exception as e:
+        print(f"Warning: could not sync updated password to DB: {e}")
+
+    user_roles = user.get_roles()
+    role_titles = [ROLE_DETAILS.get(r, {}).get("title", r) for r in user_roles if r in ROLE_DETAILS]
+    role_display = ", ".join(role_titles) if role_titles else user.role
+
+    email_sent = send_customer_credentials(
+        email=user.email,
+        full_name=user.full_name,
+        username=user.username,
+        password=new_temp_password,
+        phone=user.phone or "",
+        role_title=role_display,
+    )
+
+    msg = f"Đã cấp mã đăng nhập mới cho tài khoản '{user.username}'."
+    if email_sent:
+        msg += f" Email đã gửi thành công tới {user.email}."
+    else:
+        msg += " Không thể gửi email tự động (vui lòng sao chép mã và bàn giao trực tiếp)."
+
+    return ResendCredentialsResponse(
+        status="success",
+        message=msg,
+        username=user.username,
+        email=user.email,
+        email_sent=email_sent,
+        temporary_password=new_temp_password,
+        activation_code=new_temp_password
+    )
+
 
 @router.put("/{username}", response_model=UserItemResponse)
 def update_user(
@@ -486,7 +656,7 @@ def update_user(
                 if db_u:
                     if new_roles is not None:
                         db_u.role = user.role
-                        db_u.roles = _json.dumps(user.roles)
+                        db_u.roles = user.roles
                     if data.full_name is not None and data.full_name.strip():
                         db_u.full_name = user.full_name
                     if data.email is not None and data.email.strip():

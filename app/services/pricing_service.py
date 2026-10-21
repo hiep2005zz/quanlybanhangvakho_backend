@@ -188,7 +188,9 @@ def get_products_for_customer(
     db: Session,
     current_user: UserResponse,
     page: Optional[int] = None,
+    page_size: Optional[int] = None,
     limit: Optional[int] = None,
+    skip: Optional[int] = None,
     search: Optional[str] = None,
     category: Optional[str] = None,
 ) -> ProductListResponse:
@@ -292,7 +294,8 @@ def get_products_for_customer(
         query = query.filter(
             or_(
                 func.lower(ProductEntity.name).like(term),
-                func.lower(ProductEntity.code).like(term)
+                func.lower(ProductEntity.code).like(term),
+                func.lower(ProductEntity.category).like(term),
             )
         )
 
@@ -305,14 +308,22 @@ def get_products_for_customer(
     # Sắp xếp theo ID
     query = query.order_by(ProductEntity.id.asc())
 
-    # Phân trang Server-Side (Bắt buộc dùng SQLAlchemy offset & limit - Mặc định 20 sp/trang)
-    # Tuyệt đối không bao giờ query toàn bộ 10.000 sản phẩm về bộ nhớ cùng lúc
-    current_page = max(1, page) if (page is not None and page > 0) else 1
-    page_limit = min(max(1, limit), 100) if (limit is not None and limit > 0) else 20
+    # Phân trang Server-Side (Bắt buộc dùng SQLAlchemy offset & limit)
+    effective_limit = page_size if page_size is not None else limit
+    if effective_limit is None and (page is not None or skip is not None):
+        effective_limit = 10
+    page_limit = min(max(1, effective_limit), 100) if (effective_limit is not None and effective_limit > 0) else 20
     total_pages = max(1, math.ceil(total / page_limit)) if total > 0 else 1
 
+    if skip is not None and page is None:
+        offset_val = max(0, skip)
+        current_page = (offset_val // page_limit) + 1
+    else:
+        current_page = max(1, page) if (page is not None and page > 0) else 1
+        offset_val = (current_page - 1) * page_limit
+
     # Cắt dữ liệu trực tiếp trong CSDL bằng offset/limit
-    query = query.offset((current_page - 1) * page_limit).limit(page_limit)
+    query = query.offset(offset_val).limit(page_limit)
     rows = query.all()
 
     # 3. Chuẩn hóa danh sách sản phẩm trả về tầng Schema/DTO (Bảo toàn tuyệt đối dữ liệu CSDL)
@@ -325,6 +336,25 @@ def get_products_for_customer(
         tx_counts_map = _get_all_product_transaction_counts(db)
     except Exception:
         tx_counts_map = {}
+
+    # SCRUM-56 / AC 1 & AC 2: Tính tồn khả dụng theo kho phụ trách của Đại lý
+    # Tồn khả dụng = max(0, actual_stock - reserved_stock)
+    wh_stock_map: dict[int, int] = {}
+    try:
+        from app.services.inventory_availability_service import resolve_dealer_warehouse, sync_missing_warehouse_stocks
+        sync_missing_warehouse_stocks(db)
+        from app.models.entities import WarehouseStockEntity
+        wh_id, _ = resolve_dealer_warehouse(dealer) if dealer else ("WH01", "Kho Tổng Hà Nội")
+        if wh_id:
+            wh_records = db.query(WarehouseStockEntity).filter(
+                WarehouseStockEntity.warehouse_id == wh_id
+            ).all()
+            for rec in wh_records:
+                actual = rec.actual_stock or 0
+                reserved = rec.reserved_stock or 0
+                wh_stock_map[rec.product_id] = max(0, actual - reserved)
+    except Exception as e:
+        print(f"Warning resolving dealer warehouse available stocks: {e}")
 
     for db_p, eff_sell, eff_floor in rows:
         units_raw = getattr(db_p, "units", None) or []
@@ -341,7 +371,15 @@ def get_products_for_customer(
                 except (ValueError, TypeError):
                     pass
 
-        stock = int(db_p.stock or 0)
+        if db_p.id in wh_stock_map:
+            stock = wh_stock_map[db_p.id]
+        else:
+            stock = 0
+
+        item_status = db_p.status or "active"
+        if stock <= 0 and item_status == "active":
+            item_status = "out_of_stock"
+
         sell_price = float(eff_sell if eff_sell is not None else (db_p.sell_price or 0.0))
         floor_price = float(eff_floor if eff_floor is not None else (db_p.floor_price or 0.0))
 
@@ -369,7 +407,7 @@ def get_products_for_customer(
                 units=units_converted,
                 packaging_specification=db_p.packaging_specification or "",
                 images=db_images,
-                status=db_p.status or "active",
+                status=item_status,
                 is_batch_managed=bool(db_p.is_batch_managed),
                 transaction_count=tx_counts_map.get(db_p.id, 0),
                 # AC 3 & Zero-Trust: Tuyệt đối giấu giá vốn và biên lợi nhuận đối với Customer
@@ -390,13 +428,16 @@ def get_products_for_customer(
     )
 
     applied_name = active_pb.name if active_pb else None
+    has_more = (offset_val + len(rows)) < total
     return ProductListResponse(
         items=items,
         data=items,
         total=total,
         page=current_page,
+        page_size=page_limit,
         limit=page_limit,
         total_pages=total_pages,
+        has_more=has_more,
         user_role=current_user.role,
         is_cost_price_visible=False,
         summary=summary,

@@ -7,7 +7,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.core.database import get_db
-from app.api.deps import require_warehouse_manager, require_warehouse_read
+from app.api.deps import (
+    require_warehouse_manager,
+    require_warehouse_read,
+    require_warehouse_audit_manage,
+)
 from app.schemas.auth import UserResponse
 from app.models.entities import (
     StockAuditEntity,
@@ -126,16 +130,19 @@ def _format_audit_response(audit: StockAuditEntity, db: Session = None) -> Stock
     if db and audit.warehouse_id:
         p_ids = [it.get("product_id") for it in items_raw if it.get("product_id")]
         if p_ids:
-            records = (
-                db.query(WarehouseStockEntity)
-                .filter(
-                    WarehouseStockEntity.warehouse_id == audit.warehouse_id,
-                    WarehouseStockEntity.product_id.in_(p_ids),
+            chunk_size = 900
+            for i in range(0, len(p_ids), chunk_size):
+                chunk = p_ids[i:i + chunk_size]
+                records = (
+                    db.query(WarehouseStockEntity)
+                    .filter(
+                        WarehouseStockEntity.warehouse_id == audit.warehouse_id,
+                        WarehouseStockEntity.product_id.in_(chunk),
+                    )
+                    .all()
                 )
-                .all()
-            )
-            for r in records:
-                current_stocks_map[r.product_id] = r.actual_stock or 0
+                for r in records:
+                    current_stocks_map[r.product_id] = r.actual_stock or 0
 
     items_formatted = [
         _format_audit_item_response(it, current_stocks_map.get(it.get("product_id")))
@@ -168,14 +175,44 @@ def _format_audit_response(audit: StockAuditEntity, db: Session = None) -> Stock
     )
 
 
+def _get_valid_audit_warehouses(db: Optional[Session] = None) -> Dict[str, str]:
+    whs = dict(DEFAULT_WAREHOUSES)
+    if db:
+        try:
+            from app.models.goods_receipt import WarehouseEntity
+            db_whs = db.query(WarehouseEntity).filter(WarehouseEntity.is_active == True).all()
+            alias_map = {"KHO_HN": "WH01", "KHO_HCM": "WH02", "KHO_DN": "WH03"}
+            for wh in db_whs:
+                if wh.code:
+                    c_id = alias_map.get(wh.code, wh.code)
+                    whs[c_id] = wh.name
+                    whs[wh.code] = wh.name
+        except Exception:
+            pass
+    return whs
+
+
 @router.get("/warehouses")
 def get_audit_warehouses(
+    db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_warehouse_read),
 ):
     """Lấy danh sách các kho hỗ trợ kiểm kê."""
+    whs = dict(DEFAULT_WAREHOUSES)
+    if db:
+        try:
+            from app.models.goods_receipt import WarehouseEntity
+            db_whs = db.query(WarehouseEntity).filter(WarehouseEntity.is_active == True).all()
+            alias_map = {"KHO_HN": "WH01", "KHO_HCM": "WH02", "KHO_DN": "WH03"}
+            for wh in db_whs:
+                if wh.code:
+                    c_id = alias_map.get(wh.code, wh.code)
+                    whs[c_id] = wh.name
+        except Exception:
+            pass
     return [
         {"id": w_id, "name": w_name}
-        for w_id, w_name in DEFAULT_WAREHOUSES.items()
+        for w_id, w_name in whs.items()
     ]
 
 
@@ -184,19 +221,24 @@ def preview_audit_products(
     warehouse_id: str = Query(..., description="Mã kho cần kiểm kê"),
     scope_type: str = Query("WAREHOUSE", description="Phạm vi: WAREHOUSE hoặc CATEGORY"),
     category_id: Optional[int] = Query(None, description="ID nhóm hàng nếu scope_type == CATEGORY"),
+    page: int = Query(1, ge=1, description="Trang hiện tại"),
+    page_size: int = Query(20, ge=1, le=100, description="Số sản phẩm mỗi trang (mặc định 20)"),
+    search: Optional[str] = Query(None, description="Tìm theo mã hoặc tên sản phẩm"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_warehouse_read),
 ):
     """
     Xem trước danh sách sản phẩm và số lượng tồn chốt dự kiến theo phạm vi kiểm kê.
+    Hỗ trợ phân trang 20 sản phẩm/trang để tải nhanh từng trang theo yêu cầu.
     """
-    if warehouse_id not in DEFAULT_WAREHOUSES:
+    valid_whs = _get_valid_audit_warehouses(db)
+    if warehouse_id not in valid_whs:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Kho '{warehouse_id}' không hợp lệ trong hệ thống."
         )
 
-    warehouse_name = DEFAULT_WAREHOUSES[warehouse_id]
+    warehouse_name = valid_whs[warehouse_id]
 
     query = db.query(ProductEntity).filter(
         (ProductEntity.status == "active") | (ProductEntity.status.is_(None)) | (ProductEntity.status != "inactive")
@@ -217,7 +259,18 @@ def preview_audit_products(
         cat_names = {c.name for c in db.query(CategoryEntity).filter(CategoryEntity.id.in_(cat_ids)).all()}
         query = query.filter((ProductEntity.category_id.in_(cat_ids)) | (ProductEntity.category.in_(cat_names)))
 
-    products = query.order_by(ProductEntity.id.asc()).all()
+    if search and search.strip():
+        search_kw = f"%{search.strip()}%"
+        query = query.filter(
+            (ProductEntity.code.ilike(search_kw)) | 
+            (ProductEntity.name.ilike(search_kw)) | 
+            (ProductEntity.category.ilike(search_kw))
+        )
+
+    total_items = query.count()
+    total_pages = max(1, (total_items + page_size - 1) // page_size) if total_items > 0 else 1
+
+    products = query.order_by(ProductEntity.id.asc()).offset((page - 1) * page_size).limit(page_size).all()
 
     items = []
     for prod in products:
@@ -238,7 +291,10 @@ def preview_audit_products(
         "warehouse_name": warehouse_name,
         "scope_type": scope_type,
         "category_id": category_id,
-        "total_items": len(items),
+        "total_items": total_items,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
         "items": items,
     }
 
@@ -342,20 +398,21 @@ def get_stock_audit_detail(
 def create_stock_audit(
     data: StockAuditCreate,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_warehouse_manager),
+    current_user: UserResponse = Depends(require_warehouse_audit_manage),
 ):
     """
     Chức năng 2: Tạo phiếu kiểm kê.
-    Chỉ Quản lý kho (Role: warehouse_manager) và Admin được phép tạo.
+    Cho phép Thủ kho (warehouse), Quản lý kho (warehouse_manager) và Admin tạo phiếu.
     Chốt số lượng tồn kho ban đầu của từng sản phẩm tại kho được chọn làm căn cứ.
     """
-    if data.warehouse_id not in DEFAULT_WAREHOUSES:
+    valid_whs = _get_valid_audit_warehouses(db)
+    if data.warehouse_id not in valid_whs:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Mã kho '{data.warehouse_id}' không hợp lệ. Vui lòng chọn kho có thật trong hệ thống."
         )
 
-    warehouse_name = DEFAULT_WAREHOUSES[data.warehouse_id]
+    warehouse_name = valid_whs[data.warehouse_id]
 
     category_name = None
     if data.scope_type == "CATEGORY":
@@ -451,7 +508,7 @@ def update_stock_audit_results(
     audit_id: int,
     data: StockAuditUpdate,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_warehouse_manager),
+    current_user: UserResponse = Depends(require_warehouse_audit_manage),
 ):
     """
     Chức năng 3: Nhập kết quả kiểm kê thực tế và lý do chênh lệch (Lưu nháp / cập nhật).
@@ -791,11 +848,11 @@ def cancel_stock_audit(
     audit_id: int,
     data: Optional[StockAuditCancel] = None,
     db: Session = Depends(get_db),
-    current_user: UserResponse = Depends(require_warehouse_manager),
+    current_user: UserResponse = Depends(require_warehouse_audit_manage),
 ):
     """
     Hủy phiếu kiểm kê khi phiếu chưa hoàn tất.
-    Chỉ Quản lý kho và Admin được phép hủy.
+    Quản lý kho, Admin hoặc Thủ kho được phép hủy phiếu khi đang kiểm kê.
     """
     audit = db.query(StockAuditEntity).filter(StockAuditEntity.id == audit_id).first()
     if not audit:
