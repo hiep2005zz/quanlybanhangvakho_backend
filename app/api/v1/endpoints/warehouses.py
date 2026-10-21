@@ -1,6 +1,7 @@
 # backend/app/api/v1/endpoints/warehouses.py
 from __future__ import annotations
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
+import math
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -41,6 +42,8 @@ from app.schemas.warehouse import (
     BatchPickingRouteItem,
     BatchPickingPreviewResponse,
     EligiblePickingOrder,
+    EligiblePickingOrderPagination,
+    EligiblePickingOrderListResponse,
     BatchPickingPreviewRequest,
     PickingItemExecution,
     BatchPickingCompleteRequest,
@@ -1284,7 +1287,7 @@ def get_order_picking_locations(
                 picking_locs.append(ProductPickingLocation(
                     location_id=any_loc.id,
                     location_code=any_loc.location_code,
-                    location_name=f"{any_loc.location_name} (Đang chờ phân bổ)",
+                    location_name=f"{any_loc.location_name} (Đề xuất)",
                     zone=any_loc.zone,
                     aisle=any_loc.aisle,
                     rack=any_loc.rack,
@@ -1292,60 +1295,31 @@ def get_order_picking_locations(
                     available_quantity=0,
                 ))
 
-        # SCRUM-81: Gợi ý lô theo nguyên tắc FEFO nếu sản phẩm quản lý theo lô
-        from app.models.entities import ProductEntity
-        from app.services.batch_suggestion_service import get_fefo_batch_suggestions
-        prod_entity = db.query(ProductEntity).filter(ProductEntity.id == pid).first()
-        is_batch_managed = bool(prod_entity.is_batch_managed) if prod_entity else False
-        
-        conversion_rate = float(it.get("conversion_rate") or 1.0)
-        base_qty = float(qty) * conversion_rate
-        suggested_batch = None
-        available_batches = []
-
-        if is_batch_managed:
-            suggested_batch, available_batches = get_fefo_batch_suggestions(
-                db=db,
-                product_id=pid,
-                warehouse_id=wh_id,
-                required_base_qty=base_qty,
-            )
-
         results.append(OrderPickingItemResponse(
             product_id=pid,
             product_code=pcode,
             product_name=pname,
-            ordered_quantity=qty,
-            unit_name=unit,
-            conversion_rate=conversion_rate,
-            base_quantity=base_qty,
-            is_batch_managed=is_batch_managed,
-            warehouse_id=wh_id,
-            warehouse_code=wh_code,
-            warehouse_name=wh_name,
-            locations=picking_locs,
-            suggested_batch=suggested_batch,
-            available_batches=available_batches,
-            selected_batch_id=suggested_batch.id if suggested_batch else None,
+            quantity=qty,
+            unit=unit,
+            picking_locations=picking_locs,
         ))
 
     return results
 
 
-# ==========================================================
-# 5B. PHIẾU SOẠN HÀNG THEO LỘ TRÌNH (WAVE / BATCH PICKING)
-# ==========================================================
-
-@router.get("/picking/eligible-orders", response_model=List[EligiblePickingOrder])
+@router.get("/picking/eligible-orders", response_model=Union[EligiblePickingOrderListResponse, List[EligiblePickingOrder]])
 def get_eligible_picking_orders(
     status_filter: Optional[str] = None,
     search: Optional[str] = None,
+    page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
+    page_size: Optional[int] = Query(10, ge=1, le=100, description="Số lượng đơn hàng mỗi trang (mặc định 10)"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_roles(WAREHOUSE_MANAGE_ROLES)),
 ):
     """
     Lấy danh sách các đơn hàng đã được phê duyệt sẵn sàng để tạo phiếu soạn hàng.
     Chỉ cho phép vai trò Kho (Warehouse, Warehouse Manager) và Admin.
+    Phân trang: Mặc định tải 10 đơn hàng/trang (page=1, page_size=10), chuyển trang tải tiếp 10 đơn.
     """
     from app.models.entities import OrderEntity
     from app.models.dealer import DEALERS_DB, load_dealers_db
@@ -1461,6 +1435,26 @@ def get_eligible_picking_orders(
             total_quantity=total_qty,
             items_summary=items_summary,
         ))
+
+    total_records = len(results)
+    if page is not None:
+        effective_page_size = page_size if (page_size and page_size > 0) else 10
+        total_pages = max(1, math.ceil(total_records / effective_page_size))
+        start_idx = (page - 1) * effective_page_size
+        paged_results = results[start_idx : start_idx + effective_page_size]
+
+        return EligiblePickingOrderListResponse(
+            status="success",
+            data=paged_results,
+            items=paged_results,
+            total=total_records,
+            pagination=EligiblePickingOrderPagination(
+                page=page,
+                page_size=effective_page_size,
+                total_records=total_records,
+                total_pages=total_pages,
+            ),
+        )
 
     return results
 

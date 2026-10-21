@@ -318,6 +318,21 @@ class EligiblePickingOrder(BaseModel):
     items_summary: List[str] = []
 
 
+class EligiblePickingOrderPagination(BaseModel):
+    page: int
+    page_size: int
+    total_records: int
+    total_pages: int
+
+
+class EligiblePickingOrderListResponse(BaseModel):
+    status: str = "success"
+    data: List[EligiblePickingOrder] = []
+    items: List[EligiblePickingOrder] = []
+    total: int = 0
+    pagination: EligiblePickingOrderPagination
+
+
 class BatchPickingPreviewRequest(BaseModel):
     order_codes: List[str] = Field(..., min_length=1, description="Danh sách mã đơn hàng cần gộp soạn")
 
