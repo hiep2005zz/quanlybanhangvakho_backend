@@ -21,8 +21,8 @@
     "is_over_credit_limit": true,
     "is_overdue": false,
     "credit_warning_flag": true,
-    "credit_flag_reason": "Vượt hạn mức (154,880,000 đ > 100,000,000 đ)",
-    "last_credit_evaluated_at": "2026-10-20T16:26:05.070000",
+    "credit_flag_reason": "Vượt hạn mức (147,200,000 đ > 100,000,000 đ)",
+    "last_credit_evaluated_at": "2026-10-26T13:55:22.557000",
     "warehouse_id": "2",
     "warehouse_name": "Kho Chi Nhánh Đà Nẵng"
   },
@@ -48,8 +48,8 @@
     "is_over_credit_limit": false,
     "is_overdue": true,
     "credit_warning_flag": true,
-    "credit_flag_reason": "Quá hạn thanh toán (212 ngày >= 30 ngày)",
-    "last_credit_evaluated_at": "2026-10-20T16:26:05.107000",
+    "credit_flag_reason": "Quá hạn thanh toán (218 ngày >= 30 ngày)",
+    "last_credit_evaluated_at": "2026-10-26T13:55:22.590000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -76,7 +76,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-20T16:26:05.130000",
+    "last_credit_evaluated_at": "2026-10-26T13:55:22.610000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -102,8 +102,8 @@
     "is_over_credit_limit": false,
     "is_overdue": true,
     "credit_warning_flag": true,
-    "credit_flag_reason": "Quá hạn thanh toán (206 ngày >= 30 ngày)",
-    "last_credit_evaluated_at": "2026-10-20T16:26:05.147000",
+    "credit_flag_reason": "Quá hạn thanh toán (212 ngày >= 30 ngày)",
+    "last_credit_evaluated_at": "2026-10-26T13:55:22.630000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -130,7 +130,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-20T16:26:05.167000",
+    "last_credit_evaluated_at": "2026-10-26T13:55:22.650000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -157,7 +157,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-20T16:26:05.190000",
+    "last_credit_evaluated_at": "2026-10-26T13:55:22.670000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -184,7 +184,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-20T16:26:05.210000",
+    "last_credit_evaluated_at": "2026-10-26T13:55:22.687000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -211,7 +211,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-20T16:26:05.230000",
+    "last_credit_evaluated_at": "2026-10-26T13:55:22.707000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -238,7 +238,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-20T16:26:05.250000",
+    "last_credit_evaluated_at": "2026-10-26T13:55:22.727000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -265,7 +265,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-20T16:26:05.267000",
+    "last_credit_evaluated_at": "2026-10-26T13:55:22.743000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -292,7 +292,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-20T16:26:05.287000",
+    "last_credit_evaluated_at": "2026-10-26T13:55:22.763000",
     "warehouse_id": null,
     "warehouse_name": null
   },
@@ -319,7 +319,7 @@
     "is_overdue": false,
     "credit_warning_flag": false,
     "credit_flag_reason": null,
-    "last_credit_evaluated_at": "2026-10-20T16:26:05.310000",
+    "last_credit_evaluated_at": "2026-10-26T13:55:22.783000",
     "warehouse_id": null,
     "warehouse_name": null
   }
