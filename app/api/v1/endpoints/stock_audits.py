@@ -653,18 +653,24 @@ def confirm_stock_audit(
     discrepancy_count = 0
     total_disc_qty = 0
 
+    has_any_counted = any(itm.get("actual_stock") is not None for itm in items)
+    if not has_any_counted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Phiếu kiểm kê chưa có sản phẩm nào được nhập số lượng thực tế. Vui lòng kiểm đếm ít nhất 1 sản phẩm trước khi xác nhận."
+        )
+
     for itm in items:
         p_name = itm.get("product_name", f"SP #{itm.get('product_id')}")
         p_code = itm.get("product_code", "")
         actual = itm.get("actual_stock")
         sys_stock = itm.get("system_stock", 0)
 
-        # 1. Bắt buộc có số lượng thực tế
+        # 1. Hỗ trợ kiểm đếm từng phần: Sản phẩm chưa đếm (actual is None) tự động khớp với tồn hệ thống (không phát sinh chênh lệch)
         if actual is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Sản phẩm '{p_name}' ({p_code}) chưa được nhập số lượng thực tế. Vui lòng kiểm đếm đầy đủ trước khi xác nhận."
-            )
+            actual = sys_stock
+            itm["actual_stock"] = actual
+
         if actual < 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -704,6 +710,10 @@ def confirm_stock_audit(
         system_frozen = itm["system_stock"]
         adjustment = actual_counted - system_frozen
         reason = itm.get("reason") or "Kiểm kê kho khớp"
+
+        # Nếu không có chênh lệch (sản phẩm chưa đếm hoặc đã đếm khớp), giữ nguyên tồn kho và bỏ qua điều chỉnh
+        if adjustment == 0:
+            continue
 
         # Khóa bản ghi tồn kho tại kho được kiểm kê
         stock_rec = (
