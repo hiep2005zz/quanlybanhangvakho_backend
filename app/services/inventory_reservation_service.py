@@ -589,8 +589,12 @@ def release_expired_reservations(db: Session) -> List[Dict[str, Any]]:
                 "message": "Đã tự động giải phóng tồn kho do quá hạn giữ chỗ."
             })
             logger.info(f"Successfully released expired reservation for order {ord_code}")
-
         except Exception as exc:
             logger.error(f"Failed to release expired reservation for order {ord_code}: {exc}", exc_info=True)
+
+    try:
+        db.commit()
+    except Exception:
+        pass
 
     return released_results

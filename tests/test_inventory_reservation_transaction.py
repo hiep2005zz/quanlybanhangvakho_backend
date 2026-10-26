@@ -298,6 +298,10 @@ def test_uc3_expired_reservations_cleanup(db):
     - Chuyển status sang EXPIRED
     - Ghi log lý do tự động hoàn trả
     """
+    # 0. Dọn dẹp trước các đơn đã hết hạn tồn đọng
+    release_expired_reservations(db)
+    db.commit()
+
     # 1. Cấu hình tồn kho
     stock_rec = db.query(WarehouseStockEntity).filter(
         WarehouseStockEntity.warehouse_id == "WH01",
@@ -506,6 +510,10 @@ def test_criterion_2_cancel_or_expired_automatically_releases_stock(client, db):
     - Khi hủy đơn đã giữ chỗ -> reserved_quantity giảm ngay lập tức, khả dụng hồi phục.
     - Khi đơn quá hạn (reservation_expires_at < now) -> cleanup chạy, tự động nhả tồn và chuyển EXPIRED.
     """
+    # 0. Dọn dẹp trước các đơn đã hết hạn tồn đọng
+    release_expired_reservations(db)
+    db.commit()
+
     sales_token = get_token(client, "sales", "123")
     sm_token = get_token(client, "sales_manager", "123")
 
@@ -539,6 +547,7 @@ def test_criterion_2_cancel_or_expired_automatically_releases_stock(client, db):
     db.commit()
 
     approve_order_and_reserve_stock(db, ord_code, "sales_manager", reservation_hours=24)
+    db.commit()
     db.refresh(stock_rec)
     assert stock_rec.reserved_quantity == 7
     assert stock_rec.available == 13

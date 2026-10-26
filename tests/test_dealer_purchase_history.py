@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from app.main import app
 from app.core.database import SessionLocal
-from app.models.entities import OrderEntity, DealerEntity
+from app.models.entities import OrderEntity, OrderItemEntity, DealerEntity
 from app.models.dealer import DEALERS_DB
 from app.api.v1.endpoints import orders as orders_endpoint
 
@@ -24,10 +24,22 @@ def cleanup_history_test_orders():
         if created_order_codes:
             session = SessionLocal()
             try:
-                session.query(OrderEntity).filter(
-                    OrderEntity.order_code.in_(created_order_codes)
-                ).delete(synchronize_session=False)
-                session.commit()
+                order_ids = [
+                    o.id
+                    for o in session.query(OrderEntity.id)
+                    .filter(OrderEntity.order_code.in_(created_order_codes))
+                    .all()
+                ]
+                if order_ids:
+                    session.query(OrderItemEntity).filter(
+                        OrderItemEntity.order_id.in_(order_ids)
+                    ).delete(synchronize_session=False)
+                    session.query(OrderEntity).filter(
+                        OrderEntity.id.in_(order_ids)
+                    ).delete(synchronize_session=False)
+                    session.commit()
+            except Exception:
+                session.rollback()
             finally:
                 session.close()
             for order_id, order in list(orders_endpoint.ORDERS_DB.items()):

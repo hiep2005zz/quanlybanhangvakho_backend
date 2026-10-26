@@ -376,8 +376,8 @@ def _get_product_transaction_count(product_id: int, db: Session) -> int:
 @router.get("", response_model=ProductListResponse)
 def get_products(
     page: Optional[int] = Query(None, ge=1, description="Số trang (1-indexed)"),
-    page_size: Optional[int] = Query(None, ge=1, description="Số lượng mục mỗi trang"),
-    limit: Optional[int] = Query(None, ge=1, le=100, description="Alias cho page_size"),
+    page_size: Optional[int] = Query(None, ge=1, le=1000, description="Số lượng mục mỗi trang"),
+    limit: Optional[int] = Query(None, ge=1, le=1000, description="Alias cho page_size"),
     skip: Optional[int] = Query(None, ge=0, description="Số lượng mục bỏ qua"),
     search: Optional[str] = Query(None, description="Từ khóa tìm kiếm theo tên hoặc mã SKU"),
     category: Optional[str] = Query(None, description="Lọc theo nhóm hàng"),

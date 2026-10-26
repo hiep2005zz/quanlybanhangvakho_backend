@@ -59,6 +59,26 @@
     "created_at": "2026-04-10T09:15:00Z",
     "note": "Nộp tiền mặt tại văn phòng kế toán"
   },
+  "PT-DL001-20260415-04": {
+    "id": 99,
+    "receipt_code": "PT-DL001-20260415-04",
+    "dealer_id": 1,
+    "dealer_code": "DL001",
+    "dealer_name": "Đại Lý Phân Phối Miền Bắc - Sao Mai",
+    "dealer_address": "120 Cầu Giấy, Hà Nội",
+    "dealer_phone": "0912345678",
+    "dealer_tax_code": "0108923456",
+    "order_code": "DH-2026-0002",
+    "amount": 8200000.0,
+    "amount_in_words": "Tám triệu hai trăm nghìn đồng chẵn.",
+    "payment_method": "Chuyển khoản",
+    "reason": "Thu tiền thanh toán dứt điểm đơn DH-2026-0002",
+    "payer_name": "Trần Thị Mai",
+    "collector_name": "Dang Ke Toan",
+    "collector_role": "Kế toán công nợ",
+    "created_at": "2026-04-15T14:00:00Z",
+    "note": "Ủy nhiệm chi Vietcombank"
+  },
   "PT-DL002-20260327-01": {
     "id": 4,
     "receipt_code": "PT-DL002-20260327-01",

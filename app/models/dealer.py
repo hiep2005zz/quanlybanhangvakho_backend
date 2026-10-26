@@ -73,8 +73,8 @@ def compute_dealer_unified_debt(
         adj_offset = adjustments_by_order.get(ord_code, 0.0)
         paid_offset = payments_by_order.get(ord_code, 0.0)
 
-        if o.get("status") == "PAID" and paid_offset == 0:
-            paid_offset = max(0.0, amt - adj_offset)
+        if o.get("status") == "PAID":
+            paid_offset = max(paid_offset, max(0.0, amt - adj_offset))
 
         eff_rem = max(0.0, amt - paid_offset - adj_offset)
         if eff_rem > 0:

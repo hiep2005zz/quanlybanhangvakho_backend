@@ -167,8 +167,10 @@ class OrderPickingItemResponse(BaseModel):
     product_id: int
     product_code: str
     product_name: str
-    ordered_quantity: int
-    unit_name: str
+    ordered_quantity: int = 0
+    quantity: Optional[int] = None
+    unit_name: str = "Cái"
+    unit: Optional[str] = None
     conversion_rate: float = 1.0
     base_quantity: float = 0.0
     is_batch_managed: bool = False
@@ -176,6 +178,7 @@ class OrderPickingItemResponse(BaseModel):
     warehouse_code: Optional[str] = None
     warehouse_name: Optional[str] = None
     locations: List[ProductPickingLocation] = []
+    picking_locations: List[ProductPickingLocation] = []
     # SCRUM-81: Gợi ý lô theo FEFO và danh sách lô hợp lệ
     suggested_batch: Optional[ProductBatchInfo] = None
     available_batches: List[ProductBatchInfo] = []
@@ -317,6 +320,20 @@ class EligiblePickingOrder(BaseModel):
     total_quantity: int = 0
     items_summary: List[str] = []
 
+
+class EligiblePickingOrderPagination(BaseModel):
+    page: int
+    page_size: int
+    total_records: int
+    total_pages: int
+
+
+class EligiblePickingOrderListResponse(BaseModel):
+    status: str = "success"
+    data: List[EligiblePickingOrder] = []
+    items: List[EligiblePickingOrder] = []
+    total: int = 0
+    pagination: EligiblePickingOrderPagination
 
 class BatchPickingPreviewRequest(BaseModel):
     order_codes: List[str] = Field(..., min_length=1, description="Danh sách mã đơn hàng cần gộp soạn")
