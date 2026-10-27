@@ -184,6 +184,16 @@ BEGIN
               AND status = 'CONFIRMED'
             GROUP BY order_code
         ),
+        OrderAllocations AS (
+            -- Khoản thu từ payment_allocations (Thu tiền & đối trừ nợ - S7-02)
+            SELECT 
+                pa.invoice_id, 
+                SUM(pa.current_allocated_amount) AS total_allocated_amount
+            FROM payment_allocations pa
+            JOIN payment_receipts pr ON pr.id = pa.payment_id
+            WHERE pr.status = 'CONFIRMED'
+            GROUP BY pa.invoice_id
+        ),
         InvoiceAdjustments AS (
             -- Khoản giảm nợ do trả hàng từ debt_adjustments
             SELECT 
@@ -197,26 +207,26 @@ BEGIN
         SET 
             -- Cập nhật tổng số tiền đã thanh toán
             inv.paid_amount = ROUND(
-                COALESCE(p.total_voucher_amount, 0.0) + COALESCE(c.total_collected_amount, 0.0), 
+                COALESCE(p.total_voucher_amount, 0.0) + COALESCE(c.total_collected_amount, 0.0) + COALESCE(a.total_allocated_amount, 0.0), 
                 2
             ),
             -- Cập nhật nợ còn lại = Tổng tiền hàng - Đã thanh toán - Giảm trừ trả hàng
             inv.remaining_debt = CASE 
                 WHEN inv.status = 'CANCELLED' THEN 0.0
                 ELSE CASE 
-                    WHEN (inv.total_amount - (COALESCE(p.total_voucher_amount, 0.0) + COALESCE(c.total_collected_amount, 0.0)) - COALESCE(adj.total_adjusted_amount, 0.0)) <= 0.0 
+                    WHEN (inv.total_amount - (COALESCE(p.total_voucher_amount, 0.0) + COALESCE(c.total_collected_amount, 0.0) + COALESCE(a.total_allocated_amount, 0.0)) - COALESCE(adj.total_adjusted_amount, 0.0)) <= 0.0 
                     THEN 0.0
-                    ELSE ROUND(inv.total_amount - (COALESCE(p.total_voucher_amount, 0.0) + COALESCE(c.total_collected_amount, 0.0)) - COALESCE(adj.total_adjusted_amount, 0.0), 2)
+                    ELSE ROUND(inv.total_amount - (COALESCE(p.total_voucher_amount, 0.0) + COALESCE(c.total_collected_amount, 0.0) + COALESCE(a.total_allocated_amount, 0.0)) - COALESCE(adj.total_adjusted_amount, 0.0), 2)
                 END
             END,
             -- Cập nhật trạng thái hóa đơn chuẩn xác theo chuẩn kế toán
             inv.status = CASE 
                 WHEN inv.status = 'CANCELLED' THEN 'CANCELLED'
-                WHEN (inv.total_amount - (COALESCE(p.total_voucher_amount, 0.0) + COALESCE(c.total_collected_amount, 0.0)) - COALESCE(adj.total_adjusted_amount, 0.0)) <= 0.0 
+                WHEN (inv.total_amount - (COALESCE(p.total_voucher_amount, 0.0) + COALESCE(c.total_collected_amount, 0.0) + COALESCE(a.total_allocated_amount, 0.0)) - COALESCE(adj.total_adjusted_amount, 0.0)) <= 0.0 
                 THEN 'PAID'
                 WHEN inv.due_date < GETUTCDATE() 
                 THEN 'OVERDUE'
-                WHEN (COALESCE(p.total_voucher_amount, 0.0) + COALESCE(c.total_collected_amount, 0.0) > 0.0) 
+                WHEN (COALESCE(p.total_voucher_amount, 0.0) + COALESCE(c.total_collected_amount, 0.0) + COALESCE(a.total_allocated_amount, 0.0) > 0.0) 
                   OR (COALESCE(adj.total_adjusted_amount, 0.0) > 0.0)
                 THEN 'PARTIAL'
                 ELSE 'UNPAID'
@@ -225,6 +235,7 @@ BEGIN
         FROM invoices inv
         LEFT JOIN OrderPayments p ON inv.order_code = p.order_code
         LEFT JOIN OrderCollections c ON inv.order_code = c.order_code
+        LEFT JOIN OrderAllocations a ON inv.id = a.invoice_id
         LEFT JOIN InvoiceAdjustments adj ON inv.invoice_code = adj.original_invoice_code
         WHERE inv.status != 'CANCELLED';
 
