@@ -56,6 +56,7 @@ def setup_test_data(db: Session):
             name="Sản Phẩm Test Giá Gốc",
             sell_price=180000.0,  # Current listed price has increased!
             base_unit="Cái",
+            cost_price=100000.0,
             stock=100,
         )
         db.add(prod)

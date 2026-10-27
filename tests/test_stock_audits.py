@@ -475,3 +475,55 @@ def test_stock_audit_reserved_stock_warning(client, warehouse_mgr_headers):
     finally:
         db.close()
 
+
+def test_partial_audit_only_one_product_counted_and_uncounted_preserved(client, warehouse_mgr_headers):
+    """
+    Test: Kiểm kê từng phần:
+    Trong phiếu có 2 sản phẩm (SP 1 và SP 2), người dùng chỉ kiểm đếm 1 sản phẩm (SP 1 lệch -2).
+    SP 2 không kiểm đếm (actual_stock = None).
+    Xác nhận thành công: SP 1 được điều chỉnh -2, SP 2 giữ nguyên tồn kho hệ thống.
+    """
+    db = SessionLocal()
+    try:
+        from app.services.inventory_availability_service import get_or_create_warehouse_stock
+        stock1 = get_or_create_warehouse_stock(db, "WH01", "Kho Tổng Hà Nội", 1)
+        stock2 = get_or_create_warehouse_stock(db, "WH01", "Kho Tổng Hà Nội", 2)
+        initial_stock_1 = stock1.actual_stock or 0
+        initial_stock_2 = stock2.actual_stock or 0
+    finally:
+        db.close()
+
+    create_res = client.post(
+        "/api/v1/stock-audits",
+        json={"warehouse_id": "WH01", "scope_type": "WAREHOUSE", "product_ids": [1, 2]},
+        headers=warehouse_mgr_headers,
+    )
+    assert create_res.status_code == 201
+    audit = create_res.json()
+    audit_id = audit["id"]
+
+    # Chỉ gửi kiểm đếm cho sản phẩm 1, bỏ qua sản phẩm 2 (hoặc actual_stock = None)
+    confirm_res = client.post(
+        f"/api/v1/stock-audits/{audit_id}/confirm",
+        json={
+            "items": [
+                {"product_id": 1, "actual_stock": max(0, initial_stock_1 - 2), "reason": "Hao hụt kiểm đếm 1 sản phẩm"},
+                {"product_id": 2, "actual_stock": None, "reason": None},
+            ]
+        },
+        headers=warehouse_mgr_headers,
+    )
+    assert confirm_res.status_code == 200
+    res_data = confirm_res.json()
+    assert res_data["status"] == "CONFIRMED"
+
+    # Kiểm tra tồn kho trong DB: SP 1 giảm 2, SP 2 không thay đổi
+    db = SessionLocal()
+    try:
+        updated_stock1 = db.query(WarehouseStockEntity).filter_by(warehouse_id="WH01", product_id=1).first()
+        updated_stock2 = db.query(WarehouseStockEntity).filter_by(warehouse_id="WH01", product_id=2).first()
+        assert updated_stock1.actual_stock == max(0, initial_stock_1 - 2)
+        assert updated_stock2.actual_stock == initial_stock_2
+    finally:
+        db.close()
+

@@ -117,10 +117,16 @@ def extract_original_sold_items_map(
     if order and not items_map:
         db_items = db.query(OrderItemEntity).filter(OrderItemEntity.order_id == order.id).all()
         for it in db_items:
+            p_code = getattr(it, "sku_id", None)
+            prod = None
+            if not p_code:
+                prod = db.query(ProductEntity).filter(ProductEntity.id == it.product_id).first()
+                p_code = getattr(prod, "code", None) or f"SP{it.product_id:03d}"
+            p_name = it.product_name or (prod.name if prod else f"Sản phẩm #{it.product_id}")
             items_map[it.product_id] = {
                 "product_id": it.product_id,
-                "product_code": it.product_code or f"SP{it.product_id:03d}",
-                "product_name": it.product_name or f"Sản phẩm #{it.product_id}",
+                "product_code": p_code,
+                "product_name": p_name,
                 "unit_name": it.unit_name or "Cái",
                 "sold_quantity": int(it.quantity or 0),
                 "unit_price": float(it.unit_price or 0.0),
@@ -162,7 +168,7 @@ def get_pending_returns(db: Session, dealer_id: Optional[int] = None) -> List[Di
     }
 
     query = db.query(ReturnOrderEntity).filter(
-        ReturnOrderEntity.status.in_(["CONFIRMED", "PENDING_CREDIT", "APPROVED"]),
+        ReturnOrderEntity.status.in_(["CONFIRMED", "COMPLETED", "PENDING_CREDIT", "APPROVED"]),
         ~ReturnOrderEntity.id.in_(posted_return_ids),
     )
 
