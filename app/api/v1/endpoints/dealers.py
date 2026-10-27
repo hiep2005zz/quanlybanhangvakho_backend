@@ -1712,6 +1712,27 @@ def get_dealer_filters(
         if "sales" in u_roles and u.is_active and user_status == "ACTIVE":
             sales[u.id] = u.full_name
 
+    # Đảm bảo có các khu vực phổ biến
+    default_regions = [
+        "Hà Nội",
+        "Đà Nẵng",
+        "TP. Hồ Chí Minh",
+        "Hải Phòng",
+        "Cần Thơ",
+        "Bắc Ninh",
+        "Bình Dương",
+        "Đồng Nai",
+        "Quảng Ninh",
+        "Thái Nguyên",
+        "Hải Dương",
+        "Nam Định",
+        "Nghệ An",
+        "Khánh Hòa",
+        "Lâm Đồng",
+    ]
+    for dr in default_regions:
+        regions.add(dr)
+
     # Đảm bảo có các nhóm mặc định phổ biến
     default_groups = ["Đại lý cấp 1", "Đại lý cấp 2", "Khách sỉ", "Khách lẻ", "dai_ly_cap_1"]
     for dg in default_groups:
@@ -1722,8 +1743,14 @@ def get_dealer_filters(
     for ds in default_statuses:
         statuses.add(ds)
 
+    priority_regions = ["Hà Nội", "Đà Nẵng", "TP. Hồ Chí Minh", "Hải Phòng", "Cần Thơ"]
+    def region_sort_key(r: str):
+        if r in priority_regions:
+            return (0, priority_regions.index(r))
+        return (1, r)
+
     return {
-        "regions": sorted(regions),
+        "regions": sorted(list(regions), key=region_sort_key),
         "sales": [
             {
                 "id": sale_id,
