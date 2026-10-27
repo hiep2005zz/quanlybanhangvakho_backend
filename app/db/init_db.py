@@ -80,8 +80,14 @@ def _ensure_dealer_credit_limit_column(bind=engine):
         )
 
 
-def _ensure_legacy_columns(bind=engine):
+_LEGACY_COLUMNS_ENSURED = False
+
+
+def _ensure_legacy_columns(bind=engine, force: bool = False):
     """Add columns introduced after existing SQLite or SQL Server databases were created."""
+    global _LEGACY_COLUMNS_ENSURED
+    if not force and _LEGACY_COLUMNS_ENSURED:
+        return
     additions = {
         "users": {
             "avatar_url": ("TEXT", "NVARCHAR(500)"),
@@ -296,6 +302,7 @@ def _ensure_legacy_columns(bind=engine):
                         connection.execute(text("UPDATE return_order_items SET original_quantity = quantity WHERE (original_quantity IS NULL OR original_quantity = 0) AND quantity IS NOT NULL"))
     except Exception:
         pass
+    _LEGACY_COLUMNS_ENSURED = True
 
 
 def _ensure_mssql_column_types(bind):
