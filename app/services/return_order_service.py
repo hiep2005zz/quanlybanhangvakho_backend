@@ -362,6 +362,7 @@ def create_return_order(
 
     return_order = ReturnOrderEntity(
         code=new_code,
+        return_code=new_code,
         order_id=order.id,
         order_code=order.order_code,
         dealer_id=order.dealer_id,
@@ -370,9 +371,12 @@ def create_return_order(
         total_items=0,
         total_quantity=0,
         total_refund_amount=0.0,
+        total_amount=0.0,
+        subtotal_amount=0.0,
         note=data.note,
         created_by_id=_safe_user_id(db, current_user.id),
         created_by=current_user.full_name or current_user.username,
+        created_by_name=current_user.full_name or current_user.username,
         created_at=now_utc,
     )
     db.add(return_order)
@@ -494,6 +498,8 @@ def create_return_order(
     return_order.total_items = len(item_entities)
     return_order.total_quantity = total_qty
     return_order.total_refund_amount = round(total_refund, 2)
+    return_order.total_amount = round(total_refund, 2)
+    return_order.subtotal_amount = round(total_refund, 2)
 
     # Ghi Audit Log khởi tạo phiếu trả
     try:

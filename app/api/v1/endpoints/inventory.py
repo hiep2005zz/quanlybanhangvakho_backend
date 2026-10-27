@@ -1562,6 +1562,7 @@ def get_stock_book(
     search: Optional[str] = None,
     page: Optional[int] = None,
     page_size: Optional[int] = None,
+    limit: Optional[int] = Query(None, description="Alias cho page_size"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(require_permission(Permission.INVENTORY_READ.value)),
 ):
@@ -1692,9 +1693,10 @@ def get_stock_book(
             _CATEGORIES_CACHE = {"timestamp": now, "data": all_categories}
 
         # 5. Phân trang SQL trực tiếp (LIMIT và OFFSET cực nhanh qua Index)
-        if page is not None and page_size is not None and page > 0 and page_size > 0:
+        effective_limit = page_size if page_size is not None else limit
+        if page is not None and effective_limit is not None and page > 0 and effective_limit > 0:
             ordered_query = base_query.order_by(ProductEntity.code.asc(), WarehouseStockEntity.warehouse_id.asc())
-            paginated_rows = ordered_query.offset((page - 1) * page_size).limit(page_size).all()
+            paginated_rows = ordered_query.offset((page - 1) * effective_limit).limit(effective_limit).all()
         else:
             paginated_rows = base_query.all()
             paginated_rows.sort(key=lambda r: (getattr(r, "product_code", "") or "", getattr(r, "warehouse_id", "") or ""))

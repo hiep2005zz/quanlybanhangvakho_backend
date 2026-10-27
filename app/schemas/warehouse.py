@@ -335,6 +335,7 @@ class EligiblePickingOrderListResponse(BaseModel):
     total: int = 0
     pagination: EligiblePickingOrderPagination
 
+
 class BatchPickingPreviewRequest(BaseModel):
     order_codes: List[str] = Field(..., min_length=1, description="Danh sách mã đơn hàng cần gộp soạn")
 

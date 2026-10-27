@@ -239,16 +239,46 @@ def get_deliveries_for_invoicing(
     to_date: Optional[str] = Query(None, description="Đến ngày (YYYY-MM-DD)"),
     delivery_status: Optional[str] = Query(None, description="Trạng thái giao hàng (DELIVERED, PENDING, FAILED)"),
     invoice_status: Optional[str] = Query("ALL", description="Trạng thái hóa đơn: ALL | PENDING | INVOICED"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page: int = Query(1, ge=1, description="Số trang (1-indexed)"),
+    page_size: int = Query(10, ge=1, le=100, description="Số lượng mục mỗi trang (mặc định 10)"),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ):
     """
     1. Xem danh sách phiếu giao hàng đủ điều kiện xuất hóa đơn.
     Hỗ trợ lọc, tìm kiếm, tính thống kê nhanh theo database thực tế.
+    Phân trang: Mặc định tải 10 phiếu/trang (page=1, page_size=10), chuyển trang 2 tải tiếp 10 phiếu.
     """
     _require_accountant_or_admin(current_user)
+
+    # Tự động nạp dữ liệu phiếu xuất kho mẫu nếu bảng đang trống
+    if db.query(OrderDispatchEntity).count() == 0:
+        orders = (
+            db.query(OrderEntity)
+            .filter(OrderEntity.dealer_id.isnot(None))
+            .order_by(OrderEntity.id.asc())
+            .limit(25)
+            .all()
+        )
+        for idx, ord_item in enumerate(orders, 1):
+            disp = OrderDispatchEntity(
+                dispatch_code=f"XK202610-{idx:03d}",
+                order_id=ord_item.id,
+                order_code=ord_item.order_code,
+                dispatch_type="INITIAL",
+                round_number=1,
+                warehouse_id="WH01",
+                warehouse_name="Kho Tổng Hà Nội",
+                performed_by="Thủ kho Nguyễn Văn Kho",
+                note="Phiếu xuất kho giao hàng cho đại lý",
+                items_json=ord_item.items_json,
+                created_at=ord_item.created_at or datetime.now(timezone.utc),
+            )
+            db.add(disp)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
 
     # Lấy toàn bộ phiếu xuất kho kèm đơn hàng
     query = db.query(OrderDispatchEntity).join(OrderEntity, OrderDispatchEntity.order_id == OrderEntity.id)

@@ -12,7 +12,7 @@ from sqlalchemy import (
     UnicodeText,
     ForeignKey,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 from app.core.database import Base
 
 
@@ -28,7 +28,8 @@ class ReturnOrderEntity(Base):
     __tablename__ = "return_orders"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    return_code = Column(String(50), unique=True, index=True, nullable=False)
+    code = Column(String(50), nullable=True, index=True)
+    return_code = Column(String(50), nullable=True, index=True)
     order_id = Column(Integer, ForeignKey("orders.id"), nullable=True, index=True)
     order_code = Column(String(50), nullable=False, index=True)
     original_invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True, index=True)
@@ -40,136 +41,60 @@ class ReturnOrderEntity(Base):
     status = Column(String(30), default="CONFIRMED", nullable=False)  # PENDING_WAREHOUSE | CONFIRMED | COMPLETED | CANCELLED
     reason = Column(Unicode(500), nullable=True, default="")
     note = Column(Unicode(500), nullable=True)
-    subtotal_amount = Column(Float, default=0.0, nullable=False)
-    tax_amount = Column(Float, default=0.0, nullable=False)
-    total_amount = Column(Float, default=0.0, nullable=False)
+    subtotal_amount = Column(Float, default=0.0, nullable=True)
+    tax_amount = Column(Float, default=0.0, nullable=True)
+    total_amount = Column(Float, default=0.0, nullable=True)
+    total_refund_amount = Column(Float, default=0.0, nullable=True)
+    total_items = Column(Integer, default=0, nullable=True)
+    total_quantity = Column(Integer, default=0, nullable=True)
+    created_by = Column(Unicode(100), nullable=True)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_by_name = Column(Unicode(150), nullable=True)
+    confirmed_by = Column(Unicode(100), nullable=True)
     confirmed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     confirmed_by_name = Column(Unicode(150), nullable=True)
     confirmed_at = Column(DateTime, default=get_utc_now)
+    cancelled_by_id = Column(Integer, nullable=True)
+    cancelled_by = Column(Unicode(100), nullable=True)
+    cancelled_by_name = Column(Unicode(150), nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
+    cancel_reason = Column(Unicode(500), nullable=True)
     created_at = Column(DateTime, default=get_utc_now)
     updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now)
 
-    # Backward compatibility properties
-    @property
-    def code(self):
-        return self.return_code
-
-    @code.setter
-    def code(self, val):
-        self.return_code = val
-
-    @property
-    def created_by(self):
-        return self.created_by_name
-
-    @created_by.setter
-    def created_by(self, val):
-        self.created_by_name = val
-
-    @property
-    def confirmed_by(self):
-        return self.confirmed_by_name
-
-    @confirmed_by.setter
-    def confirmed_by(self, val):
-        self.confirmed_by_name = val
-
-    @property
-    def cancelled_by(self):
-        return getattr(self, "cancelled_by_name", None) or getattr(self, "_cancelled_by", None)
-
-    @cancelled_by.setter
-    def cancelled_by(self, val):
-        self._cancelled_by = val
-        if hasattr(self, "cancelled_by_name"):
-            try:
-                self.cancelled_by_name = val
-            except Exception:
-                pass
-
-    @property
-    def cancelled_by_id(self):
-        return getattr(self, "_cancelled_by_id", None)
-
-    @cancelled_by_id.setter
-    def cancelled_by_id(self, val):
-        self._cancelled_by_id = val
-
-    @property
-    def cancelled_at(self):
-        return getattr(self, "_cancelled_at", None)
-
-    @cancelled_at.setter
-    def cancelled_at(self, val):
-        self._cancelled_at = val
-
-    @property
-    def cancel_reason(self):
-        return getattr(self, "_cancel_reason", None)
-
-    @cancel_reason.setter
-    def cancel_reason(self, val):
-        self._cancel_reason = val
-
-    @property
-    def total_refund_amount(self):
-        return self.total_amount
-
-    @total_refund_amount.setter
-    def total_refund_amount(self, val):
-        self.total_amount = val
-
-    @property
-    def total_items(self):
-        return len(self.items) if self.items is not None and len(self.items) > 0 else getattr(self, "_total_items", 0)
-
-    @total_items.setter
-    def total_items(self, val):
-        self._total_items = val
-
-    @property
-    def total_quantity(self):
-        if self.items:
-            return sum((getattr(it, "return_quantity", None) or getattr(it, "quantity", None) or 0) for it in self.items)
-        return getattr(self, "_total_quantity", 0)
-
-    @total_quantity.setter
-    def total_quantity(self, val):
-        self._total_quantity = val
-
     def __init__(self, **kwargs):
-        if "code" in kwargs and "return_code" not in kwargs:
-            kwargs["return_code"] = kwargs["code"]
-        if "return_code" in kwargs and "code" not in kwargs:
-            kwargs["code"] = kwargs["return_code"]
-        if "created_by" in kwargs and "created_by_name" not in kwargs:
-            kwargs["created_by_name"] = kwargs["created_by"]
-        if "created_by_name" in kwargs and "created_by" not in kwargs:
-            kwargs["created_by"] = kwargs["created_by_name"]
-        if "confirmed_by" in kwargs and "confirmed_by_name" not in kwargs:
-            kwargs["confirmed_by_name"] = kwargs["confirmed_by"]
-        if "total_refund_amount" in kwargs and "total_amount" not in kwargs:
-            kwargs["total_amount"] = kwargs["total_refund_amount"]
-        if "total_amount" in kwargs and "total_refund_amount" not in kwargs:
-            kwargs["total_refund_amount"] = kwargs["total_amount"]
-        if "total_items" in kwargs:
-            self._total_items = kwargs.pop("total_items")
-        if "total_quantity" in kwargs:
-            self._total_quantity = kwargs.pop("total_quantity")
-        if "cancelled_by" in kwargs:
-            self._cancelled_by = kwargs.pop("cancelled_by")
-        if "cancelled_at" in kwargs:
-            self._cancelled_at = kwargs.pop("cancelled_at")
-        if "cancel_reason" in kwargs:
-            self._cancel_reason = kwargs.pop("cancel_reason")
-        if "cancelled_by_id" in kwargs:
-            self._cancelled_by_id = kwargs.pop("cancelled_by_id")
+        val_code = kwargs.get("code") or kwargs.get("return_code")
+        if val_code:
+            kwargs["code"] = val_code
+            kwargs["return_code"] = val_code
+
+        val_creator = kwargs.get("created_by") or kwargs.get("created_by_name")
+        if val_creator:
+            kwargs["created_by"] = val_creator
+            kwargs["created_by_name"] = val_creator
+
+        val_confirmer = kwargs.get("confirmed_by") or kwargs.get("confirmed_by_name")
+        if val_confirmer:
+            kwargs["confirmed_by"] = val_confirmer
+            kwargs["confirmed_by_name"] = val_confirmer
+
+        val_canceller = kwargs.get("cancelled_by") or kwargs.get("cancelled_by_name")
+        if val_canceller:
+            kwargs["cancelled_by"] = val_canceller
+            kwargs["cancelled_by_name"] = val_canceller
+
+        val_amount = kwargs.get("total_refund_amount") if kwargs.get("total_refund_amount") is not None else kwargs.get("total_amount")
+        if val_amount is not None:
+            kwargs["total_refund_amount"] = val_amount
+            kwargs["total_amount"] = val_amount
+            if "subtotal_amount" not in kwargs:
+                kwargs["subtotal_amount"] = val_amount
+
         if "original_invoice_code" not in kwargs or kwargs["original_invoice_code"] is None:
             kwargs["original_invoice_code"] = ""
         if "reason" not in kwargs or kwargs["reason"] is None:
             kwargs["reason"] = kwargs.get("note", "") or ""
+
         super().__init__(**kwargs)
 
     # Relationships
@@ -179,6 +104,40 @@ class ReturnOrderEntity(Base):
         cascade="all, delete-orphan",
         order_by="ReturnOrderItemEntity.id",
     )
+
+
+from sqlalchemy import event
+
+
+@event.listens_for(ReturnOrderEntity, "before_insert")
+@event.listens_for(ReturnOrderEntity, "before_update")
+def sync_return_order_fields(mapper, connection, target):
+    code_val = target.code or target.return_code
+    if code_val:
+        target.code = code_val
+        target.return_code = code_val
+
+    creator_val = target.created_by or target.created_by_name
+    if creator_val:
+        target.created_by = creator_val
+        target.created_by_name = creator_val
+
+    confirmer_val = target.confirmed_by or target.confirmed_by_name
+    if confirmer_val:
+        target.confirmed_by = confirmer_val
+        target.confirmed_by_name = confirmer_val
+
+    canceller_val = target.cancelled_by or target.cancelled_by_name
+    if canceller_val:
+        target.cancelled_by = canceller_val
+        target.cancelled_by_name = canceller_val
+
+    amt = target.total_refund_amount if target.total_refund_amount is not None else target.total_amount
+    if amt is not None:
+        target.total_refund_amount = amt
+        target.total_amount = amt
+        if target.subtotal_amount is None or target.subtotal_amount == 0.0:
+            target.subtotal_amount = amt
 
 
 class ReturnOrderItemEntity(Base):
@@ -200,8 +159,8 @@ class ReturnOrderItemEntity(Base):
     quantity = Column(Integer, default=1, nullable=False)
     refund_amount = Column(Float, default=0.0, nullable=False)
     line_total = Column(Float, default=0.0, nullable=False)
-    return_reason = Column(Unicode(255), nullable=True)
-    reason = Column(Unicode(255), nullable=True)
+    return_reason = Column(Unicode(255), default="", nullable=True)
+    reason = Column(Unicode(255), default="", nullable=True)
     is_damaged = Column(Boolean, default=False, nullable=False)
 
     target_warehouse_id = Column(Integer, nullable=True)
@@ -215,6 +174,9 @@ class ReturnOrderItemEntity(Base):
     created_at = Column(DateTime, default=get_utc_now)
 
     def __init__(self, **kwargs):
+        val_reason = kwargs.get("return_reason") or kwargs.get("reason") or ""
+        kwargs["return_reason"] = val_reason
+        kwargs["reason"] = val_reason
         if "return_quantity" in kwargs and "quantity" not in kwargs:
             kwargs["quantity"] = kwargs["return_quantity"]
         elif "quantity" in kwargs and "return_quantity" not in kwargs:
@@ -223,13 +185,26 @@ class ReturnOrderItemEntity(Base):
             kwargs["line_total"] = kwargs["refund_amount"]
         elif "line_total" in kwargs and "refund_amount" not in kwargs:
             kwargs["refund_amount"] = kwargs["line_total"]
-        if "return_reason" in kwargs and "reason" not in kwargs:
-            kwargs["reason"] = kwargs["return_reason"]
-        elif "reason" in kwargs and "return_reason" not in kwargs:
-            kwargs["return_reason"] = kwargs["reason"]
         if "original_quantity" not in kwargs:
             kwargs["original_quantity"] = kwargs.get("return_quantity", kwargs.get("quantity", 0))
         super().__init__(**kwargs)
 
     # Relationships
     return_order = relationship("ReturnOrderEntity", back_populates="items")
+
+
+@event.listens_for(ReturnOrderItemEntity, "before_insert")
+@event.listens_for(ReturnOrderItemEntity, "before_update")
+def sync_return_order_item_fields(mapper, connection, target):
+    val_reason = target.return_reason or target.reason or ""
+    target.return_reason = val_reason
+    target.reason = val_reason
+    if target.quantity is not None and (target.return_quantity is None or target.return_quantity == 0):
+        target.return_quantity = target.quantity
+    elif target.return_quantity is not None and (target.quantity is None or target.quantity == 0):
+        target.quantity = target.return_quantity
+    if target.line_total is not None and (target.refund_amount is None or target.refund_amount == 0.0):
+        target.refund_amount = target.line_total
+    elif target.refund_amount is not None and (target.line_total is None or target.line_total == 0.0):
+        target.line_total = target.refund_amount
+
