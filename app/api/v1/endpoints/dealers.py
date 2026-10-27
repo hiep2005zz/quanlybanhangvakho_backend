@@ -1715,8 +1715,8 @@ def get_dealer_filters(
     # Đảm bảo có các khu vực phổ biến
     default_regions = [
         "Hà Nội",
-        "TP. Hồ Chí Minh",
         "Đà Nẵng",
+        "TP. Hồ Chí Minh",
         "Hải Phòng",
         "Cần Thơ",
         "Bắc Ninh",
@@ -1743,8 +1743,14 @@ def get_dealer_filters(
     for ds in default_statuses:
         statuses.add(ds)
 
+    priority_regions = ["Hà Nội", "Đà Nẵng", "TP. Hồ Chí Minh", "Hải Phòng", "Cần Thơ"]
+    def region_sort_key(r: str):
+        if r in priority_regions:
+            return (0, priority_regions.index(r))
+        return (1, r)
+
     return {
-        "regions": sorted(regions),
+        "regions": sorted(list(regions), key=region_sort_key),
         "sales": [
             {
                 "id": sale_id,
