@@ -3,7 +3,7 @@
   "over_limit_action": "REQUIRE_APPROVAL",
   "overdue_action": "BLOCK",
   "auto_eval_enabled": true,
-  "last_run_at": "2026-10-20T18:47:44.927774+00:00",
+  "last_run_at": "2026-10-27T13:11:53.814082+00:00",
   "updated_at": "2026-10-20T18:45:57.493000",
   "updated_by": "Đào Ngọc Hiệp"
 }
