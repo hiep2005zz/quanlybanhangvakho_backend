@@ -80,14 +80,8 @@ def _ensure_dealer_credit_limit_column(bind=engine):
         )
 
 
-_LEGACY_COLUMNS_ENSURED = False
-
-
-def _ensure_legacy_columns(bind=engine, force: bool = False):
+def _ensure_legacy_columns(bind=engine):
     """Add columns introduced after existing SQLite or SQL Server databases were created."""
-    global _LEGACY_COLUMNS_ENSURED
-    if not force and _LEGACY_COLUMNS_ENSURED:
-        return
     additions = {
         "users": {
             "avatar_url": ("TEXT", "NVARCHAR(500)"),
@@ -198,6 +192,7 @@ def _ensure_legacy_columns(bind=engine, force: bool = False):
             "items_detail": ("TEXT NULL", "NVARCHAR(MAX) NULL"),
         },
         "return_orders": {
+            "code": ("VARCHAR(50) NULL", "VARCHAR(50) NULL"),
             "return_code": ("VARCHAR(50) NULL", "VARCHAR(50) NULL"),
             "original_invoice_id": ("INTEGER NULL", "INT NULL"),
             "original_invoice_code": ("VARCHAR(50) DEFAULT ''", "NVARCHAR(50) DEFAULT ''"),
@@ -207,8 +202,14 @@ def _ensure_legacy_columns(bind=engine, force: bool = False):
             "subtotal_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
             "tax_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
             "total_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "total_refund_amount": ("FLOAT DEFAULT 0.0", "FLOAT DEFAULT 0.0"),
+            "total_items": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "total_quantity": ("INTEGER DEFAULT 0", "INT DEFAULT 0"),
+            "created_by": ("NVARCHAR(100) NULL", "NVARCHAR(100) NULL"),
             "created_by_name": ("NVARCHAR(150) NULL", "NVARCHAR(150) NULL"),
+            "confirmed_by": ("NVARCHAR(100) NULL", "NVARCHAR(100) NULL"),
             "confirmed_by_name": ("NVARCHAR(150) NULL", "NVARCHAR(150) NULL"),
+            "cancelled_by": ("NVARCHAR(100) NULL", "NVARCHAR(100) NULL"),
             "cancelled_by_id": ("INTEGER NULL", "INT NULL"),
             "cancelled_by_name": ("NVARCHAR(150) NULL", "NVARCHAR(150) NULL"),
             "cancelled_at": ("DATETIME NULL", "DATETIME NULL"),
@@ -302,7 +303,6 @@ def _ensure_legacy_columns(bind=engine, force: bool = False):
                         connection.execute(text("UPDATE return_order_items SET original_quantity = quantity WHERE (original_quantity IS NULL OR original_quantity = 0) AND quantity IS NOT NULL"))
     except Exception:
         pass
-    _LEGACY_COLUMNS_ENSURED = True
 
 
 def _ensure_mssql_column_types(bind):
