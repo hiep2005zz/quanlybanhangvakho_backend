@@ -1427,6 +1427,11 @@ def get_warehouse_all_dispatches(
             except Exception:
                 pass
 
+        if isinstance(parsed_items, dict):
+            parsed_items = [parsed_items]
+        elif not isinstance(parsed_items, list):
+            parsed_items = []
+
         order = db.query(OrderEntity).filter(OrderEntity.id == d.order_id).first()
         if not order and d.order_code:
             order = db.query(OrderEntity).filter(func.upper(OrderEntity.order_code) == d.order_code.upper()).first()
@@ -1444,7 +1449,11 @@ def get_warehouse_all_dispatches(
             order_status = mem_ord.get("status", "")
             total_order_amount = mem_ord.get("total_amount", 0.0)
 
-        total_dispatched_qty = sum(int(it.get("dispatched_this_round") or it.get("quantity") or 0) for it in parsed_items)
+        total_dispatched_qty = sum(
+            int(it.get("dispatched_this_round") or it.get("quantity") or 0)
+            for it in parsed_items
+            if isinstance(it, dict)
+        )
 
         results.append({
             "id": d.id,
@@ -3240,15 +3249,15 @@ def reorder_order(
     if is_customer or current_user.role == "customer":
         customer_dealer = _get_customer_dealer(current_user)
         if customer_dealer:
-            if _is_dealer_locked(customer_dealer):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Đại lý '{customer_dealer.name}' hiện đang bị KHÓA giao dịch. Không thể đặt lại đơn hàng."
-                )
             if dealer_id != customer_dealer.id:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Tài khoản đại lý chỉ được phép đặt lại đơn hàng của chính mình."
+                )
+            if _is_dealer_locked(customer_dealer):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Đại lý '{customer_dealer.name}' hiện đang bị KHÓA giao dịch. Không thể đặt lại đơn hàng."
                 )
         else:
             d_obj = DEALERS_DB.get(dealer_id)

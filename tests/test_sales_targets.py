@@ -108,6 +108,22 @@ def test_create_and_delete_sales_target():
 
 def test_update_locked_target_enforces_reason_and_audit():
     # 6. Kỳ đã qua (2026-09) bị khóa: Sửa không có lý do -> 400; có lý do -> thành công và lưu audit log
+    from app.core.database import SessionLocal
+    from app.models.sales_target import SalesTargetEntity, SALES_TARGETS_DB
+    db = SessionLocal()
+    try:
+        db.query(SalesTargetEntity).filter(
+            SalesTargetEntity.employee_id == 3,
+            SalesTargetEntity.month_year == "2026-09"
+        ).delete()
+        db.commit()
+    finally:
+        db.close()
+
+    for k in list(SALES_TARGETS_DB.keys()):
+        if SALES_TARGETS_DB[k].get("employee_id") == 3 and SALES_TARGETS_DB[k].get("month_year") == "2026-09":
+            del SALES_TARGETS_DB[k]
+
     mgr_token = get_token("sales_manager")
     
     # Tạo chỉ tiêu cho tháng đã qua (2026-09) bị khóa
@@ -126,32 +142,35 @@ def test_update_locked_target_enforces_reason_and_audit():
     assert past_target.status_code == 200, past_target.text
     locked_id = past_target.json()["id"]
 
-    # Lần 1: Cố tình không gửi lý do
-    fail_resp = client.put(
-        f"/api/v1/sales-targets/{locked_id}",
-        json={"target_amount": 55000000.0, "reason": ""},
-        headers={"Authorization": f"Bearer {mgr_token}"}
-    )
-    assert fail_resp.status_code == 400
-    assert "lý do điều chỉnh" in fail_resp.json()["detail"].lower()
+    try:
+        # Lần 1: Cố tình không gửi lý do
+        fail_resp = client.put(
+            f"/api/v1/sales-targets/{locked_id}",
+            json={"target_amount": 55000000.0, "reason": ""},
+            headers={"Authorization": f"Bearer {mgr_token}"}
+        )
+        assert fail_resp.status_code == 400
+        assert "lý do điều chỉnh" in fail_resp.json()["detail"].lower()
 
-    # Lần 2: Gửi kèm lý do hợp lệ
-    success_resp = client.put(
-        f"/api/v1/sales-targets/{locked_id}",
-        json={
-            "target_amount": 55000000.0,
-            "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
-        },
-        headers={"Authorization": f"Bearer {mgr_token}"}
-    )
-    assert success_resp.status_code == 200
-    updated = success_resp.json()
-    assert updated["target_amount"] == 55000000.0
-    assert updated["is_locked"] is True
-    assert len(updated["audit_logs"]) >= 1
-    last_log = updated["audit_logs"][-1]
-    assert "tăng chỉ tiêu" in last_log["reason"]
-    assert last_log["new_target_amount"] == 55000000.0
+        # Lần 2: Gửi kèm lý do hợp lệ
+        success_resp = client.put(
+            f"/api/v1/sales-targets/{locked_id}",
+            json={
+                "target_amount": 55000000.0,
+                "reason": "Điều chỉnh theo quyết định tăng chỉ tiêu bổ sung hợp đồng lớn"
+            },
+            headers={"Authorization": f"Bearer {mgr_token}"}
+        )
+        assert success_resp.status_code == 200
+        updated = success_resp.json()
+        assert updated["target_amount"] == 55000000.0
+        assert updated["is_locked"] is True
+        assert len(updated["audit_logs"]) >= 1
+        last_log = updated["audit_logs"][-1]
+        assert "tăng chỉ tiêu" in last_log["reason"]
+        assert last_log["new_target_amount"] == 55000000.0
+    finally:
+        client.delete(f"/api/v1/sales-targets/{locked_id}", headers={"Authorization": f"Bearer {mgr_token}"})
 
 
 def test_salesperson_my_progress():

@@ -6,7 +6,7 @@ from app.api.v1.endpoints.products import RAW_PRODUCTS
 from app.api.v1.endpoints.orders import ORDERS_DB
 from app.api.v1.endpoints.inventory import INVENTORY_TRANSACTIONS
 from app.core.database import SessionLocal
-from app.models.entities import ProductEntity, OrderEntity, InventoryTransactionEntity
+from app.models.entities import ProductEntity, OrderEntity, InventoryTransactionEntity, WarehouseStockEntity
 
 client = TestClient(app)
 
@@ -96,6 +96,7 @@ def test_product_with_transactions_cannot_be_deleted():
         db = SessionLocal()
         try:
             db.query(InventoryTransactionEntity).filter(InventoryTransactionEntity.product_id == prod_id).delete()
+            db.query(WarehouseStockEntity).filter(WarehouseStockEntity.product_id == prod_id).delete()
             db.query(ProductEntity).filter(ProductEntity.id == prod_id).delete()
             db.commit()
         finally:

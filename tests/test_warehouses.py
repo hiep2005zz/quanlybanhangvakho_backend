@@ -186,6 +186,9 @@ def test_assign_default_warehouse_to_dealer():
     assert d1 is not None
     assert str(d1.get("warehouse_id")) in ["2", "KHO_DN"]
 
+    # Phục hồi lại kho 1 cho đại lý 1
+    client.put("/api/v1/warehouses/dealers/1/default-warehouse", json={"warehouse_id": "1"}, headers=admin_headers)
+
 
 def test_order_picking_locations_api():
     client = TestClient(app)
