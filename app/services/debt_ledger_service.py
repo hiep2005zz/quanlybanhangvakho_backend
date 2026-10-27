@@ -2,6 +2,7 @@ import io
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -115,7 +116,7 @@ def compute_debt_ledger_data(
         except Exception:
             pass
 
-        # Map các khoản thanh toán thực tế từ SQL Server (receipt_vouchers & payment_collections)
+        # Map các khoản thanh toán thực tế từ SQL Server (receipt_vouchers, payment_collections, payment_allocations, invoices)
         d_payments: dict[str, float] = {}
         try:
             from app.models.receipt_voucher import ReceiptVoucherEntity
@@ -134,6 +135,31 @@ def compute_debt_ledger_data(
                     d_payments[pc.order_code] = d_payments.get(pc.order_code, 0.0) + float(pc.amount or 0.0)
         except Exception:
             pass
+        try:
+            from app.models.debt_payment import PaymentAllocationEntity, PaymentReceiptEntity
+            alloc_rows = (
+                db.query(
+                    InvoiceEntity.order_code,
+                    func.sum(PaymentAllocationEntity.current_allocated_amount)
+                )
+                .join(PaymentReceiptEntity, PaymentReceiptEntity.id == PaymentAllocationEntity.payment_id)
+                .join(InvoiceEntity, InvoiceEntity.id == PaymentAllocationEntity.invoice_id)
+                .filter(
+                    InvoiceEntity.dealer_id == d.id,
+                    PaymentReceiptEntity.status == "CONFIRMED"
+                )
+                .group_by(InvoiceEntity.order_code)
+                .all()
+            )
+            for ord_c, alloc_amt in alloc_rows:
+                if ord_c:
+                    d_payments[ord_c] = d_payments.get(ord_c, 0.0) + float(alloc_amt or 0.0)
+        except Exception:
+            pass
+
+        for inv in d_invoices:
+            if inv.order_code and float(inv.paid_amount or 0.0) > 0:
+                d_payments[inv.order_code] = max(d_payments.get(inv.order_code, 0.0), float(inv.paid_amount or 0.0))
 
         for o in d_orders:
             amt = float(o.total_amount or 0.0)

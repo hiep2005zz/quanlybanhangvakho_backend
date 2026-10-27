@@ -42,8 +42,12 @@ def _seed_sample_trips_if_empty(db: Session):
         db.commit()
 
     count = db.query(func.count(DeliveryTripEntity.id)).scalar()
-    if count and count > 0:
+    stops_count = db.query(func.count(DeliveryStopEntity.id)).scalar()
+    if count and count > 0 and stops_count and stops_count > 0:
         return
+    if count and count > 0 and (not stops_count or stops_count == 0):
+        db.query(DeliveryTripEntity).delete(synchronize_session=False)
+        db.commit()
 
     now = get_utc_now()
     # Chuyến 1: Đang chạy trên đường, đúng hạn

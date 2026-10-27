@@ -550,7 +550,7 @@ def get_debt_aging_report(
                 sales_list.append({"id": u.id, "name": u.full_name})
     sales_list.sort(key=lambda s: s["name"])
 
-    # Truy vấn tổng tiền đã thu được kế toán xác nhận (PaymentCollection CONFIRMED) theo từng đại lý
+    # Truy vấn tổng tiền đã thu được kế toán xác nhận (PaymentCollection CONFIRMED & PaymentReceiptEntity CONFIRMED) theo từng đại lý
     confirmed_payments_map: Dict[int, float] = {}
     try:
         rows = (
@@ -567,6 +567,23 @@ def get_debt_aging_report(
                 confirmed_payments_map[dealer_id] = float(total_amt or 0.0)
     except Exception as ex:
         logger.warning(f"Error querying confirmed payments: {ex}")
+
+    try:
+        from app.models.debt_payment import PaymentReceiptEntity
+        pr_rows = (
+            db.query(
+                PaymentReceiptEntity.dealer_id,
+                func.sum(PaymentReceiptEntity.amount)
+            )
+            .filter(PaymentReceiptEntity.status == "CONFIRMED")
+            .group_by(PaymentReceiptEntity.dealer_id)
+            .all()
+        )
+        for dealer_id, total_amt in pr_rows:
+            if dealer_id:
+                confirmed_payments_map[dealer_id] = confirmed_payments_map.get(dealer_id, 0.0) + float(total_amt or 0.0)
+    except Exception as ex:
+        logger.warning(f"Error querying payment receipts: {ex}")
 
     # Tính toán công nợ cho từng đại lý
     all_dealers_aging: List[DebtAgingItem] = []
@@ -1712,6 +1729,27 @@ def get_dealer_filters(
         if "sales" in u_roles and u.is_active and user_status == "ACTIVE":
             sales[u.id] = u.full_name
 
+    # Đảm bảo có các khu vực phổ biến
+    default_regions = [
+        "Hà Nội",
+        "Đà Nẵng",
+        "TP. Hồ Chí Minh",
+        "Hải Phòng",
+        "Cần Thơ",
+        "Bắc Ninh",
+        "Bình Dương",
+        "Đồng Nai",
+        "Quảng Ninh",
+        "Thái Nguyên",
+        "Hải Dương",
+        "Nam Định",
+        "Nghệ An",
+        "Khánh Hòa",
+        "Lâm Đồng",
+    ]
+    for dr in default_regions:
+        regions.add(dr)
+
     # Đảm bảo có các nhóm mặc định phổ biến
     default_groups = ["Đại lý cấp 1", "Đại lý cấp 2", "Khách sỉ", "Khách lẻ", "dai_ly_cap_1"]
     for dg in default_groups:
@@ -1722,8 +1760,14 @@ def get_dealer_filters(
     for ds in default_statuses:
         statuses.add(ds)
 
+    priority_regions = ["Hà Nội", "Đà Nẵng", "TP. Hồ Chí Minh", "Hải Phòng", "Cần Thơ"]
+    def region_sort_key(r: str):
+        if r in priority_regions:
+            return (0, priority_regions.index(r))
+        return (1, r)
+
     return {
-        "regions": sorted(regions),
+        "regions": sorted(list(regions), key=region_sort_key),
         "sales": [
             {
                 "id": sale_id,
@@ -3039,6 +3083,35 @@ def calculate_debt_statement(
                     "status": "Đã thu tiền",
                     "created_by": pc.confirmed_by or pc.sales_name or "Kế toán công nợ",
                     "note": pc.note,
+                })
+        except Exception:
+            pass
+
+    # 2.2 Bổ sung khoản thu từ PaymentReceiptEntity đã xác nhận (Thu tiền & đối trừ nợ - S7-02)
+    if db:
+        try:
+            from app.models.debt_payment import PaymentReceiptEntity
+            confirmed_prs = db.query(PaymentReceiptEntity).filter(
+                PaymentReceiptEntity.dealer_id == dealer_id,
+                PaymentReceiptEntity.status == "CONFIRMED"
+            ).all()
+            for pr in confirmed_prs:
+                dt = parse_tx_date(pr.payment_date or now)
+                amt = float(pr.amount or 0.0)
+                all_raw_txs.append({
+                    "id": f"PR-{pr.receipt_code}",
+                    "date": dt.isoformat(),
+                    "dt_obj": dt,
+                    "doc_code": pr.receipt_code,
+                    "doc_type": "RECEIPT_VOUCHER",
+                    "doc_type_label": "Thu tiền & Đối trừ nợ",
+                    "description": pr.note or f"Thu tiền đối trừ công nợ theo phiếu {pr.receipt_code}",
+                    "increase_amount": 0.0,
+                    "decrease_amount": amt,
+                    "payment_method": pr.payment_method or "Chuyển khoản",
+                    "status": "Đã thu tiền",
+                    "created_by": pr.collector_name or "Kế toán công nợ",
+                    "note": pr.note,
                 })
         except Exception:
             pass

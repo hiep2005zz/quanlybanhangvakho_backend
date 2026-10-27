@@ -1299,13 +1299,23 @@ def get_order_picking_locations(
             product_id=pid,
             product_code=pcode,
             product_name=pname,
+            ordered_quantity=qty,
             quantity=qty,
+            unit_name=unit,
             unit=unit,
+            warehouse_id=wh_id,
+            warehouse_code=wh_code,
+            warehouse_name=wh_name,
+            locations=picking_locs,
             picking_locations=picking_locs,
         ))
 
     return results
 
+
+# ==========================================================
+# 5B. PHIẾU SOẠN HÀNG THEO LỘ TRÌNH (WAVE / BATCH PICKING)
+# ==========================================================
 
 @router.get("/picking/eligible-orders", response_model=Union[EligiblePickingOrderListResponse, List[EligiblePickingOrder]])
 def get_eligible_picking_orders(

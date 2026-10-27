@@ -38,19 +38,24 @@ def resolve_warehouse_id_int(db: Session, warehouse_id_or_code: Union[int, str, 
     if isinstance(warehouse_id_or_code, str):
         if warehouse_id_or_code.isdigit():
             return int(warehouse_id_or_code)
+        # Ánh xạ chuẩn theo DEFAULT_WAREHOUSES
+        mapping = {
+            "WH01": 1,
+            "WH02": 3,
+            "WH03": 2,
+            "KHO_HN": 1,
+            "KHO_HCM": 3,
+            "KHO_DN": 2,
+        }
+        if warehouse_id_or_code.upper() in mapping:
+            return mapping[warehouse_id_or_code.upper()]
         wh = db.query(WarehouseEntity).filter(
             (WarehouseEntity.code == warehouse_id_or_code) |
             (WarehouseEntity.name == warehouse_id_or_code)
         ).first()
         if wh:
             return wh.id
-        # Ánh xạ chuẩn theo DEFAULT_WAREHOUSES
-        mapping = {
-            "WH01": 1,
-            "WH02": 3,
-            "WH03": 2,
-        }
-        return mapping.get(warehouse_id_or_code.upper(), 1)
+        return 1
     return 1
 
 

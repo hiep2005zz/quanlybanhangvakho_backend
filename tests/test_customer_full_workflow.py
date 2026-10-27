@@ -107,7 +107,7 @@ def test_full_customer_ordering_workflow():
     order_payload = {
         "dealer_id": 2,
         "delivery_point": "Kho nhận hàng Đại lý Sao Mai",
-        "desired_delivery_date": "2026-10-15",
+        "desired_delivery_date": (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d"),
         "note": "Đơn hàng tự đặt từ Cổng Đại Lý",
         "items": [
             {
@@ -211,7 +211,7 @@ def test_admin_created_order_never_needs_approval_and_sales_cannot_approve():
     order_payload = {
         "dealer_id": 1,
         "delivery_point": "Kho Admin chỉ định",
-        "desired_delivery_date": "2026-10-25",
+        "desired_delivery_date": (datetime.now().date() + timedelta(days=2)).isoformat(),
         "note": "Đơn do Admin tự tạo - Phải tự động CONFIRMED không cần duyệt",
         "items": [
             {

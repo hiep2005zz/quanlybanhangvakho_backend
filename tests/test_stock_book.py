@@ -79,3 +79,12 @@ def test_get_stock_book_filters():
     data = resp.json()
     for it in data["items"]:
         assert it["available_stock"] > 0
+
+
+def test_purchasing_role_forbidden_stock_book():
+    from app.core.security import create_access_token
+    token = create_access_token(subject="muahang", role="purchasing", token_version=1)
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = client.get("/api/v1/inventory/stock-book", headers=headers)
+    assert resp.status_code == 403, f"Purchasing user should be forbidden (403), got {resp.status_code}: {resp.text}"
+

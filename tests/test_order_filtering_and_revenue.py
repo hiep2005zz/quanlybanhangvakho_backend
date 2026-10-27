@@ -131,7 +131,7 @@ def test_ac1_sales_manager_sees_all_orders(setup_orders_data):
     sm_token = get_token("sales_manager")
     headers = {"Authorization": f"Bearer {sm_token}"}
 
-    res = client.get("/api/v1/orders?page=1&page_size=50", headers=headers)
+    res = client.get("/api/v1/orders?search=TEST_ORD&page=1&page_size=50", headers=headers)
     assert res.status_code == 200
     data = res.json()
 
@@ -151,7 +151,7 @@ def test_ac2_sales_only_sees_assigned_dealers(setup_orders_data):
     headers = {"Authorization": f"Bearer {sales_token}"}
 
     # 1. Xem danh sách không truyền dealer_id: Chỉ thấy Dealer 1 và Dealer 2, KHÔNG thấy Dealer 4
-    res = client.get("/api/v1/orders?page=1&page_size=50", headers=headers)
+    res = client.get("/api/v1/orders?search=TEST_ORD&page=1&page_size=50", headers=headers)
     assert res.status_code == 200
     data = res.json()
     returned_codes = {o["order_code"] for o in data["items"]}

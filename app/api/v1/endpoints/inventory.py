@@ -1574,6 +1574,15 @@ def get_stock_book(
     - Tồn khả dụng bán được (available_stock = actual_stock - reserved_stock)
     Bộ lọc: Kho, Nhóm hàng/Ngành hàng, Trạng thái tồn (Tất cả, Còn hàng bán, Hết hàng bán, Dưới định mức), Tìm kiếm SKU/Tên SP.
     """
+    user_roles = [r.lower() for r in (current_user.roles or [])]
+    if current_user.role:
+        user_roles.append(str(getattr(current_user.role, "value", current_user.role)).strip().lower())
+    if ("purchasing" in user_roles or "muahang" in user_roles) and "admin" not in user_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Nhân viên mua hàng không có quyền truy cập sổ tồn kho.",
+        )
+
     global _LAST_SYNC_WAREHOUSE_STOCKS, _CATEGORIES_CACHE, _STOCK_BOOK_CACHE
     now = time.time()
 

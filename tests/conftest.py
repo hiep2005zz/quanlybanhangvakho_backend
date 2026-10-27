@@ -114,7 +114,9 @@ def reset_test_state():
             db.query(DeliveryTripStopEntity).delete(synchronize_session=False)
             db.query(DeliveryStopEntity).delete(synchronize_session=False)
             db.query(DeliveryTripEntity).filter(
-                (DeliveryTripEntity.trip_code.like(r"TRIP-%", escape="\\")) | (DeliveryTripEntity.trip_code.like(r"TEST-%", escape="\\"))
+                (DeliveryTripEntity.trip_code.like(r"TRIP-%", escape="\\")) | 
+                (DeliveryTripEntity.trip_code.like(r"TEST-%", escape="\\")) |
+                (DeliveryTripEntity.trip_code.like(r"CGH-%", escape="\\"))
             ).delete(synchronize_session=False)
             db.query(InvoiceDeliveryNoteEntity).delete(synchronize_session=False)
             db.query(OrderDispatchEntity).filter(
@@ -253,12 +255,21 @@ def reset_test_state():
             if ws.actual_stock is None or ws.actual_stock < min_needed:
                 ws.actual_stock = min_needed
 
-        from app.models.entities import CreditPolicyConfigEntity
+        from app.models.entities import CreditPolicyConfigEntity, DealerEntity
         cfg = db.query(CreditPolicyConfigEntity).first()
         if cfg:
             cfg.over_limit_action = "REQUIRE_APPROVAL"
             cfg.overdue_action = "BLOCK"
             cfg.auto_eval_enabled = True
+
+        # Đặt lại kho mặc định về None cho các đại lý seed (tránh rò rỉ trạng thái gán kho từ test_warehouses)
+        db.query(DealerEntity).filter(DealerEntity.id.in_([1, 2, 3, 4, 5])).update(
+            {"warehouse_id": None, "warehouse_name": None},
+            synchronize_session=False
+        )
+        d1 = db.query(DealerEntity).filter(DealerEntity.id == 1).first()
+        if d1:
+            d1.phone = "0912345678"
         db.commit()
     finally:
         db.close()
@@ -275,6 +286,10 @@ def reset_test_state():
             del DEALERS_DB[k]
     sales_uid = USERS_DB["sales"].id if "sales" in USERS_DB else 3
     mgr_uid = USERS_DB["sales_manager"].id if "sales_manager" in USERS_DB else 2
+    for d_id in [1, 2, 3, 4, 5]:
+        if d_id in DEALERS_DB:
+            DEALERS_DB[d_id].warehouse_id = None
+            DEALERS_DB[d_id].warehouse_name = None
     if 1 in DEALERS_DB: DEALERS_DB[1].assigned_sale_id = sales_uid
     if 2 in DEALERS_DB: DEALERS_DB[2].assigned_sale_id = sales_uid
     if 3 in DEALERS_DB: DEALERS_DB[3].assigned_sale_id = sales_uid
