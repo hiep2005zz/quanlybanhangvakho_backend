@@ -106,7 +106,28 @@ def resync_all_debts_sql(db: Session) -> Dict[str, Any]:
                 except Exception:
                     pass
 
-            # 3. Thu thập giảm trừ nợ từ debt_adjustments
+            # 3. Thu thập tiền thu từ payment_allocations (Thu tiền & đối trừ nợ - S7-02)
+            alloc_sum = 0.0
+            try:
+                from app.models.debt_payment import PaymentAllocationEntity, PaymentReceiptEntity
+                alloc_val = (
+                    db.query(func.sum(PaymentAllocationEntity.current_allocated_amount))
+                    .join(PaymentReceiptEntity, PaymentReceiptEntity.id == PaymentAllocationEntity.payment_id)
+                    .join(InvoiceEntity, InvoiceEntity.id == PaymentAllocationEntity.invoice_id)
+                    .filter(
+                        or_(
+                            InvoiceEntity.order_code == ord.order_code,
+                            InvoiceEntity.invoice_code == inv_code,
+                        ),
+                        PaymentReceiptEntity.status == "CONFIRMED",
+                    )
+                    .scalar()
+                )
+                alloc_sum = float(alloc_val or 0.0)
+            except Exception:
+                alloc_sum = 0.0
+
+            # 4. Thu thập giảm trừ nợ từ debt_adjustments
             adj_sum = 0.0
             if DebtAdjustmentEntity:
                 try:
@@ -118,7 +139,7 @@ def resync_all_debts_sql(db: Session) -> Dict[str, Any]:
                 except Exception:
                     pass
 
-            total_paid = rv_sum + pc_sum
+            total_paid = rv_sum + pc_sum + alloc_sum
             if ord.status == "PAID" and total_paid == 0:
                 total_paid = total
 
