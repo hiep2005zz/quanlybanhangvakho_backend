@@ -293,7 +293,11 @@ def list_delivery_trips(
     query = db.query(DeliveryTripEntity)
 
     if status_filter and status_filter.upper() != "ALL":
-        query = query.filter(DeliveryTripEntity.status == status_filter.upper())
+        st = status_filter.upper()
+        if st in ("IN_PROGRESS", "IN_TRANSIT", "DELIVERING"):
+            query = query.filter(DeliveryTripEntity.status.in_(["IN_PROGRESS", "IN_TRANSIT", "DELIVERING"]))
+        else:
+            query = query.filter(DeliveryTripEntity.status == st)
     if delivery_date:
         query = query.filter(DeliveryTripEntity.delivery_date == delivery_date)
     if driver_id:
@@ -313,7 +317,7 @@ def list_delivery_trips(
         results.append({
             "id": t.id,
             "trip_code": t.trip_code,
-            "delivery_date": t.delivery_date,
+            "delivery_date": t.delivery_date or (t.dispatched_at.strftime("%Y-%m-%d") if t.dispatched_at else (t.created_at.strftime("%Y-%m-%d") if t.created_at else None)),
             "driver_id": t.driver_id,
             "driver_name": t.driver_name,
             "driver_phone": t.driver_phone,
@@ -643,7 +647,7 @@ def get_delivery_trip_detail(
     return {
         "id": trip.id,
         "trip_code": trip.trip_code,
-        "delivery_date": trip.delivery_date,
+        "delivery_date": trip.delivery_date or (trip.dispatched_at.strftime("%Y-%m-%d") if trip.dispatched_at else (trip.created_at.strftime("%Y-%m-%d") if trip.created_at else None)),
         "driver_id": trip.driver_id,
         "driver_name": trip.driver_name,
         "driver_phone": trip.driver_phone,
@@ -839,7 +843,7 @@ def update_trip_status(
             detail="Chuyến giao hàng đã hoàn thành, không thể hủy bỏ.",
         )
 
-    if new_st == "IN_PROGRESS":
+    if new_st in ("IN_PROGRESS", "IN_TRANSIT"):
         if not trip.driver_id or not trip.vehicle_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
